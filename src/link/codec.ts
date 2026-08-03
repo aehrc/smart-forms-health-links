@@ -1,5 +1,6 @@
-import type { Bundle, Questionnaire, QuestionnaireResponse } from 'fhir/r4';
+import type { Bundle, FhirResource, Questionnaire, QuestionnaireResponse } from 'fhir/r4';
 import type { AppConfig, LinkCodecId } from '@/lib/config';
+import type { BlobStore } from '@/fhir/blobStore';
 
 /**
  * The payload a link carries, independent of how it is transported.
@@ -20,6 +21,17 @@ export interface LinkContent {
 export interface EncodeOptions {
   /** Origin the link should point at, e.g. `https://links.example.org`. */
   baseUrl: string;
+
+  /**
+   * Where to park an encrypted payload that is too large to travel inside the link.
+   *
+   * Required by the SHL codec, ignored by the bespoke codec — which is the whole distinction between
+   * them: bespoke carries its payload in the fragment, SHL carries a pointer to a hosted one.
+   */
+  blobStore?: BlobStore;
+
+  /** Optional expiry, as Epoch seconds. Maps to the SHL payload's `exp`. */
+  expiresAt?: number;
 }
 
 /**
@@ -65,23 +77,39 @@ export function extractFragment(linkOrFragment: string): string {
   return trimmed;
 }
 
-/** Build a `collection` Bundle around a QuestionnaireResponse — the link's payload. */
-export function bundleResponse(questionnaireResponse: QuestionnaireResponse): Bundle {
+/**
+ * Build a `collection` Bundle.
+ *
+ * Entries carry a `fullUrl` so resources inside the Bundle can reference each other with
+ * `urn:uuid:` — which is how a Task points at the QuestionnaireResponse it produced, given that
+ * QuestionnaireResponse cannot reference a Task in the other direction. See `exchange.ts`.
+ */
+export function collectionBundle(entries: { fullUrl?: string; resource: FhirResource }[]): Bundle {
   return {
     resourceType: 'Bundle',
     type: 'collection',
-    entry: [{ resource: questionnaireResponse }]
+    entry: entries.map(({ fullUrl, resource }) => (fullUrl ? { fullUrl, resource } : { resource }))
   };
+}
+
+/** Build a `collection` Bundle around a QuestionnaireResponse — the simplest link payload. */
+export function bundleResponse(questionnaireResponse: QuestionnaireResponse): Bundle {
+  return collectionBundle([{ resource: questionnaireResponse }]);
+}
+
+/** Find the first resource of a given type in a Bundle. */
+export function findInBundle<T extends FhirResource>(
+  bundle: Bundle,
+  resourceType: T['resourceType']
+): T | undefined {
+  return (bundle.entry ?? [])
+    .map((entry) => entry.resource)
+    .find((resource): resource is T => resource?.resourceType === resourceType);
 }
 
 /** Pull the QuestionnaireResponse back out of a decoded payload. */
 export function responseFromBundle(bundle: Bundle): QuestionnaireResponse {
-  const response = (bundle.entry ?? [])
-    .map((entry) => entry.resource)
-    .find(
-      (resource): resource is QuestionnaireResponse =>
-        resource?.resourceType === 'QuestionnaireResponse'
-    );
+  const response = findInBundle<QuestionnaireResponse>(bundle, 'QuestionnaireResponse');
 
   if (!response) {
     throw new Error('Link payload contains no QuestionnaireResponse.');

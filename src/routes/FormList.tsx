@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { FileText, Loader2, Search } from 'lucide-react';
+import { FileText, Loader2, Search, Send } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { searchQuestionnaires } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
 import { Input } from '@/components/ui/input';
@@ -72,23 +73,29 @@ export default function FormList() {
         {(questionnaires ?? []).map((questionnaire) => (
           <li key={questionnaire.id}>
             <Card className="transition-colors hover:border-slate-400">
-              <CardContent className="p-0">
+              <CardContent className="flex items-start gap-3 p-4">
+                <FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
                 <Link
                   to={`/fill/${encodeURIComponent(questionnaire.id ?? '')}`}
-                  className="flex items-start gap-3 p-4">
-                  <FileText className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
-                  <div className="min-w-0">
-                    <p className="font-medium text-slate-900">
-                      {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
-                    </p>
-                    <p className="truncate font-mono text-xs text-slate-500">
-                      {questionnaire.url ?? questionnaire.id}
-                      {questionnaire.version ? ` | ${questionnaire.version}` : ''}
-                    </p>
-                  </div>
-                  <span className="ml-auto shrink-0 self-center rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                    {questionnaire.status}
-                  </span>
+                  className="min-w-0 flex-1">
+                  <p className="font-medium text-slate-900">
+                    {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
+                  </p>
+                  <p className="truncate font-mono text-xs text-slate-500">
+                    {questionnaire.url ?? questionnaire.id}
+                    {questionnaire.version ? ` | ${questionnaire.version}` : ''}
+                  </p>
+                </Link>
+                <span className="shrink-0 self-center rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                  {questionnaire.status}
+                </span>
+                <Link
+                  to={`/request/${encodeURIComponent(questionnaire.id ?? '')}`}
+                  className="shrink-0 self-center">
+                  <Button variant="outline" size="sm">
+                    <Send className="h-3.5 w-3.5" aria-hidden />
+                    Request
+                  </Button>
                 </Link>
               </CardContent>
             </Card>

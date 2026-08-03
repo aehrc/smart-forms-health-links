@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Link2, Loader2 } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
-import { createLinkFromCurrentForm } from '@/link/createLink';
+import { createOfflineResponseLink } from '@/link/createLink';
 import FormRenderer from '@/components/FormRenderer';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
 import { Button } from '@/components/ui/button';
@@ -35,7 +35,9 @@ export default function FillForm() {
 
     setLinkError(null);
     try {
-      setLink(await createLinkFromCurrentForm(questionnaire, config));
+      // No Task here: this route fills a form directly rather than answering a request, so there is
+      // nothing to correlate against.
+      setLink(await createOfflineResponseLink(questionnaire, config));
     } catch (cause) {
       setLink(null);
       setLinkError(cause instanceof Error ? cause.message : String(cause));

@@ -1,84 +1,84 @@
-import { useState } from 'react';
-import { useLocation, Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Link2, Loader2 } from 'lucide-react';
-import type { Questionnaire, QuestionnaireResponse } from 'fhir/r4';
+import { ArrowLeft, Loader2 } from 'lucide-react';
+import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
 import { LINK_CODECS } from '@/link/registry';
-import { decodingCodec, questionnaireCanonical, responseFromBundle } from '@/link/codec';
-import { createLinkFromCurrentForm } from '@/link/createLink';
-import FormRenderer from '@/components/FormRenderer';
-import ShareLinkPanel from '@/components/ShareLinkPanel';
-import { Button } from '@/components/ui/button';
+import { decodingCodec, questionnaireCanonical } from '@/link/codec';
+import { isRequestBundle, parseRequestBundle, parseResponseBundle } from '@/link/exchange';
+import FillFromRequest from '@/components/FillFromRequest';
+import ReviewResponse from '@/components/ReviewResponse';
 import { Alert } from '@/components/ui/alert';
 
-interface ResolvedLink {
-  questionnaire: Questionnaire;
-  response: QuestionnaireResponse;
-  label?: string;
-}
-
 /**
- * Decode the fragment, then resolve the Questionnaire it references from the forms server.
+ * The single entry point for any link, in either direction.
  *
- * The link carries answers by value and the form by reference, so opening one always needs a round
- * trip to the forms server. That is the trade that keeps the payload inside a QR code.
+ * Dispatching on the payload rather than the route matters because a scanner cannot know what it just
+ * scanned. A request (`Questionnaire` + `Task`, no answers) opens the form to be filled; a response
+ * (`QuestionnaireResponse`) opens the review-and-accept flow.
  */
-async function resolveLink(
+
+type Opened =
+  | { mode: 'request'; questionnaire: Questionnaire; task: Task; label?: string }
+  | {
+      mode: 'response';
+      questionnaire: Questionnaire;
+      response: QuestionnaireResponse;
+      task?: Task;
+      label?: string;
+    };
+
+async function openLink(
   fragment: string,
   formsServerUrl: string,
   signal?: AbortSignal
-): Promise<ResolvedLink> {
+): Promise<Opened> {
   const codec = decodingCodec(fragment, LINK_CODECS);
   const content = await codec.decode(fragment);
-  const response = responseFromBundle(content.bundle);
-  const canonical = questionnaireCanonical(response);
-  const questionnaire = await fetchQuestionnaireByCanonical(formsServerUrl, canonical, signal);
 
-  return { questionnaire, response, label: content.label };
+  if (isRequestBundle(content.bundle)) {
+    // A request embeds its Questionnaire, so nothing needs resolving.
+    const { questionnaire, task } = parseRequestBundle(content.bundle);
+    return { mode: 'request', questionnaire, task, label: content.label };
+  }
+
+  /*
+   * A response carries answers by value but the form only by canonical reference — re-sending
+   * hundreds of kilobytes of Questionnaire would defeat the point. So the form is resolved here.
+   */
+  const { response, task } = parseResponseBundle(content.bundle);
+  const questionnaire = await fetchQuestionnaireByCanonical(
+    formsServerUrl,
+    questionnaireCanonical(response),
+    signal
+  );
+
+  return { mode: 'response', questionnaire, response, task, label: content.label };
 }
 
 export default function ViewLink() {
   const location = useLocation();
   const config = useConfig();
 
-  const [link, setLink] = useState<string | null>(null);
-  const [linkError, setLinkError] = useState<string | null>(null);
-
   // `location.hash` includes the leading '#'; the codecs strip it.
   const fragment = location.hash;
 
   const {
-    data: resolved,
+    data: opened,
     isPending,
     error
   } = useQuery({
     queryKey: ['link', config.formsServerUrl, fragment],
-    queryFn: ({ signal }) => resolveLink(fragment, config.formsServerUrl, signal),
+    queryFn: ({ signal }) => openLink(fragment, config.formsServerUrl, signal),
     enabled: fragment !== '',
     retry: false
   });
 
-  async function handleCreateLink() {
-    if (!resolved) {
-      return;
-    }
-
-    setLinkError(null);
-    try {
-      setLink(await createLinkFromCurrentForm(resolved.questionnaire, config));
-    } catch (cause) {
-      setLink(null);
-      setLinkError(cause instanceof Error ? cause.message : String(cause));
-    }
-  }
-
   if (fragment === '') {
     return (
       <Alert title="No link to open">
-        This page renders a form from a link. Scan a QR code or open a link that has a payload in
-        its fragment.
+        This page opens a form from a link. Scan a QR code, or paste a link on the Scan page.
       </Alert>
     );
   }
@@ -98,53 +98,39 @@ export default function ViewLink() {
         <Alert tone="error" title="Could not open this link">
           {error instanceof Error ? error.message : String(error)}
         </Alert>
-        <RouterLink
-          to="/"
-          className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
-          <ArrowLeft className="h-4 w-4" aria-hidden />
-          All forms
-        </RouterLink>
+        <BackLink />
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <RouterLink
-        to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
-        <ArrowLeft className="h-4 w-4" aria-hidden />
-        All forms
-      </RouterLink>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900">
-            {resolved.label ?? resolved.questionnaire.title ?? resolved.questionnaire.id}
-          </h1>
-          <p className="text-sm text-slate-500">Opened from a link, with answers restored.</p>
-        </div>
-        <Button onClick={handleCreateLink} className="ml-auto">
-          <Link2 className="h-4 w-4" aria-hidden />
-          Create updated link
-        </Button>
-      </div>
-
-      {linkError ? (
-        <Alert tone="error" title="Could not create link">
-          {linkError}
-        </Alert>
-      ) : null}
-
-      {link ? <ShareLinkPanel link={link} /> : null}
-
-      <div className="form-surface">
-        <FormRenderer
-          questionnaire={resolved.questionnaire}
-          questionnaireResponse={resolved.response}
-          terminologyServerUrl={config.terminologyServerUrl}
+      <BackLink />
+      {opened.mode === 'request' ? (
+        <FillFromRequest
+          questionnaire={opened.questionnaire}
+          task={opened.task}
+          label={opened.label}
         />
-      </div>
+      ) : (
+        <ReviewResponse
+          questionnaire={opened.questionnaire}
+          response={opened.response}
+          task={opened.task}
+          label={opened.label}
+        />
+      )}
     </div>
+  );
+}
+
+function BackLink() {
+  return (
+    <RouterLink
+      to="/"
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+      <ArrowLeft className="h-4 w-4" aria-hidden />
+      All forms
+    </RouterLink>
   );
 }

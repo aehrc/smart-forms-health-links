@@ -32,8 +32,25 @@ export interface AppConfig {
   linkCodec: LinkCodecId;
 
   /**
-   * Phase 2 only: base URL of the SMART Health Links manifest server.
-   * Required before `linkCodec` can be set to `shl`; unused in Phase 1.
+   * Where reviewed QuestionnaireResponses are written.
+   *
+   * A Questionnaire's own `sdc-questionnaire-endpoint` extension takes precedence over this; this is
+   * the fallback, and falls back again to `formsServerUrl` when null.
+   */
+  responseServerUrl: string | null;
+
+  /**
+   * Where SMART Health Link payloads are hosted.
+   *
+   * `fhir-binary` stores them as FHIR `Binary` resources on `formsServerUrl` — no separate
+   * infrastructure. Safe on a public server because the payload is a JWE and the key travels only
+   * inside the link, which is the untrusted-host model SHL is built around.
+   */
+  blobStore: 'fhir-binary';
+
+  /**
+   * Base URL of an external SMART Health Links manifest server, if one is ever stood up.
+   * Unused while `blobStore` is `fhir-binary` — reading manifest-based links needs no config.
    */
   shlManifestUrl: string | null;
 }
@@ -42,7 +59,9 @@ export const FALLBACK_CONFIG: AppConfig = {
   formsServerUrl: 'https://smartforms.csiro.au/api/fhir',
   terminologyServerUrl: 'https://r4.ontoserver.csiro.au/fhir',
   linkBaseUrl: null,
-  linkCodec: 'bespoke',
+  linkCodec: 'shl',
+  responseServerUrl: null,
+  blobStore: 'fhir-binary',
   shlManifestUrl: null
 };
 
@@ -70,6 +89,8 @@ function isAppConfig(value: unknown): value is AppConfig {
     isValidUrl(candidate.terminologyServerUrl) &&
     (candidate.linkBaseUrl === null || isValidUrl(candidate.linkBaseUrl)) &&
     (candidate.linkCodec === 'bespoke' || candidate.linkCodec === 'shl') &&
+    (candidate.responseServerUrl === null || isValidUrl(candidate.responseServerUrl)) &&
+    candidate.blobStore === 'fhir-binary' &&
     (candidate.shlManifestUrl === null || isValidUrl(candidate.shlManifestUrl))
   );
 }

@@ -1,7 +1,9 @@
 # Smart Forms Health Links
 
-Browse the questionnaires on a Smart Forms server, fill one in, and turn the result into a
-scannable link that another device can open and keep filling.
+Ask someone to fill out a FHIR questionnaire by handing them a scannable
+[SMART Health Link](https://docs.smarthealthit.org/smart-health-links/), let them complete it on
+another device with no access to your servers, then review the answers and write them to your own
+FHIR server.
 
 Built on [`@aehrc/smart-forms-renderer`](https://www.npmjs.com/package/@aehrc/smart-forms-renderer)
 from npm — this project has no build-time coupling to the
@@ -14,12 +16,74 @@ npm run dev          # http://localhost:5273
 
 ## What it does
 
-| Route            | Purpose                                                             |
-| ---------------- | ------------------------------------------------------------------- |
-| `/`              | Search and list Questionnaires on the forms server                   |
-| `/fill/:id`      | Render a form, then generate a link + QR from the current answers    |
-| `/view#<link>`   | Decode a link, resolve its Questionnaire, render with answers restored |
-| `/scan`          | Read a QR with the camera, or paste a link                           |
+| Route              | Purpose                                                                     |
+| ------------------ | --------------------------------------------------------------------------- |
+| `/`                | Search and list Questionnaires on the forms server                          |
+| `/request/:id`     | Create an encrypted SMART Health Link containing a whole form               |
+| `/fill/:id`        | Fill a form directly and emit a link from the answers                       |
+| `/view#<link>`     | Open any link — **dispatches on payload**: fill a request, or review a response |
+| `/scan`            | Read a QR with the camera, or paste a link                                   |
+
+`/view` deliberately decides what to show from the payload rather than the route, because a scanner
+cannot know whether it just scanned a request or a completed response.
+
+## The round trip
+
+```
+REQUEST   requester hosts, real shlink:/
+  1. pick a Questionnaire, mint Task{status:requested, focus:Q, for:Patient}
+  2. Bundle{Questionnaire, Task} -> JWE (alg:dir, enc:A256GCM)
+  3. POST /Binary                -> https://…/api/fhir/Binary/{id}
+  4. shlink:/{url, key, flag:"U"}   ~271 bytes, fits a QR
+
+FILL      any device, no access to the requester's servers
+  5. GET the blob -> decrypt -> render -> fill
+  6. Bundle{QuestionnaireResponse, Task{status:completed, output -> response}}
+
+RETURN    offline QR by default, or a hosted Health Link
+  7. requester opens it — reading needs no infrastructure, so either works
+  8. HUMAN REVIEWS the answers, read-only
+  9. on accept: POST /QuestionnaireResponse + POST /Task
+```
+
+Measured on the live server for the GP Chronic Condition Management Plan:
+
+| | bytes |
+| --- | --- |
+| Questionnaire | 111,319 |
+| Encrypted blob (hosted) | 149,521 |
+| **The link itself** | **271** |
+| Return payload (no Questionnaire) | 1,119 |
+
+## Why it is shaped this way
+
+**SMART Health Links are strictly one-directional.** Neither the
+[SHL spec](https://docs.smarthealthit.org/smart-health-links/spec/) nor the
+[HL7 links-specification](https://build.fhir.org/ig/HL7/smart-health-cards-and-links/links-specification.html)
+defines any submission, upload or writeback channel, and neither mentions questionnaires or requests
+for data at all. Using an SHL as a *return* transport is off-spec.
+
+Nothing off-spec is needed, because **the requester's own app performs the write**. A filler
+publishes; this app pulls, shows a human, and only then writes to its own server. So no credential
+ever has to travel to the filler, `application/smart-api-access` is unnecessary, and
+review-before-commit — the right posture for third-party data entering a clinical record — falls out
+for free.
+
+The write itself is not novel: `POST /QuestionnaireResponse` is core FHIR REST and exactly SDC's Form
+Receiver model. SDC even specifies the destination, via
+`http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint` — which this app honours
+(including its "send to all listed endpoints" rule) and which smart-forms lists as unsupported.
+
+**Correlation runs from the Task outward**, because R4 gives QuestionnaireResponse no way to point at
+a Task: `basedOn` accepts only `CarePlan|ServiceRequest`, `partOf` only `Observation|Procedure`, and
+`identifier` is `0..1`. So `Task.focus` names the Questionnaire, `Task.output.valueReference` names
+the response, and the Task round-trips inside the Bundle. Its `identifier` is the durable key — the
+`urn:uuid` references do not survive the trip, but that does.
+
+**Hosting the encrypted blob on a public server is the design, not a shortcut.** SHL assumes an
+untrusted host: the file is a JWE and the key travels only in the link, so the host never sees
+plaintext. That is why a FHIR `Binary` on the open forms server is a legitimate file host and no
+S3/lambda tier is required.
 
 ## How links work
 
@@ -55,31 +119,31 @@ dependency.
 2. **Routing:** the fragment is unavailable for routing, so the app uses `BrowserRouter`. Static
    hosting therefore needs an SPA rewrite (all paths → `index.html`), or `/view` will 404.
 
-### ⚠️ Phase 1 links are not encrypted
+## Two transports, one interface
 
-Answers are compressed, not protected. Anyone who photographs the QR code or reads the URL can
-recover them. This is fine for demos and for scanning between your own devices. It is **not**
-suitable for real patient data — that is what Phase 2 is for.
-
-## Phase 2: SMART Health Links
-
-Third-party SHL wallets cannot read Phase 1 links, and no backend-free design can make them:
-[SMART Health Links](https://docs.smarthealthit.org/smart-health-links/) has no embedded-payload
-mode — the QR holds a pointer to a manifest server, and the content is encrypted.
-
-The app is built so this is a **transport swap, not a rewrite**. `LinkContent` (`src/link/codec.ts`)
-is already a FHIR Bundle, which is exactly what an SHL manifest file contains, so the routes, the
-renderer, and response extraction are all unchanged by the cutover.
-
-To ship Phase 2:
-
-1. Implement `encode`/`decode` in `src/link/shlCodec.ts` (AES-256-GCM via WebCrypto + JWE compact).
-2. Stand up a manifest server.
-3. Set `shlManifestUrl` and flip `linkCodec` to `"shl"` in `public/config.json`.
-
-Links created before the cutover keep working: `decodingCodec()` sniffs the prefix across every
-registered codec, so `sfhl:/` and `shlink:/` are both readable regardless of which one is being
+Both implement `LinkCodec` (`src/link/codec.ts`); `decodingCodec()` sniffs the prefix across every
+registered codec, so links of either kind stay readable no matter which one is currently being
 issued.
+
+| | `shlink:/` (`shlCodec.ts`) | `sfhl:/` (`bespokeCodec.ts`) |
+| --- | --- | --- |
+| Payload | encrypted, hosted | compressed, inside the URL |
+| Encryption | A256GCM | **none** |
+| Hosting | required | none |
+| Size limit | none | ~14 KB raw JSON |
+| Third-party wallets | yes | no |
+
+The SHL codec always sets the **`U` flag** — a single encrypted file fetched with a plain `GET` — so
+it needs only a file host rather than a manifest service. Two honest costs: `U` cannot be combined
+with `P`, so **these links have no passcode**, and they can be neither revoked nor varied per
+recipient. It *reads* both hosting modes, so a filler that publishes behind a real manifest endpoint
+works too.
+
+### ⚠️ `sfhl:/` links are not encrypted
+
+Answers are compressed, not protected. Anyone who photographs the QR or reads the URL recovers them.
+It exists because it is the only return path open to an app with no server of its own, and it is
+labelled as such in the UI.
 
 ## Configuration
 
@@ -92,15 +156,35 @@ different servers. Missing or malformed config falls back to the public CSIRO se
   "formsServerUrl": "https://smartforms.csiro.au/api/fhir",
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
   "linkBaseUrl": null,
-  "linkCodec": "bespoke",
+  "linkCodec": "shl",
+  "responseServerUrl": null,
+  "blobStore": "fhir-binary",
   "shlManifestUrl": null
 }
 ```
 
-`linkBaseUrl: null` means "use `window.location.origin`".
+- `linkBaseUrl: null` — use `window.location.origin`
+- `linkCodec` — which codec *creates* links; reading always accepts both
+- `responseServerUrl: null` — fall back to `formsServerUrl`. A Questionnaire's own
+  `sdc-questionnaire-endpoint` outranks this either way
+- `blobStore: "fhir-binary"` — host SHL payloads as `Binary` resources on `formsServerUrl`
 
 ## Notes
 
+- **Referential integrity will reject foreign subjects.** The forms server enforces it, so a response
+  naming a patient it does not hold fails with
+  `HAPI-1094: Resource Patient/x not found, specified in path: QuestionnaireResponse.subject`. This is
+  surfaced verbatim rather than swallowed, and the subject is deliberately **not** stripped to force
+  the write through — that would lose who the answers are about. Reconciling the patient is a
+  human decision.
+- **Nothing is written without review.** `ReviewResponse` renders read-only on purpose: editing another
+  party's answers before committing them would blur who recorded what and make the response's
+  `author`/`source` describe a document that no longer exists.
+- **A foreign `id`/`meta` is stripped before writing.** A response from another app carries identity
+  from *its* server; keeping it risks colliding with an unrelated local resource.
+- **`Location` headers from the forms server are wrong** — it reports
+  `http://smartforms.csiro.au/fhir/Binary/{id}`: wrong scheme *and* wrong path. `blobStore.ts` takes
+  only the id and rebuilds the URL against the configured base.
 - **Camera:** scanning needs a secure context. `localhost` qualifies; opening the dev server by LAN
   IP from a phone does not — use HTTPS or a tunnel. There is a paste fallback on `/scan`.
 - **Two style systems:** the shell is Tailwind, the form is MUI. MUI is a hard dependency of the
@@ -114,13 +198,20 @@ different servers. Missing or malformed config falls back to the public CSIRO se
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # codec round-trip against real smart-forms fixtures
-npm run check:e2e        # search -> encode -> decode -> resolve, against the live forms server
+npm run check:roundtrip  # 42 checks: codecs, JWE, SHL — no network, no hosting
+npm run check:e2e        # bespoke path against the live forms server
+npm run check:e2e-shl    # 28 checks: the full SHL round trip, live. WRITES to the server
 ```
 
-`check:e2e` walks the whole path a scanned link depends on, short of rendering: search the forms
-server, build a response, encode a link, decode it, and resolve the Questionnaire back from its
-canonical (including the version-pinned form, `…|0.1.0`).
+`check:roundtrip` covers the crypto properties that matter — a wrong key and a tampered ciphertext
+must both fail — plus the SHL codec against an in-memory blob store, so it needs neither network nor
+hosting.
+
+`check:e2e-shl` walks the entire loop against the live server: build a request, encrypt it, host it as
+a `Binary`, decode it as the filler would, answer it, and submit the result. It asserts that the
+hosted blob leaks no plaintext and that the stored Task points at the response's *real* id rather than
+a `urn:uuid`. It also asserts the failure mode below. It creates a `Binary` and a `Patient` (both
+cleaned up) and leaves a `QuestionnaireResponse` and `Task` behind as evidence, so it is opt-in.
 
 `check:roundtrip` imports fixtures from a sibling `../smart-forms` checkout. It is the only
 coupling between the repos, and it is dev-only.

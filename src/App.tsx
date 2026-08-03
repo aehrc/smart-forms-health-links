@@ -2,6 +2,7 @@ import { Navigate, Link as RouterLink, Route, Routes, useLocation } from 'react-
 import { QrCode, ScanLine } from 'lucide-react';
 import FormList from './routes/FormList';
 import FillForm from './routes/FillForm';
+import RequestForm from './routes/RequestForm';
 import ViewLink from './routes/ViewLink';
 import Scan from './routes/Scan';
 import { LINK_CODECS } from './link/registry';
@@ -51,6 +52,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<FormList />} />
           <Route path="/fill/:questionnaireId" element={<FillForm />} />
+          <Route path="/request/:questionnaireId" element={<RequestForm />} />
           <Route path="/view" element={<ViewLink />} />
           <Route path="/scan" element={<Scan />} />
           <Route path="*" element={<Navigate to="/" replace />} />

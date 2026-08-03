@@ -1,11 +1,30 @@
 import { useEffect, useState } from 'react';
 import { Check, Copy, Loader2 } from 'lucide-react';
-import { MAX_QR_BYTES, renderQr, type QrResult } from '@/link/qr';
+import { MAX_QR_BYTES, linkByteLength, renderQr, type QrResult } from '@/link/qr';
+import { LINK_CODECS } from '@/link/registry';
+import { decodingCodec } from '@/link/codec';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-export default function ShareLinkPanel({ link }: { link: string }) {
+export interface ShareLinkPanelProps {
+  link: string;
+  /** Shapes the wording only; the security note is derived from the link itself. */
+  kind?: 'request' | 'response';
+}
+
+/** Which codec produced this link, so the security note can tell the truth about it. */
+function codecIdOf(link: string): 'bespoke' | 'shl' | 'unknown' {
+  try {
+    return decodingCodec(link, LINK_CODECS).id;
+  } catch {
+    return 'unknown';
+  }
+}
+
+export default function ShareLinkPanel(props: ShareLinkPanelProps) {
+  const { link, kind = 'response' } = props;
+
   const [qr, setQr] = useState<QrResult | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -38,22 +57,34 @@ export default function ShareLinkPanel({ link }: { link: string }) {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  const byteLength = new TextEncoder().encode(link).length;
+  const byteLength = linkByteLength(link);
+  const codecId = codecIdOf(link);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Shareable link</CardTitle>
+        <CardTitle>{kind === 'request' ? 'Request link' : 'Shareable link'}</CardTitle>
         <CardDescription>
-          Scan this with the same app on another device, or copy the link.
+          {kind === 'request'
+            ? 'Scan this to open the form on another device. The whole questionnaire travels inside it.'
+            : 'Scan this to hand the answers back, or copy the link.'}
         </CardDescription>
       </CardHeader>
 
       <CardContent className="space-y-4">
-        <Alert tone="warning" title="This link is not encrypted">
-          The answers are compressed into the link, not protected. Anyone who photographs the QR
-          code or sees the URL can read them. Encryption arrives with SMART Health Links support.
-        </Alert>
+        {codecId === 'shl' ? (
+          <Alert title="Encrypted SMART Health Link">
+            The contents are encrypted (A256GCM) and hosted separately; this link carries only a
+            pointer and the decryption key. Anyone holding the link can decrypt it — there is no
+            passcode, because the single-file <span className="font-mono text-xs">U</span> flag
+            cannot be combined with one.
+          </Alert>
+        ) : (
+          <Alert tone="warning" title="This link is not encrypted">
+            The answers are compressed into the link, not protected. Anyone who photographs the QR
+            code or sees the URL can read them.
+          </Alert>
+        )}
 
         <div className="flex flex-col items-start gap-4 sm:flex-row">
           <div className="shrink-0">
@@ -61,7 +92,7 @@ export default function ShareLinkPanel({ link }: { link: string }) {
               <>
                 <img
                   src={qr.dataUrl}
-                  alt="QR code containing the form link"
+                  alt="QR code containing the link"
                   className="rounded-md border border-slate-200"
                   width={320}
                   height={320}
