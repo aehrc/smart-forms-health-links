@@ -1,0 +1,7 @@
+{
+  "formsServerUrl": "https://smartforms.csiro.au/api/fhir",
+  "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
+  "linkBaseUrl": null,
+  "linkCodec": "bespoke",
+  "shlManifestUrl": null
+}

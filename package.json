@@ -1,0 +1,38 @@
+{
+  "name": "smart-forms-health-links",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "check:roundtrip": "esbuild scripts/roundtrip.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/roundtrip.mjs --log-level=warning && node node_modules/.cache/roundtrip.mjs",
+    "check:e2e": "esbuild scripts/e2eLink.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e.mjs --log-level=warning && node node_modules/.cache/e2e.mjs"
+  },
+  "dependencies": {
+    "@aehrc/smart-forms-renderer": "^1.4.0",
+    "@tanstack/react-query": "^5.90.5",
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.475.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.1.0",
+    "tailwind-merge": "^3.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/fhir": "^0.0.41",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1"
+  }
+}
