@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Send } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
-import { createRequestLink } from '@/link/createLink';
+import { canCreateHealthLinks, createRequestLink } from '@/link/createLink';
 import { taskCorrelationId } from '@/link/exchange';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
 import { Button } from '@/components/ui/button';
@@ -28,6 +28,8 @@ export default function RequestForm() {
   const [correlationId, setCorrelationId] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+
+  const canHost = canCreateHealthLinks(config);
 
   const {
     data: questionnaire,
@@ -120,7 +122,7 @@ export default function RequestForm() {
             placeholder="Patient/123"
             aria-label="Subject reference"
           />
-          <Button onClick={handleCreate} disabled={isCreating}>
+          <Button onClick={handleCreate} disabled={isCreating || !canHost}>
             {isCreating ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (
@@ -130,6 +132,15 @@ export default function RequestForm() {
           </Button>
         </CardContent>
       </Card>
+
+      {!canHost ? (
+        <Alert tone="warning" title="Nowhere to host the encrypted payload">
+          Set <span className="font-mono text-xs">blobServerUrl</span> in{' '}
+          <span className="font-mono text-xs">config.json</span>. It deliberately does not default to
+          the forms server, which is a read-only catalogue of questionnaires rather than somewhere to
+          put transactional data.
+        </Alert>
+      ) : null}
 
       {error ? (
         <Alert tone="error" title="Could not create the request">

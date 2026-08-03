@@ -2,7 +2,13 @@ import { useState } from 'react';
 import { CheckCircle2, Loader2, Save } from 'lucide-react';
 import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
-import { declaredEndpoints, resolveDestinations, submitResponse, type SubmitResult } from '@/fhir/submit';
+import {
+  NO_DESTINATION_MESSAGE,
+  declaredEndpoints,
+  resolveDestinations,
+  submitResponse,
+  type SubmitResult
+} from '@/fhir/submit';
 import { taskCorrelationId } from '@/link/exchange';
 import FormRenderer from '@/components/FormRenderer';
 import { Button } from '@/components/ui/button';
@@ -36,10 +42,10 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
   const destinations = resolveDestinations({
     questionnaire,
-    responseServerUrl: config.responseServerUrl,
-    formsServerUrl: config.formsServerUrl
+    responseServerUrl: config.responseServerUrl
   });
   const isFormDeclared = declaredEndpoints(questionnaire).length > 0;
+  const canSave = destinations.length > 0;
 
   async function handleAccept() {
     setError(null);
@@ -50,8 +56,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           response,
           task,
           questionnaire,
-          responseServerUrl: config.responseServerUrl,
-          formsServerUrl: config.formsServerUrl
+          responseServerUrl: config.responseServerUrl
         })
       );
     } catch (cause) {
@@ -86,7 +91,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         </div>
 
         {results === null ? (
-          <Button onClick={handleAccept} disabled={isSaving} className="ml-auto">
+          <Button onClick={handleAccept} disabled={isSaving || !canSave} className="ml-auto">
             {isSaving ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (
@@ -97,7 +102,13 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         ) : null}
       </div>
 
-      {results === null ? (
+      {results === null && !canSave ? (
+        <Alert tone="warning" title="Nowhere to save this">
+          {NO_DESTINATION_MESSAGE}
+        </Alert>
+      ) : null}
+
+      {results === null && canSave ? (
         <Alert title={`Will be saved to ${destinations.length > 1 ? 'these servers' : 'this server'}`}>
           <ul className="space-y-0.5">
             {destinations.map((destination) => (

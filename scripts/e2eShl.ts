@@ -5,10 +5,11 @@
  *   filler:    GET the blob -> decrypt -> fill -> Bundle{QuestionnaireResponse, Task}
  *   requester: review -> POST /QuestionnaireResponse + POST /Task
  *
- * This WRITES to the public forms server (a Binary, a QuestionnaireResponse and a Task), so it is
- * opt-in and cleans up the Binary afterwards.
+ * The forms server is read ONLY (search, and resolve-by-canonical). Everything this test writes —
+ * Binary, Patient, QuestionnaireResponse, Task — goes to `SHL_WRITE_SERVER`, and is deleted again
+ * afterwards in reverse dependency order.
  *
- *   npm run check:e2e-shl
+ *   SHL_WRITE_SERVER=https://your-server/fhir npm run check:e2e-shl
  */
 import type { Questionnaire, QuestionnaireResponse } from 'fhir/r4';
 import { fetchQuestionnaireByCanonical, searchQuestionnaires } from '../src/fhir/formsServer';
@@ -29,6 +30,33 @@ import { chooseErrorCorrectionLevel } from '../src/link/qrCapacity';
 const FORMS_SERVER = 'https://smartforms.csiro.au/api/fhir';
 const BASE_URL = 'https://links.example.org';
 
+/**
+ * Where this test is allowed to write. Never the forms server — that is a read-only catalogue, and
+ * an earlier version of this script left test Patients, Tasks and QuestionnaireResponses in it.
+ *
+ *   SHL_WRITE_SERVER=https://your-server/fhir npm run check:e2e-shl
+ */
+const WRITE_SERVER = process.env.SHL_WRITE_SERVER;
+
+if (!WRITE_SERVER) {
+  console.log(
+    'Skipped: set SHL_WRITE_SERVER to a FHIR server this test may write to.\n' +
+      '  It creates a Binary, a Patient, a QuestionnaireResponse and a Task, and cleans up after itself.\n' +
+      `  It must NOT be the forms server (${FORMS_SERVER}), which is a read-only catalogue.\n\n` +
+      '  SHL_WRITE_SERVER=https://your-server/fhir npm run check:e2e-shl'
+  );
+  process.exit(0);
+}
+
+if (WRITE_SERVER.replace(/\/+$/, '') === FORMS_SERVER) {
+  console.error(
+    `Refusing to run: SHL_WRITE_SERVER is the forms server (${FORMS_SERVER}).\n` +
+      'That server is a read-only catalogue of questionnaires; writing test data into it pollutes a\n' +
+      'shared resource other people search.'
+  );
+  process.exit(1);
+}
+
 let failures = 0;
 let total = 0;
 
@@ -42,7 +70,8 @@ function check(name: string, condition: boolean, detail = '') {
 
 const created: string[] = [];
 
-console.log(`forms server: ${FORMS_SERVER}\n`);
+console.log(`forms server (read only): ${FORMS_SERVER}`);
+console.log(`write server:            ${WRITE_SERVER}\n`);
 console.log('--- requester: build the request ---');
 
 // Pick a small-ish renderable form with a canonical url.
@@ -60,17 +89,35 @@ console.log(`        ${picked.url}${picked.version ? `|${picked.version}` : ''}`
  * before a QuestionnaireResponse can name it. Create one to exercise the realistic path; the
  * unresolvable-subject case is asserted separately at the end.
  */
-const patientResponse = await fetch(`${FORMS_SERVER}/Patient`, {
+const runId = crypto.randomUUID();
+
+const patientResponse = await fetch(`${WRITE_SERVER}/Patient`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/fhir+json', Accept: 'application/fhir+json' },
   body: JSON.stringify({
     resourceType: 'Patient',
+    /*
+     * Unique per run. Some servers reject byte-identical creates outright
+     * (`HAPI-2840: Can not create resource duplicating existing resource`), and a run-scoped
+     * identifier also makes leftovers traceable if cleanup ever fails.
+     */
+    identifier: [{ system: 'urn:smart-forms-health-links:e2e', value: runId }],
     name: [{ family: 'Test', given: ['SHL E2E'] }]
   })
 });
-const patientId = ((await patientResponse.json()) as { id?: string }).id;
+const patientBody = await patientResponse.text();
+let patientId: string | undefined;
+try {
+  patientId = (JSON.parse(patientBody) as { id?: string }).id;
+} catch {
+  // Fall through to the diagnostic below.
+}
+
 if (!patientId) {
-  console.error('Could not create a test Patient.');
+  console.error(
+    `Could not create a test Patient on ${WRITE_SERVER} ` +
+      `(${patientResponse.status} ${patientResponse.statusText}).\n${patientBody.slice(0, 600)}`
+  );
   process.exit(1);
 }
 const subjectReference = `Patient/${patientId}`;
@@ -84,7 +131,7 @@ check('request/isRequestBundle', isRequestBundle(requestBundle));
 check('request/hasCorrelationId', taskCorrelationId(requestTask) !== undefined, taskCorrelationId(requestTask));
 
 const questionnaireBytes = Buffer.byteLength(JSON.stringify(picked));
-const blobStore = fhirBinaryBlobStore(FORMS_SERVER);
+const blobStore = fhirBinaryBlobStore(WRITE_SERVER);
 
 const requestLink = await shlCodec.encode(
   { bundle: requestBundle, label: picked.title ?? 'Questionnaire' },
@@ -100,7 +147,8 @@ const binaryUrl = JSON.parse(
 created.push(binaryUrl);
 
 console.log(`  questionnaire: ${questionnaireBytes} bytes  ->  link: ${Buffer.byteLength(requestLink)} bytes`);
-check('request/blobHostedOnFormsServer', binaryUrl.startsWith(`${FORMS_SERVER}/Binary/`), binaryUrl);
+check('request/blobHostedOnWriteServer', binaryUrl.startsWith(`${WRITE_SERVER}/Binary/`), binaryUrl);
+check('request/blobNotOnFormsServer', !binaryUrl.startsWith(FORMS_SERVER), 'the catalogue must never be written to');
 check(
   'request/blobUrlIsHttps',
   binaryUrl.startsWith('https://'),
@@ -188,14 +236,14 @@ const resolved = await fetchQuestionnaireByCanonical(
 );
 check('review/resolvesQuestionnaire', resolved.url === picked.url, resolved.url);
 
-const destinations = resolveDestinations({ questionnaire: resolved, formsServerUrl: FORMS_SERVER });
+const destinations = resolveDestinations({ questionnaire: resolved, responseServerUrl: WRITE_SERVER });
 check('review/destination', destinations.length === 1, destinations.join(', '));
 
 const results = await submitResponse({
   response: parsedResponse.response,
   task: parsedResponse.task,
   questionnaire: resolved,
-  formsServerUrl: FORMS_SERVER
+  responseServerUrl: WRITE_SERVER
 });
 
 for (const result of results) {
@@ -208,7 +256,7 @@ for (const result of results) {
   if (result.responseId) {
     // Confirm it really landed, and that the Task points at the real id rather than a urn:uuid.
     const stored = (await (
-      await fetch(`${FORMS_SERVER}/QuestionnaireResponse/${result.responseId}`, {
+      await fetch(`${WRITE_SERVER}/QuestionnaireResponse/${result.responseId}`, {
         headers: { Accept: 'application/fhir+json' }
       })
     ).json()) as QuestionnaireResponse;
@@ -216,7 +264,7 @@ for (const result of results) {
 
     if (result.taskId) {
       const storedTask = (await (
-        await fetch(`${FORMS_SERVER}/Task/${result.taskId}`, {
+        await fetch(`${WRITE_SERVER}/Task/${result.taskId}`, {
           headers: { Accept: 'application/fhir+json' }
         })
       ).json()) as { output?: { valueReference?: { reference?: string } }[] };
@@ -240,7 +288,7 @@ console.log('\n--- failure mode: a subject the requester does not know ---');
 const strangerResults = await submitResponse({
   response: { ...parsedResponse.response, subject: { reference: 'Patient/does-not-exist' } },
   questionnaire: resolved,
-  formsServerUrl: FORMS_SERVER
+  responseServerUrl: WRITE_SERVER
 });
 
 const strangerError = strangerResults[0]?.error ?? '';
@@ -251,12 +299,41 @@ check(
   strangerError
 );
 
-// Tidy up the Binary and the test Patient; the QuestionnaireResponse and Task are left as evidence.
-for (const url of created) {
-  await fetch(url, { method: 'DELETE' }).catch(() => undefined);
+console.log('\n--- cleanup ---');
+
+/*
+ * Delete in reverse dependency order. The server enforces referential integrity on delete too:
+ *
+ *   409: Unable to delete Patient/x because at least one resource has a reference to this resource.
+ *        First reference found was resource QuestionnaireResponse/y in path QuestionnaireResponse.subject
+ *
+ * An earlier version swallowed that with `.catch(() => undefined)` and silently left test Patients
+ * behind, so failures are reported here rather than ignored.
+ */
+const toDelete = [
+  ...results.filter((r) => r.taskId).map((r) => `${WRITE_SERVER}/Task/${r.taskId}`),
+  ...results
+    .filter((r) => r.responseId)
+    .map((r) => `${WRITE_SERVER}/QuestionnaireResponse/${r.responseId}`),
+  ...created,
+  `${WRITE_SERVER}/${subjectReference}`
+];
+
+let deleted = 0;
+for (const url of toDelete) {
+  try {
+    const response = await fetch(url, { method: 'DELETE' });
+    if (response.ok) {
+      deleted++;
+    } else {
+      console.log(`  could not delete ${url} — ${response.status} ${response.statusText}`);
+    }
+  } catch (cause) {
+    console.log(`  could not delete ${url} — ${cause instanceof Error ? cause.message : cause}`);
+  }
 }
-await fetch(`${FORMS_SERVER}/${subjectReference}`, { method: 'DELETE' }).catch(() => undefined);
-console.log(`\ncleaned up ${created.length} Binary blob(s) and the test Patient`);
+
+check('cleanup/allRemoved', deleted === toDelete.length, `${deleted}/${toDelete.length} deleted`);
 
 console.log(
   failures === 0 ? `\nAll ${total} checks passed.` : `\n${failures} of ${total} check(s) failed.`

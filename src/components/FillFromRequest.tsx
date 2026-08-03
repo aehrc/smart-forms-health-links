@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { Link2, Loader2, WifiOff } from 'lucide-react';
 import type { Questionnaire, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
-import { createOfflineResponseLink, createResponseLink } from '@/link/createLink';
+import {
+  canCreateHealthLinks,
+  createOfflineResponseLink,
+  createResponseLink
+} from '@/link/createLink';
 import { taskCorrelationId } from '@/link/exchange';
 import FormRenderer from '@/components/FormRenderer';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
@@ -55,6 +59,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
   }
 
   const correlationId = taskCorrelationId(task);
+  const canHost = canCreateHealthLinks(config);
 
   return (
     <div className="space-y-4">
@@ -86,8 +91,12 @@ export default function FillFromRequest(props: FillFromRequestProps) {
           <Button
             variant="outline"
             onClick={() => handleReturn('shl')}
-            disabled={pending !== null}
-            title="Encrypted and hosted — no size limit, but requires storage">
+            disabled={pending !== null || !canHost}
+            title={
+              canHost
+                ? 'Encrypted and hosted — no size limit, but requires storage'
+                : 'Needs blobServerUrl in config.json'
+            }>
             {pending === 'shl' ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (

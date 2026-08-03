@@ -4,6 +4,7 @@
   "linkBaseUrl": null,
   "linkCodec": "shl",
   "responseServerUrl": null,
+  "blobServerUrl": null,
   "blobStore": "fhir-binary",
   "shlManifestUrl": null
 }

@@ -11,7 +11,8 @@ import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
  * Destination resolution, in order:
  *   1. `sdc-questionnaire-endpoint` on the Questionnaire — the standard, form-authored answer
  *   2. `responseServerUrl` from config
- *   3. `formsServerUrl` from config
+ *
+ * There is no third step. `formsServerUrl` is a read-only catalogue and is never a write target.
  */
 
 /**
@@ -39,14 +40,18 @@ export function declaredEndpoints(questionnaire: Questionnaire | undefined): str
 export interface ResolveDestinationsOptions {
   questionnaire?: Questionnaire;
   responseServerUrl?: string | null;
-  formsServerUrl: string;
 }
 
 /**
- * Work out where the response should go.
+ * Work out where the response should go. Empty means "not configured".
  *
  * Returns every declared endpoint when the Questionnaire names them, because the SDC extension says
- * the response goes to all of them — not just the first.
+ * the response goes to all of them, not just the first.
+ *
+ * There is deliberately **no fallback to the forms server**. That server is a read-only catalogue:
+ * smart-forms only ever reads Questionnaires from it and writes responses to its SMART launch server
+ * instead. Defaulting here would quietly push patient data into a shared reference library, so an
+ * unset destination is an error the user sees rather than a guess.
  */
 export function resolveDestinations(options: ResolveDestinationsOptions): string[] {
   const declared = declaredEndpoints(options.questionnaire);
@@ -54,8 +59,13 @@ export function resolveDestinations(options: ResolveDestinationsOptions): string
     return declared;
   }
 
-  return [options.responseServerUrl ?? options.formsServerUrl];
+  return options.responseServerUrl ? [options.responseServerUrl] : [];
 }
+
+export const NO_DESTINATION_MESSAGE =
+  'No destination is configured for completed responses. Set `responseServerUrl` in config.json, ' +
+  'or give the Questionnaire an sdc-questionnaire-endpoint extension. It deliberately does not ' +
+  'default to the forms server, which is a read-only catalogue.';
 
 export interface SubmitResult {
   serverUrl: string;
@@ -143,7 +153,6 @@ export interface SubmitOptions {
   task?: Task;
   questionnaire?: Questionnaire;
   responseServerUrl?: string | null;
-  formsServerUrl: string;
 }
 
 /**
@@ -158,6 +167,10 @@ export interface SubmitOptions {
  */
 export async function submitResponse(options: SubmitOptions): Promise<SubmitResult[]> {
   const destinations = resolveDestinations(options);
+
+  if (destinations.length === 0) {
+    throw new Error(NO_DESTINATION_MESSAGE);
+  }
 
   return Promise.all(
     destinations.map(async (serverUrl): Promise<SubmitResult> => {

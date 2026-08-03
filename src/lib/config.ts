@@ -32,20 +32,29 @@ export interface AppConfig {
   linkCodec: LinkCodecId;
 
   /**
-   * Where reviewed QuestionnaireResponses are written.
+   * Where reviewed QuestionnaireResponses and their Tasks are written.
    *
-   * A Questionnaire's own `sdc-questionnaire-endpoint` extension takes precedence over this; this is
-   * the fallback, and falls back again to `formsServerUrl` when null.
+   * Deliberately has **no fallback**. `formsServerUrl` is a read-only catalogue — smart-forms itself
+   * only ever issues `GET Questionnaire` and `$assemble` against it, and writes responses to the
+   * SMART launch server instead. This app has no launch context and therefore no such server, so the
+   * write target has to be stated rather than guessed. When null, the app refuses to write and says
+   * why.
+   *
+   * A Questionnaire's own `sdc-questionnaire-endpoint` extension still outranks this.
    */
   responseServerUrl: string | null;
 
   /**
-   * Where SMART Health Link payloads are hosted.
+   * Where SMART Health Link payloads are hosted, as FHIR `Binary` resources.
    *
-   * `fhir-binary` stores them as FHIR `Binary` resources on `formsServerUrl` — no separate
-   * infrastructure. Safe on a public server because the payload is a JWE and the key travels only
-   * inside the link, which is the untrusted-host model SHL is built around.
+   * Also no fallback, and for the same reason: blobs are transactional data and do not belong in the
+   * forms catalogue. Any FHIR server accepting `Binary` create/read will do — it need not be trusted,
+   * because the payload is a JWE and the key travels only inside the link, which is the untrusted-host
+   * model SHL is built around.
    */
+  blobServerUrl: string | null;
+
+  /** How SHL payloads are stored. Only FHIR `Binary` is implemented. */
   blobStore: 'fhir-binary';
 
   /**
@@ -60,7 +69,9 @@ export const FALLBACK_CONFIG: AppConfig = {
   terminologyServerUrl: 'https://r4.ontoserver.csiro.au/fhir',
   linkBaseUrl: null,
   linkCodec: 'shl',
+  // Null on purpose: writing must be configured, never inferred. See the field docs above.
   responseServerUrl: null,
+  blobServerUrl: null,
   blobStore: 'fhir-binary',
   shlManifestUrl: null
 };
@@ -90,6 +101,7 @@ function isAppConfig(value: unknown): value is AppConfig {
     (candidate.linkBaseUrl === null || isValidUrl(candidate.linkBaseUrl)) &&
     (candidate.linkCodec === 'bespoke' || candidate.linkCodec === 'shl') &&
     (candidate.responseServerUrl === null || isValidUrl(candidate.responseServerUrl)) &&
+    (candidate.blobServerUrl === null || isValidUrl(candidate.blobServerUrl)) &&
     candidate.blobStore === 'fhir-binary' &&
     (candidate.shlManifestUrl === null || isValidUrl(candidate.shlManifestUrl))
   );

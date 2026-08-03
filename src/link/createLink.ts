@@ -12,11 +12,29 @@ import { buildRequestBundle, buildResponseBundle } from './exchange';
  * codecs. This is the only part of the link layer that depends on `@aehrc/smart-forms-renderer`.
  */
 
-/** Where a SMART Health Link's encrypted payload gets hosted, per config. */
+/** Whether the app is configured to host SHL payloads at all. */
+export function canCreateHealthLinks(config: AppConfig): boolean {
+  return config.blobServerUrl !== null;
+}
+
+/**
+ * Where a SMART Health Link's encrypted payload gets hosted, per config.
+ *
+ * Note what this does *not* do: fall back to `formsServerUrl`. That server is a read-only
+ * catalogue — writing blobs into it would put transactional data in a shared reference library.
+ */
 export function resolveBlobStore(config: AppConfig): BlobStore {
+  if (!config.blobServerUrl) {
+    throw new Error(
+      'No `blobServerUrl` is configured, so there is nowhere to host the encrypted payload. ' +
+        'Set it in config.json — it deliberately does not default to the forms server, which is ' +
+        'a read-only catalogue.'
+    );
+  }
+
   switch (config.blobStore) {
     case 'fhir-binary':
-      return fhirBinaryBlobStore(config.formsServerUrl);
+      return fhirBinaryBlobStore(config.blobServerUrl);
   }
 }
 

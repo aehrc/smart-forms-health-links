@@ -158,16 +158,33 @@ different servers. Missing or malformed config falls back to the public CSIRO se
   "linkBaseUrl": null,
   "linkCodec": "shl",
   "responseServerUrl": null,
+  "blobServerUrl": null,
   "blobStore": "fhir-binary",
   "shlManifestUrl": null
 }
 ```
 
-- `linkBaseUrl: null` — use `window.location.origin`
-- `linkCodec` — which codec *creates* links; reading always accepts both
-- `responseServerUrl: null` — fall back to `formsServerUrl`. A Questionnaire's own
-  `sdc-questionnaire-endpoint` outranks this either way
-- `blobStore: "fhir-binary"` — host SHL payloads as `Binary` resources on `formsServerUrl`
+| | |
+| --- | --- |
+| `formsServerUrl` | **read only.** Questionnaire search and resolve-by-canonical. Never written to |
+| `responseServerUrl` | where reviewed responses and Tasks are written. **Required to save** |
+| `blobServerUrl` | where SHL payloads are hosted as `Binary`. **Required to create Health Links** |
+| `linkBaseUrl: null` | use `window.location.origin` |
+| `linkCodec` | which codec *creates* links; reading always accepts both |
+
+### Read and write are separate servers, with no fallback
+
+`formsServerUrl` is a **catalogue**. smart-forms only ever issues `GET Questionnaire` and `$assemble`
+against it and writes responses to its SMART launch server instead — see `saveQr.ts:133`, which posts
+to `smartClient.state.serverUrl`.
+
+This app has no launch context and therefore no such server, so the write targets are `null` by
+default and **deliberately do not fall back to `formsServerUrl`**. With them unset, the app explains
+what to configure instead of quietly putting patient data and encrypted blobs into a shared reference
+library. Both surfaces disable their action and say so.
+
+`blobServerUrl` need not be a trusted server — the payload is a JWE and the key travels only inside
+the link. Any FHIR server accepting `Binary` create/read will do.
 
 ## Notes
 
@@ -200,18 +217,24 @@ npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
 npm run check:roundtrip  # 42 checks: codecs, JWE, SHL — no network, no hosting
 npm run check:e2e        # bespoke path against the live forms server
-npm run check:e2e-shl    # 28 checks: the full SHL round trip, live. WRITES to the server
+
+# 30 checks: the full SHL round trip, live. Reads the forms server, writes only to SHL_WRITE_SERVER
+SHL_WRITE_SERVER=https://hapi.fhir.org/baseR4 npm run check:e2e-shl
 ```
 
 `check:roundtrip` covers the crypto properties that matter — a wrong key and a tampered ciphertext
 must both fail — plus the SHL codec against an in-memory blob store, so it needs neither network nor
 hosting.
 
-`check:e2e-shl` walks the entire loop against the live server: build a request, encrypt it, host it as
-a `Binary`, decode it as the filler would, answer it, and submit the result. It asserts that the
-hosted blob leaks no plaintext and that the stored Task points at the response's *real* id rather than
-a `urn:uuid`. It also asserts the failure mode below. It creates a `Binary` and a `Patient` (both
-cleaned up) and leaves a `QuestionnaireResponse` and `Task` behind as evidence, so it is opt-in.
+`check:e2e-shl` walks the entire loop live: build a request, encrypt it, host it as a `Binary`, decode
+it as the filler would, answer it, and submit the result. It asserts that the hosted blob leaks no
+plaintext, that the blob is **not** on the forms server, and that the stored Task points at the
+response's *real* id rather than a `urn:uuid`. It also asserts the unresolvable-subject failure mode
+below.
+
+It skips without `SHL_WRITE_SERVER`, and refuses to run if that is set to the forms server. Everything
+it creates — `Binary`, `Patient`, `QuestionnaireResponse`, `Task` — is deleted afterwards in reverse
+dependency order, and a failed delete is reported rather than swallowed.
 
 `check:roundtrip` imports fixtures from a sibling `../smart-forms` checkout. It is the only
 coupling between the repos, and it is dev-only.
