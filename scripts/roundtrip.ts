@@ -9,6 +9,8 @@
  * coupling between the two repos and it is dev-only — if the checkout is missing or moved, this
  * script fails to bundle but the app itself is unaffected.
  */
+import { readFileSync } from 'node:fs';
+import { FALLBACK_CONFIG, isAppConfig } from '../src/lib/config';
 import { bespokeCodec } from '../src/link/bespokeCodec';
 import { shlCodec } from '../src/link/shlCodec';
 import { bundleResponse, responseFromBundle, extractFragment } from '../src/link/codec';
@@ -106,6 +108,35 @@ for (const [label, bad] of [
   }
   check(`decode/${label}`, threw);
 }
+
+// ---------------------------------------------------------------------------
+// The shipped config must validate. A typo would otherwise only surface at runtime, as a silent
+// fall back to FALLBACK_CONFIG behind a console warning.
+// ---------------------------------------------------------------------------
+
+console.log('\nconfig\n');
+
+// Resolved from cwd, not import.meta.url: this script is bundled into node_modules/.cache first, so
+// a module-relative path would look there. npm scripts run from the package root.
+const shippedConfig: unknown = JSON.parse(
+  readFileSync(`${process.cwd()}/public/config.json`, 'utf8')
+);
+
+check('config/isValid', isAppConfig(shippedConfig), JSON.stringify(shippedConfig));
+
+if (isAppConfig(shippedConfig)) {
+  // The forms server is a read-only catalogue; writing there is the bug this guards against.
+  check(
+    'config/writeTargetsAreNotTheFormsServer',
+    shippedConfig.responseServerUrl !== shippedConfig.formsServerUrl &&
+      shippedConfig.blobServerUrl !== shippedConfig.formsServerUrl,
+    `responses -> ${shippedConfig.responseServerUrl}, blobs -> ${shippedConfig.blobServerUrl}`
+  );
+}
+
+// The fallback used when config.json is missing or malformed must NOT name a write target: silently
+// writing to some server because config failed to load is worse than refusing.
+check('config/fallbackHasNoWriteTargets', FALLBACK_CONFIG.responseServerUrl === null && FALLBACK_CONFIG.blobServerUrl === null);
 
 // ---------------------------------------------------------------------------
 // JWE (alg=dir, enc=A256GCM) — the crypto layer SMART Health Links requires.

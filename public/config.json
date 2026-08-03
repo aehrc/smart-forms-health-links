@@ -3,8 +3,8 @@
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
   "linkBaseUrl": null,
   "linkCodec": "shl",
-  "responseServerUrl": null,
-  "blobServerUrl": null,
+  "responseServerUrl": "https://hapi.fhir.org/baseR4",
+  "blobServerUrl": "https://hapi.fhir.org/baseR4",
   "blobStore": "fhir-binary",
   "shlManifestUrl": null
 }

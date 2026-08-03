@@ -157,12 +157,19 @@ different servers. Missing or malformed config falls back to the public CSIRO se
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
   "linkBaseUrl": null,
   "linkCodec": "shl",
-  "responseServerUrl": null,
-  "blobServerUrl": null,
+  "responseServerUrl": "https://hapi.fhir.org/baseR4",
+  "blobServerUrl": "https://hapi.fhir.org/baseR4",
   "blobStore": "fhir-binary",
   "shlManifestUrl": null
 }
 ```
+
+Writes go to the **public HAPI sandbox** out of the box, so the loop works with no setup. Two things
+that follows from: everything written there is **world-readable and periodically wiped**, so it is for
+demos only; and the CSIRO forms server stays read-only, which is the point of keeping the two apart.
+
+Point `responseServerUrl` at your own server for anything real. `blobServerUrl` can stay a server you
+do not control if you prefer — the payload is a JWE and the key never leaves the link.
 
 | | |
 | --- | --- |

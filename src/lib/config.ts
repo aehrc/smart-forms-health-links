@@ -89,7 +89,8 @@ function isValidUrl(value: unknown): value is string {
   }
 }
 
-function isAppConfig(value: unknown): value is AppConfig {
+/** Exported so tests can assert the shipped `public/config.json` actually validates. */
+export function isAppConfig(value: unknown): value is AppConfig {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
