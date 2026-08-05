@@ -1,8 +1,11 @@
 import { Navigate, Link as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
-import { QrCode, ScanLine } from 'lucide-react';
+import { ClipboardList, Inbox, QrCode, ScanLine, Users } from 'lucide-react';
 import FormList from './routes/FormList';
 import FillForm from './routes/FillForm';
 import RequestForm from './routes/RequestForm';
+import Requests from './routes/Requests';
+import ResponseList from './routes/ResponseList';
+import PatientList from './routes/PatientList';
 import ViewLink from './routes/ViewLink';
 import Scan from './routes/Scan';
 import { LINK_CODECS } from './link/registry';
@@ -20,7 +23,25 @@ function Header() {
           <QrCode className="h-5 w-5" aria-hidden />
           Smart Forms Health Links
         </RouterLink>
-        <nav className="ml-auto">
+        <nav className="ml-auto flex items-center gap-1">
+          <RouterLink
+            to="/patients"
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            <Users className="h-4 w-4" aria-hidden />
+            Patients
+          </RouterLink>
+          <RouterLink
+            to="/responses"
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            <ClipboardList className="h-4 w-4" aria-hidden />
+            Responses
+          </RouterLink>
+          <RouterLink
+            to="/requests"
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            <Inbox className="h-4 w-4" aria-hidden />
+            Sent requests
+          </RouterLink>
           <RouterLink
             to="/scan"
             className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
@@ -53,6 +74,9 @@ export default function App() {
           <Route path="/" element={<FormList />} />
           <Route path="/fill/:questionnaireId" element={<FillForm />} />
           <Route path="/request/:questionnaireId" element={<RequestForm />} />
+          <Route path="/requests" element={<Requests />} />
+          <Route path="/responses" element={<ResponseList />} />
+          <Route path="/patients" element={<PatientList />} />
           <Route path="/view" element={<ViewLink />} />
           <Route path="/scan" element={<Scan />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,24 +1,49 @@
-import { useState } from 'react';
-import { CheckCircle2, Loader2, Save } from 'lucide-react';
-import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, Loader2, Save, ShieldCheck } from 'lucide-react';
+import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
 import {
   NO_DESTINATION_MESSAGE,
   declaredEndpoints,
+  referenceResolves,
   resolveDestinations,
   submitResponse,
   type SubmitResult
 } from '@/fhir/submit';
 import { taskCorrelationId } from '@/link/exchange';
+import type { OutstandingRequest } from '@/lib/requestStore';
 import FormRenderer from '@/components/FormRenderer';
+import RawAnswers from '@/components/RawAnswers';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/alert';
 
 export interface ReviewResponseProps {
-  questionnaire: Questionnaire;
+  /**
+   * The form these answers were given against, when it could be resolved.
+   *
+   * Optional because a response cites whatever canonical the app that wrote it used, and on a
+   * shared server that is often a form this deployment's catalogue does not hold. The answers are
+   * the clinical content; the definition is presentation, so losing the latter degrades the display
+   * without blocking the review.
+   */
+  questionnaire?: Questionnaire;
+  /** Why the form could not be resolved, when it could not. */
+  questionnaireError?: string;
   response: QuestionnaireResponse;
   task?: Task;
+  /** Attribution that arrived with the answers, when the filler sent any. */
+  provenance?: Provenance;
+  /** The local request these answers came back for, when they match one this browser sent. */
+  matchedRequest?: OutstandingRequest;
   label?: string;
+  /** Called once the response has been written somewhere. */
+  onSaved?: () => void;
+}
+
+/** Whether the response carries a patient-asserted security label. */
+function isPatientAsserted(response: QuestionnaireResponse): boolean {
+  return (response.meta?.security ?? []).some((coding) => coding.code === 'PATAST');
 }
 
 /**
@@ -33,32 +58,104 @@ export interface ReviewResponseProps {
  * a person decides whether it enters the record.
  */
 export default function ReviewResponse(props: ReviewResponseProps) {
-  const { questionnaire, response, task, label } = props;
+  const {
+    questionnaire,
+    questionnaireError,
+    response,
+    task,
+    provenance,
+    matchedRequest,
+    label,
+    onSaved
+  } = props;
   const config = useConfig();
 
   const [results, setResults] = useState<SubmitResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  /*
+   * Patient reconciliation. A response from a third-party filler names a patient in *that* app's terms
+   * — Platypus sends its own local vault key — and a server enforcing referential integrity rejects the
+   * entire write with `HAPI-1094`. Probing first turns a confusing failure after the fact into a
+   * question the reviewer can actually answer.
+   */
+  const [subjectCheck, setSubjectCheck] = useState<'unknown' | 'checking' | 'resolves' | 'missing'>(
+    'unknown'
+  );
+  const [subjectOverride, setSubjectOverride] = useState('');
+  const [clearSubject, setClearSubject] = useState(false);
+
   const destinations = resolveDestinations({
     questionnaire,
     responseServerUrl: config.responseServerUrl
   });
-  const isFormDeclared = declaredEndpoints(questionnaire).length > 0;
+  const isFormDeclared = questionnaire !== undefined && declaredEndpoints(questionnaire).length > 0;
   const canSave = destinations.length > 0;
+
+  const originalSubject = response.subject?.reference;
+
+  useEffect(() => {
+    if (!originalSubject || destinations.length === 0) {
+      setSubjectCheck('unknown');
+      return;
+    }
+
+    let cancelled = false;
+    setSubjectCheck('checking');
+
+    // Probed against the first destination only. With several, the reviewer is told which one failed by
+    // the write itself; guessing at a reconciliation that satisfies all of them is not this step's job.
+    referenceResolves(destinations[0], originalSubject)
+      .then((resolves) => {
+        if (!cancelled) {
+          setSubjectCheck(resolves ? 'resolves' : 'missing');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSubjectCheck('unknown');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [originalSubject, destinations.join('|')]);
+
+  /** The response as it will actually be written, with any reconciliation applied. */
+  function reconciledResponse(): QuestionnaireResponse {
+    if (clearSubject) {
+      const { subject: _subject, ...rest } = response;
+      return rest;
+    }
+
+    const replacement = subjectOverride.trim();
+    if (replacement === '') {
+      return response;
+    }
+
+    return { ...response, subject: { ...response.subject, reference: replacement } };
+  }
+
+  const needsReconciliation = subjectCheck === 'missing';
+  const hasReconciliation = clearSubject || subjectOverride.trim() !== '';
 
   async function handleAccept() {
     setError(null);
     setIsSaving(true);
     try {
-      setResults(
-        await submitResponse({
-          response,
-          task,
-          questionnaire,
-          responseServerUrl: config.responseServerUrl
-        })
-      );
+      const submitted = await submitResponse({
+        response: reconciledResponse(),
+        task,
+        provenance,
+        questionnaire,
+        responseServerUrl: config.responseServerUrl
+      });
+      setResults(submitted);
+      if (submitted.some((result) => result.responseId)) {
+        onSaved?.();
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -75,14 +172,23 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       <div className="flex flex-wrap items-start gap-3">
         <div>
           <h1 className="text-xl font-semibold text-slate-900">
-            Review: {label ?? questionnaire.title ?? questionnaire.id}
+            Review:{' '}
+            {label ?? questionnaire?.title ?? matchedRequest?.label ?? questionnaire?.id ?? 'answers'}
           </h1>
           <p className="text-sm text-slate-500">
             Completed answers received.
-            {correlationId ? (
+            {matchedRequest ? (
               <>
                 {' '}
-                Request <span className="font-mono text-xs">{correlationId}</span>
+                Answering your request <strong>{matchedRequest.label}</strong>
+                {matchedRequest.subjectDisplay ? ` for ${matchedRequest.subjectDisplay}` : ''}, sent{' '}
+                {new Date(matchedRequest.createdAt).toLocaleDateString()}.
+              </>
+            ) : correlationId ? (
+              <>
+                {' '}
+                Request <span className="font-mono text-xs">{correlationId}</span> — not one this
+                browser sent, so there is no local record to match it against.
               </>
             ) : (
               ' No Task accompanied these answers, so they cannot be matched to a request.'
@@ -102,9 +208,87 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         ) : null}
       </div>
 
+      {isPatientAsserted(response) ? (
+        <Alert title="Patient-asserted answers">
+          <span className="inline-flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5 text-slate-500" aria-hidden />
+            These answers are labelled <span className="font-mono text-xs">PATAST</span> — recorded by
+            the person themselves rather than by a clinician.
+          </span>
+          <p className="mt-1">
+            The label {provenance ? 'and its Provenance are' : 'is'} preserved on save, so the record
+            keeps who said this.
+          </p>
+        </Alert>
+      ) : null}
+
       {results === null && !canSave ? (
         <Alert tone="warning" title="Nowhere to save this">
           {NO_DESTINATION_MESSAGE}
+        </Alert>
+      ) : null}
+
+      {results === null && needsReconciliation ? (
+        <Alert tone="warning" title="This patient does not exist on the destination server">
+          <p>
+            The answers name <span className="font-mono text-xs">{originalSubject}</span>, which{' '}
+            <span className="font-mono text-xs">{destinations[0]}</span> does not hold. A filler
+            identifies the patient in its own terms, so this is expected for answers from another app —
+            but the write will be rejected until it is reconciled.
+          </p>
+          <div className="mt-2 space-y-2">
+            {matchedRequest?.subjectReference ? (
+              <p>
+                This request was addressed to{' '}
+                <span className="font-mono text-xs">{matchedRequest.subjectReference}</span>
+                {matchedRequest.subjectDisplay ? ` (${matchedRequest.subjectDisplay})` : ''}.{' '}
+                <button
+                  type="button"
+                  className="underline underline-offset-2 hover:text-slate-900"
+                  onClick={() => {
+                    setSubjectOverride(matchedRequest.subjectReference!);
+                    setClearSubject(false);
+                  }}>
+                  Use that patient
+                </button>
+                .
+              </p>
+            ) : null}
+            <label className="block text-xs font-medium text-slate-700" htmlFor="subject-override">
+              Replace with a reference on that server
+            </label>
+            <Input
+              id="subject-override"
+              value={subjectOverride}
+              onChange={(event) => {
+                setSubjectOverride(event.target.value);
+                setClearSubject(false);
+              }}
+              placeholder="Patient/123"
+              aria-label="Replacement subject reference"
+            />
+            <label className="flex items-start gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                checked={clearSubject}
+                onChange={(event) => {
+                  setClearSubject(event.target.checked);
+                  if (event.target.checked) {
+                    setSubjectOverride('');
+                  }
+                }}
+                className="mt-0.5"
+              />
+              <span>
+                Save without a subject instead. The answers will be stored{' '}
+                <strong>with no record of who they are about</strong>, which is rarely what you want —
+                matching the patient is a clinical decision, not a technical one.
+              </span>
+            </label>
+          </div>
+          {!hasReconciliation ? (
+            <p className="mt-2">Saving now will attempt the write as-is and report the rejection.</p>
+          ) : null}
         </Alert>
       ) : null}
 
@@ -120,7 +304,10 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           <p className="mt-1">
             {isFormDeclared
               ? 'Declared by the questionnaire itself via sdc-questionnaire-endpoint.'
-              : 'From app configuration; this questionnaire does not declare an endpoint.'}
+              : questionnaire
+                ? 'From app configuration; this questionnaire does not declare an endpoint.'
+                : 'From app configuration. The form definition could not be resolved, so its ' +
+                  'sdc-questionnaire-endpoint — if it declares one — was not consulted.'}
           </p>
         </Alert>
       ) : null}
@@ -134,6 +321,11 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 <span className="font-mono text-xs">
                   QuestionnaireResponse/{result.responseId}
                   {result.taskId ? ` · Task/${result.taskId}` : ' · Task not saved'}
+                  {provenance
+                    ? result.provenanceId
+                      ? ` · Provenance/${result.provenanceId}`
+                      : ' · Provenance not saved'
+                    : ''}
                 </span>
               </li>
             ))}
@@ -159,14 +351,29 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         </Alert>
       ) : null}
 
-      <div className="form-surface">
-        <FormRenderer
-          questionnaire={questionnaire}
-          questionnaireResponse={response}
-          terminologyServerUrl={config.terminologyServerUrl}
-          readOnly
-        />
-      </div>
+      {questionnaire ? (
+        <div className="form-surface">
+          <FormRenderer
+            questionnaire={questionnaire}
+            questionnaireResponse={response}
+            terminologyServerUrl={config.terminologyServerUrl}
+            readOnly
+          />
+        </div>
+      ) : (
+        <>
+          <Alert tone="warning" title="The form definition could not be resolved">
+            <p>
+              {questionnaireError ??
+                'The form these answers were given against could not be found.'}{' '}
+              That is common for answers from another app — a response cites whatever canonical the
+              app that wrote it used. The answers are shown as stored instead, and can still be
+              saved: they are the clinical content, and the definition is presentation.
+            </p>
+          </Alert>
+          <RawAnswers response={response} />
+        </>
+      )}
     </div>
   );
 }

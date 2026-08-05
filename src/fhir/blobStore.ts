@@ -28,7 +28,16 @@ function trimTrailingSlash(url: string): string {
  * Verified against the forms server (HAPI FHIR 8.10.0): `GET /Binary/{id}` returns the raw bytes
  * with the stored content type for any `Accept` that is not a FHIR media type — including no
  * `Accept` header at all. Only `Accept: application/fhir+json` yields the `Binary` resource
- * wrapper. That is exactly the behaviour the SHL `U` flag needs.
+ * wrapper.
+ *
+ * ## ⚠️ KNOWN DEFECT: this is not a conformant `U`-flag host
+ *
+ * That verification checked the wrong request. The SHL spec makes a `recipient` query parameter
+ * **required** on the `U`-flag `GET`, and HAPI answers an unrecognised parameter with a `400` rather
+ * than ignoring it — so a link pointing here is unopenable by any conformant receiver, while our own
+ * viewer works because it omits the parameter. Fine for local development against a sandbox FHIR
+ * server; **not** fine for a link anyone else has to open. See `docs/u-flag-hosting.md` for the
+ * evidence and what replacing this involves.
  *
  * This works because SHL assumes an untrusted host: the payload is a JWE and the key travels only
  * inside the link, so a public server never sees plaintext.

@@ -1,6 +1,6 @@
 import type { Bundle } from 'fhir/r4';
-import type { EncodeOptions, LinkCodec, LinkContent } from './codec';
-import { extractFragment } from './codec';
+import type { DecodeOptions, EncodeOptions, LinkCodec, LinkContent } from './codec';
+import { bundleFromJson, extractFragment, mergeBundles, PasscodeRequiredError } from './codec';
 import { decodeUtf8, encodeUtf8, fromBase64Url, toBase64Url } from './binary';
 import { decryptJwe, encryptJwe, generateKey, keyFromBase64Url, keyToBase64Url } from './jwe';
 import { JOSE_CONTENT_TYPE } from '@/fhir/blobStore';
@@ -25,8 +25,19 @@ import { JOSE_CONTENT_TYPE } from '@/fhir/blobStore';
  *
  * ## What this codec reads
  *
- * Both hosting modes, because a link we read was probably not written by us. A filler app that hosts
- * its payload behind a proper manifest endpoint produces a `U`-less link, and that has to work here.
+ * Both hosting modes, because a link we read was probably not written by us — and, increasingly,
+ * *is* not: the primary return path is now a filler minting its own link and the requester scanning
+ * it back. A filler that hosts its payload behind a proper manifest endpoint produces a `U`-less
+ * link, and that has to work here. Concretely, reading is tolerant in four ways:
+ *
+ *  - a manifest file may hold a bare FHIR resource rather than a Bundle, and is normalised;
+ *  - *every* `application/fhir+json` file is read and merged, not just the first, because a payload
+ *    split across files (answers here, attribution there) is one payload, not a choice;
+ *  - a `P`-flagged link asks for a passcode instead of failing; and
+ *  - a file that will not decrypt costs its own content, not the whole link.
+ *
+ * What was dropped is reported in {@link LinkContent.warnings} rather than the console: the only
+ * person who can judge whether a skipped file mattered is the one reading the answers.
  *
  * ## What SHL does not do
  *
@@ -109,6 +120,11 @@ async function fetchJwe(url: string): Promise<string> {
   /*
    * Deliberately no Accept header. A FHIR server hands back a `Binary` resource wrapper for
    * `application/fhir+json`, whereas the spec expects an unadorned GET to yield the JWE itself.
+   *
+   * ⚠️ KNOWN DEFECT: the spec also makes `recipient` *required* on this GET, and we send it only on
+   * the manifest path below. Omitting it here is non-conformant and fails against a host that
+   * insists on it — and it is why the unopenable links described in `docs/u-flag-hosting.md` still
+   * work in our own viewer. Fix both halves together.
    */
   const response = await fetch(url);
   if (!response.ok) {
@@ -121,10 +137,13 @@ async function fetchJwe(url: string): Promise<string> {
 }
 
 /** Fetch the manifest, for links without the `U` flag. */
-async function fetchManifest(payload: ShlPayload, passcode?: string): Promise<ManifestFile[]> {
-  const body: Record<string, unknown> = { recipient: RECIPIENT };
-  if (passcode !== undefined) {
-    body.passcode = passcode;
+async function fetchManifest(
+  payload: ShlPayload,
+  options: DecodeOptions = {}
+): Promise<ManifestFile[]> {
+  const body: Record<string, unknown> = { recipient: options.recipient ?? RECIPIENT };
+  if (options.passcode !== undefined) {
+    body.passcode = options.passcode;
   }
 
   const response = await fetch(payload.url, {
@@ -141,11 +160,11 @@ async function fetchManifest(payload: ShlPayload, passcode?: string): Promise<Ma
       // The spec defines this body, but don't fail the error path over a missing one.
     }
 
-    throw new Error(
-      remaining === undefined
-        ? 'This link requires a passcode.'
-        : `Incorrect passcode. ${remaining} attempt(s) remaining.`
-    );
+    // Typed, so the caller can prompt rather than dead-end. See `PasscodeRequiredError`.
+    throw new PasscodeRequiredError({
+      remainingAttempts: remaining,
+      wasAttempted: options.passcode !== undefined
+    });
   }
 
   if (!response.ok) {
@@ -172,22 +191,69 @@ async function readManifestFile(file: ManifestFile, key: Uint8Array): Promise<st
   return decodeUtf8(await decryptJwe(jwe, key));
 }
 
-function bundleFromJson(text: string): Bundle {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (cause) {
-    throw new Error('Decrypted payload was not valid JSON.', { cause });
-  }
+/**
+ * Whether a manifest file holds FHIR JSON.
+ *
+ * Compared after stripping any `;charset=…` parameter, because `application/fhir+json;charset=utf-8`
+ * is the same content type and a strict equality check silently discards it.
+ */
+function isFhirJson(contentType: string | undefined): boolean {
+  return (contentType ?? '').split(';')[0].trim().toLowerCase() === FHIR_JSON;
+}
 
-  const resourceType = (parsed as { resourceType?: string }).resourceType;
-  if (resourceType !== 'Bundle') {
-    throw new Error(
-      `Expected a FHIR Bundle in the link payload, got ${resourceType ?? 'unknown content'}.`
+function describeError(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Read every FHIR file in a manifest and merge them into one Bundle.
+ *
+ * Failure policy is per-file: keep what decoded, note what did not, and throw only when *nothing*
+ * did. One corrupt file in a five-file manifest must not hide the answers in the other four — but a
+ * manifest where everything failed has to be an error, or the caller gets an empty Bundle and
+ * reports "no answers" for what is really a broken link.
+ */
+async function readManifestBundle(
+  files: ManifestFile[],
+  key: Uint8Array
+): Promise<{ bundle: Bundle; warnings: string[] }> {
+  const warnings: string[] = [];
+
+  const skipped = files.filter((file) => !isFhirJson(file.contentType));
+  if (skipped.length > 0) {
+    warnings.push(
+      `Ignored ${skipped.length} file(s) this app cannot render as a form: ` +
+        `${skipped.map((file) => file.contentType || 'unknown type').join(', ')}.`
     );
   }
 
-  return parsed as Bundle;
+  const fhirFiles = files.filter((file) => isFhirJson(file.contentType));
+  if (fhirFiles.length === 0) {
+    const seen = files.map((file) => file.contentType).join(', ') || 'none';
+    throw new Error(
+      `This link contains no FHIR content that can be rendered as a form (content types: ${seen}).`
+    );
+  }
+
+  const bundles: Bundle[] = [];
+  let firstCause: unknown;
+
+  for (const [index, file] of fhirFiles.entries()) {
+    try {
+      bundles.push(bundleFromJson(await readManifestFile(file, key)));
+    } catch (cause) {
+      firstCause ??= cause;
+      warnings.push(`File ${index + 1} of ${fhirFiles.length} could not be read: ${describeError(cause)}`);
+    }
+  }
+
+  if (bundles.length === 0) {
+    throw new Error(`Nothing in this link could be read. ${describeError(firstCause)}`, {
+      cause: firstCause
+    });
+  }
+
+  return { bundle: mergeBundles(bundles), warnings };
 }
 
 export const shlCodec: LinkCodec = {
@@ -233,7 +299,7 @@ export const shlCodec: LinkCodec = {
     return `${base}/view#${PREFIX}${encoded}`;
   },
 
-  async decode(linkOrFragment: string): Promise<LinkContent> {
+  async decode(linkOrFragment: string, options: DecodeOptions = {}): Promise<LinkContent> {
     const fragment = extractFragment(linkOrFragment);
     if (!fragment.startsWith(PREFIX)) {
       throw new Error('Not a SMART Health Link.');
@@ -241,30 +307,24 @@ export const shlCodec: LinkCodec = {
 
     const payload = decodePayload(fragment);
     const key = keyFromBase64Url(payload.key);
+    const flag = payload.flag ?? '';
 
     // `U` means the url resolves straight to a single encrypted file; anything else means a manifest.
-    if ((payload.flag ?? '').includes('U')) {
+    if (flag.includes('U')) {
       const plaintext = decodeUtf8(await decryptJwe(await fetchJwe(payload.url), key));
       return { bundle: bundleFromJson(plaintext), label: payload.label };
     }
 
-    const files = await fetchManifest(payload);
-    const fhirFiles = files.filter((file) => file.contentType === FHIR_JSON);
-
-    if (fhirFiles.length === 0) {
-      const seen = files.map((file) => file.contentType).join(', ') || 'none';
-      throw new Error(
-        `This link contains no FHIR content that can be rendered as a form (content types: ${seen}).`
-      );
+    /*
+     * Ask before knocking. A manifest server is entitled to count a passcode-less request as a
+     * failed attempt and lock the link permanently, so burning one of a patient's attempts to
+     * discover a fact the payload already states would be inexcusable.
+     */
+    if (flag.includes('P') && options.passcode === undefined) {
+      throw new PasscodeRequiredError({ wasAttempted: false });
     }
 
-    if (files.length > 1) {
-      // Better a console note than silently dropping content the sharer meant to send.
-      console.warn(
-        `Link contained ${files.length} files; using the first ${FHIR_JSON} and ignoring the rest.`
-      );
-    }
-
-    return { bundle: bundleFromJson(await readManifestFile(fhirFiles[0], key)), label: payload.label };
+    const { bundle, warnings } = await readManifestBundle(await fetchManifest(payload, options), key);
+    return { bundle, label: payload.label, warnings: warnings.length > 0 ? warnings : undefined };
   }
 };

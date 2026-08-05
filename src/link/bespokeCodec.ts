@@ -4,7 +4,7 @@ import { decodeUtf8, deflateRaw, encodeUtf8, fromBase64Url, inflateRaw, toBase64
 import type { Bundle } from 'fhir/r4';
 
 /**
- * Phase 1 codec: the whole payload travels inside the URL fragment. No backend, no manifest.
+ * Legacy codec, **decode-only**: the whole payload travels inside the URL fragment.
  *
  * Link shape:  `https://host/view#sfhl:/<base64url(deflate-raw(json))>`
  *
@@ -12,8 +12,11 @@ import type { Bundle } from 'fhir/r4';
  * third-party SHL wallets will not understand it — see `shlCodec.ts`.
  *
  * SECURITY: the payload is compressed, not encrypted. Anyone who photographs the QR or sees the URL
- * can read the answers. That is acceptable for demos and self-scanning; it is not acceptable for
- * real patient data, which is exactly what Phase 2 addresses.
+ * can read the answers. That is why nothing mints these any more: it existed as the only return path
+ * open to an app with no server of its own, and the SHL codec now fills that role properly.
+ *
+ * Links already in the wild keep opening, which is the whole point of retiring a transport rather
+ * than deleting it — `decodingCodec` still considers this codec, `encodingCodec` refuses it.
  */
 
 const PREFIX = 'sfhl:/';
@@ -39,11 +42,17 @@ function isBespokePayload(value: unknown): value is BespokePayload {
 export const bespokeCodec: LinkCodec = {
   id: 'bespoke',
   prefix: PREFIX,
+  decodeOnly: true,
 
   canDecode(linkOrFragment: string): boolean {
     return extractFragment(linkOrFragment).startsWith(PREFIX);
   },
 
+  /**
+   * @deprecated Nothing in the app mints `sfhl:/` links; `encodingCodec` refuses this codec. It is
+   * kept because `check:roundtrip` and `check:e2e` need to *produce* links in order to assert that
+   * decoding them still works, and coverage of a retired format is exactly what must not lapse.
+   */
   async encode(content: LinkContent, options: EncodeOptions): Promise<string> {
     const payload: BespokePayload = {
       v: VERSION,

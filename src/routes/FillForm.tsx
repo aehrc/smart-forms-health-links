@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Link2, Loader2 } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
-import { createOfflineResponseLink } from '@/link/createLink';
+import { canCreateHealthLinks, createResponseLink } from '@/link/createLink';
 import FormRenderer from '@/components/FormRenderer';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,9 @@ export default function FillForm() {
 
   const [link, setLink] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+
+  const canHost = canCreateHealthLinks(config);
 
   const {
     data: questionnaire,
@@ -34,13 +37,16 @@ export default function FillForm() {
     }
 
     setLinkError(null);
+    setIsCreating(true);
     try {
       // No Task here: this route fills a form directly rather than answering a request, so there is
       // nothing to correlate against.
-      setLink(await createOfflineResponseLink(questionnaire, config));
+      setLink(await createResponseLink(questionnaire, config));
     } catch (cause) {
       setLink(null);
       setLinkError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsCreating(false);
     }
   }
 
@@ -83,11 +89,28 @@ export default function FillForm() {
         <h1 className="text-xl font-semibold text-slate-900">
           {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
         </h1>
-        <Button onClick={handleCreateLink} className="ml-auto">
-          <Link2 className="h-4 w-4" aria-hidden />
-          Create link
+        <Button
+          onClick={handleCreateLink}
+          disabled={isCreating || !canHost}
+          title={canHost ? undefined : 'Needs blobServerUrl in config.json'}
+          className="ml-auto">
+          {isCreating ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          ) : (
+            <Link2 className="h-4 w-4" aria-hidden />
+          )}
+          {isCreating ? 'Creating…' : 'Create link'}
         </Button>
       </div>
+
+      {!canHost ? (
+        <Alert tone="warning" title="Links cannot be created">
+          Answers are shared as a SMART Health Link, whose encrypted payload has to be hosted
+          somewhere. Set <span className="font-mono text-xs">blobServerUrl</span> in{' '}
+          <span className="font-mono text-xs">config.json</span>. The form below still works; there is
+          just nowhere to put the result.
+        </Alert>
+      ) : null}
 
       {linkError ? (
         <Alert tone="error" title="Could not create link">

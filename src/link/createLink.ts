@@ -1,11 +1,22 @@
 import type { Questionnaire, Task } from 'fhir/r4';
 import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
 import type { AppConfig } from '@/lib/config';
-import { resolveLinkBaseUrl } from '@/lib/config';
+import {
+  canTrackRequests,
+  canUseEncryptedReply,
+  canUseServerReturn,
+  resolveExpiry,
+  resolveLinkBaseUrl
+} from '@/lib/config';
 import { fhirBinaryBlobStore, type BlobStore } from '@/fhir/blobStore';
+import { declareResponseEndpoint, publishRequestTask } from '@/fhir/submit';
 import { LINK_CODECS } from './registry';
 import { defaultLabel, encodingCodec, ensureQuestionnaireCanonical } from './codec';
-import { buildRequestBundle, buildResponseBundle } from './exchange';
+import { buildReplyBundle, buildRequestBundle, buildResponseBundle } from './exchange';
+import { encodeUtf8 } from './binary';
+import { encryptReplyJwe, generateReplyKeyPair, type ReplyPrivateJwk } from './replyCrypto';
+import { createReplySlot, putReply } from './replySlot';
+import { isReplyDescriptorExpired, type ReplyDescriptor } from './replyDescriptor';
 
 /**
  * Link creation — the boundary where the renderer's global form state and the app's config meet the
@@ -38,33 +49,151 @@ export function resolveBlobStore(config: AppConfig): BlobStore {
   }
 }
 
+export interface CreateRequestOptions {
+  /** Who the form is for, e.g. `Patient/123`. */
+  subjectReference?: string;
+  /** Who the form is for, in words — the part a filler can actually read. */
+  subjectDisplay?: string;
+  /** Overrides the expiry derived from `linkLifetimeDays`. */
+  expiresAt?: number;
+}
+
+export interface CreatedRequest {
+  link: string;
+  task: Task;
+  /** When the link and its reply slot stop being usable, as Epoch seconds. */
+  expiresAt?: number;
+  /**
+   * Channel C, when a slot was minted: where the reply will appear, and the key to open it.
+   *
+   * The private key exists nowhere else. It has to be persisted with the outstanding request or a
+   * reply arriving later cannot be read by anyone, including us — see `src/lib/requestStore.ts`.
+   */
+  reply?: { url: string; privateJwk: ReplyPrivateJwk };
+  /**
+   * The published Task on the EHR, when one was written.
+   *
+   * Present for tracking alone as well as for channel B — {@link CreatedRequest.serverReturnOffered}
+   * distinguishes them, because only the latter was named in the invitation.
+   */
+  serverTaskUrl?: string;
+  /** Whether the invitation invites the filler to write to `serverTaskUrl`'s server directly. */
+  serverReturnOffered: boolean;
+}
+
 /**
- * Build a "please fill this in" link.
+ * Build a "please fill this in" link, with whatever return channels are configured.
  *
  * The Questionnaire is embedded whole so the filler needs no forms-server access, which is what
  * pushes this onto the hosted-SHL path — hundreds of kilobytes cannot ride inside a QR code.
+ *
+ * By default the only return channel is the one that needs no arrangement at all: the filler mints
+ * its own SMART Health Link and the requester scans it back. Nothing about that has to be described
+ * in the invitation, so a default request is just the form.
+ *
+ * Ordering matters for the channels that *are* described inside the payload, when they are enabled.
+ * A slot URL cannot be added to a link that has already been sealed and uploaded, so the slot is
+ * minted first, the Task published second, and only then is the Bundle built. The cost is that a
+ * failure at the encryption step leaves an unused slot behind, which is harmless — a `Binary`
+ * holding the word "pending".
  */
 export async function createRequestLink(
   questionnaire: Questionnaire,
   config: AppConfig,
-  options: { subjectReference?: string; expiresAt?: number } = {}
-): Promise<{ link: string; task: Task }> {
-  const { bundle, task } = buildRequestBundle(questionnaire, {
-    subjectReference: options.subjectReference
-  });
+  options: CreateRequestOptions = {}
+): Promise<CreatedRequest> {
+  const blobStore = resolveBlobStore(config);
+  const expiresAt = options.expiresAt ?? resolveExpiry(config);
+  /*
+   * Fixed up front rather than left to `buildRequestBundle`, because channel B publishes a second copy
+   * of this Task to a server and the two copies have to share one business identifier — otherwise a
+   * response returned through either channel could not be matched to the other's record of the request.
+   */
+  const requestId = crypto.randomUUID();
+
+  /*
+   * Channel C, when it is enabled. Off by default: the answers come back as a link the filler mints,
+   * so there is nothing to describe and no slot to mint. With it on, the reply key generated here is
+   * the only copy — see `CreatedRequest.reply`.
+   */
+  const keyPair = canUseEncryptedReply(config) ? await generateReplyKeyPair() : undefined;
+  const replyUrl = keyPair ? await createReplySlot(blobStore) : undefined;
+  const replyDescriptor: ReplyDescriptor | undefined =
+    keyPair && replyUrl
+      ? {
+          replyUrl,
+          replyMethod: 'PUT',
+          publicJwk: keyPair.publicJwk,
+          ...(expiresAt !== undefined ? { expiresAt } : {})
+        }
+      : undefined;
+
+  /*
+   * Publishing the Task and offering channel B are separate decisions, and conflating them would be a
+   * mistake in both directions. Publishing only records that a request was sent, so `/requests` can
+   * list it from any browser; channel B additionally tells the filler to write answers straight to that
+   * server, unreviewed. So a Task may be published without channel B, but never the reverse — channel B
+   * needs a Task to point at.
+   */
+  const serverReturn = canUseServerReturn(config);
+  let serverTaskUrl: string | undefined;
+
+  if (serverReturn) {
+    /*
+     * Fatal when channel B is on: the invitation is about to name this Task as somewhere the filler
+     * may write, and naming one that does not exist would be worse than not offering the channel.
+     */
+    serverTaskUrl = await publishRequestTask(config.responseServerUrl!, questionnaire, {
+      ...options,
+      requestId
+    });
+  } else if (canTrackRequests(config)) {
+    /*
+     * Not fatal when publishing is only for tracking. The default return path — the filler mints a
+     * link and the requester scans it back — needs nothing from this server, so an EHR that is down
+     * would otherwise block a flow that does not depend on it. The request still works and is still
+     * saved locally; it just shows as local-only in `/requests` until it is sent from a browser that
+     * could reach the server.
+     */
+    try {
+      serverTaskUrl = await publishRequestTask(config.responseServerUrl!, questionnaire, {
+        ...options,
+        requestId
+      });
+    } catch (cause) {
+      console.warn('Could not publish the request Task for tracking; continuing without it.', cause);
+    }
+  }
+
+  const { bundle, task } = buildRequestBundle(
+    serverReturn ? declareResponseEndpoint(questionnaire, config.responseServerUrl!) : questionnaire,
+    {
+      requestId,
+      subjectReference: options.subjectReference,
+      subjectDisplay: options.subjectDisplay,
+      requesterDisplay: config.senderName ?? undefined,
+      replyDescriptor,
+      // Named in the invitation only when the filler is actually invited to write there. Tracking is
+      // ours; there is no reason to tell a filler about a Task it must not touch.
+      serverTaskUrl: serverReturn ? serverTaskUrl : undefined
+    }
+  );
 
   const codec = encodingCodec(config, LINK_CODECS);
 
   const link = await codec.encode(
     { bundle, label: defaultLabel(questionnaire) },
-    {
-      baseUrl: resolveLinkBaseUrl(config),
-      blobStore: resolveBlobStore(config),
-      expiresAt: options.expiresAt
-    }
+    { baseUrl: resolveLinkBaseUrl(config), blobStore, expiresAt }
   );
 
-  return { link, task };
+  return {
+    link,
+    task,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(keyPair && replyUrl ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } } : {}),
+    ...(serverTaskUrl ? { serverTaskUrl } : {}),
+    serverReturnOffered: serverReturn
+  };
 }
 
 /**
@@ -95,28 +224,36 @@ export async function createResponseLink(
 }
 
 /**
- * Build a response link using the bespoke fragment codec regardless of config.
+ * Send the answers back through the request's encrypted reply channel.
  *
- * This is the no-infrastructure return path: the answers travel inside the URL, so nothing is hosted
- * anywhere. Size-limited to roughly 14 KB of raw response JSON, and unencrypted — but it is how a
- * filler with no server of its own can hand results back at all.
+ * The filler's half of channel C, and the reason this app is a reference implementation on both sides
+ * rather than only the requesting one. Everything happens on this device: the reply Bundle is built,
+ * labelled patient-asserted, encrypted to the requester's public key, and only the ciphertext is
+ * uploaded. The slot host — quite possibly a server nobody involved trusts — never sees plaintext.
+ *
+ * What this can and cannot confirm is worth being precise about, because the UI has to say it: a
+ * successful return means the ciphertext reached the slot. It does **not** mean the requester has
+ * collected it, and there is nothing to poll that would say otherwise.
  */
-export async function createOfflineResponseLink(
+export async function sendEncryptedReply(
   questionnaire: Questionnaire,
-  config: AppConfig,
+  descriptor: ReplyDescriptor,
   requestTask?: Task
-): Promise<string> {
-  const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
-  const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
-  const { bundle } = buildResponseBundle(response, requestTask);
-
-  const bespoke = LINK_CODECS.find((codec) => codec.id === 'bespoke');
-  if (!bespoke) {
-    throw new Error('The bespoke codec is not registered.');
+): Promise<void> {
+  if (descriptor.replyMethod !== 'PUT') {
+    throw new Error(
+      `This request expects its reply to be delivered by "${descriptor.replyMethod}", which this app ` +
+        'does not implement. Return the answers as a link instead.'
+    );
   }
 
-  return bespoke.encode(
-    { bundle, label: defaultLabel(questionnaire) },
-    { baseUrl: resolveLinkBaseUrl(config) }
-  );
+  if (isReplyDescriptorExpired(descriptor)) {
+    throw new Error('This request has expired, so its reply slot will no longer accept answers.');
+  }
+
+  const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
+  const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
+  const { bundle } = buildReplyBundle(response, { requestTask });
+
+  await putReply(descriptor.replyUrl, await encryptReplyJwe(encodeUtf8(JSON.stringify(bundle)), descriptor.publicJwk));
 }

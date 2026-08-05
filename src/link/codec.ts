@@ -6,16 +6,65 @@ import type { BlobStore } from '@/fhir/blobStore';
  * The payload a link carries, independent of how it is transported.
  *
  * This is deliberately modelled on what a SMART Health Link carries: the content of an SHL
- * manifest file is `application/fhir+json` — a FHIR Bundle. Keeping the Phase 1 payload as a
- * Bundle too means Phase 2 changes only the *transport* (fragment vs manifest + JWE), never the
- * data model, and the routes/UI stay untouched.
+ * manifest file is `application/fhir+json` — a FHIR Bundle. Keeping the fragment-carried payload as
+ * a Bundle too means a transport change (fragment vs manifest + JWE) never touches the data model,
+ * and the routes/UI stay untouched.
+ *
+ * A link this app *reads* was probably not written by it, so a payload is normalised into this
+ * shape rather than required to arrive in it — see {@link asBundle} and {@link mergeBundles}.
  */
 export interface LinkContent {
-  /** A `collection` Bundle. In practice: one QuestionnaireResponse entry. */
+  /** A `collection` Bundle. Typically a QuestionnaireResponse, often with a Task or Provenance. */
   bundle: Bundle;
 
   /** Human-readable description, shown before the form is opened. Maps to SHL's `label`. */
   label?: string;
+
+  /**
+   * Non-fatal notes from decoding: files skipped, files that would not decrypt, content types
+   * ignored.
+   *
+   * Surfaced rather than logged, because the only person who can judge whether a dropped file
+   * mattered is the one reading the answers. A manifest carrying a second QuestionnaireResponse
+   * that is not on screen must not be discoverable only from the console.
+   */
+  warnings?: string[];
+}
+
+/** Options a reader may supply when opening a link. */
+export interface DecodeOptions {
+  /** Passcode for a manifest-mode link that demands one (the SHL `P` flag). */
+  passcode?: string;
+
+  /** Names the reader in the manifest request body, per the spec's `recipient` field. */
+  recipient?: string;
+}
+
+/**
+ * A manifest-mode link needs a passcode before it will yield its content.
+ *
+ * Distinguishable from an ordinary failure so the UI can prompt rather than dead-end, and carries
+ * `remainingAttempts` because a passcode-protected SHL is allowed to lock itself permanently.
+ */
+export class PasscodeRequiredError extends Error {
+  readonly remainingAttempts?: number;
+
+  /** True when a passcode was supplied and rejected; false when none had been tried yet. */
+  readonly wasAttempted: boolean;
+
+  constructor(options: { remainingAttempts?: number; wasAttempted: boolean }) {
+    super(
+      options.wasAttempted
+        ? options.remainingAttempts === undefined
+          ? 'Incorrect passcode.'
+          : `Incorrect passcode. ${options.remainingAttempts} attempt(s) remaining.`
+        : 'This link requires a passcode.'
+    );
+
+    this.name = 'PasscodeRequiredError';
+    this.remainingAttempts = options.remainingAttempts;
+    this.wasAttempted = options.wasAttempted;
+  }
 }
 
 export interface EncodeOptions {
@@ -49,12 +98,25 @@ export interface LinkCodec {
   /** Fragment prefix, e.g. `sfhl:/` or `shlink:/`. */
   readonly prefix: string;
 
+  /**
+   * This codec can still open links, but nothing new is minted with it.
+   *
+   * Retiring a transport is not the same as dropping it: links already in the wild have to keep
+   * working. {@link encodingCodec} refuses a decode-only codec, while {@link decodingCodec}
+   * continues to consider it.
+   */
+  readonly decodeOnly?: boolean;
+
   /** Whether this codec recognises the given link or bare fragment. */
   canDecode(linkOrFragment: string): boolean;
 
   encode(content: LinkContent, options: EncodeOptions): Promise<string>;
 
-  decode(linkOrFragment: string): Promise<LinkContent>;
+  /**
+   * `options` is optional so a codec that needs nothing can declare `decode(link)` and stay
+   * assignable here — which is what keeps the passcode addition from rippling into every codec.
+   */
+  decode(linkOrFragment: string, options?: DecodeOptions): Promise<LinkContent>;
 }
 
 /**
@@ -95,6 +157,75 @@ export function collectionBundle(entries: { fullUrl?: string; resource: FhirReso
 /** Build a `collection` Bundle around a QuestionnaireResponse — the simplest link payload. */
 export function bundleResponse(questionnaireResponse: QuestionnaireResponse): Bundle {
   return collectionBundle([{ resource: questionnaireResponse }]);
+}
+
+/**
+ * Normalise a decoded FHIR resource into a Bundle.
+ *
+ * A Bundle passes through; anything else is wrapped. This exists because an SHL manifest file is
+ * `application/fhir+json` — *any* FHIR resource, not necessarily a Bundle — and a filler that parks
+ * a bare `QuestionnaireResponse` there has done nothing wrong. Insisting on a Bundle would make a
+ * perfectly ordinary link unopenable, so tolerate the shape and let the rest of the app go on
+ * working in Bundles.
+ */
+export function asBundle(resource: FhirResource): Bundle {
+  return resource.resourceType === 'Bundle'
+    ? (resource as Bundle)
+    : collectionBundle([{ resource }]);
+}
+
+/**
+ * Parse decrypted payload text into a Bundle, tolerating a bare resource.
+ *
+ * `what` names the payload in error messages ("link payload", "reply") — the only difference
+ * between the two call sites, which is why there is one implementation.
+ */
+export function bundleFromJson(text: string, what = 'link payload'): Bundle {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (cause) {
+    throw new Error(`The decrypted ${what} was not valid JSON.`, { cause });
+  }
+
+  const resourceType = (parsed as { resourceType?: unknown } | null)?.resourceType;
+  if (typeof resourceType !== 'string' || resourceType === '') {
+    throw new Error(`The decrypted ${what} is not a FHIR resource.`);
+  }
+
+  return asBundle(parsed as FhirResource);
+}
+
+/**
+ * Concatenate Bundles into one `collection`, dropping entries whose `fullUrl` was already seen.
+ *
+ * An SHL manifest may split its content across files — the QuestionnaireResponse in one, the
+ * Provenance attributing it in another — and those are one payload, not a choice between them.
+ * De-duplication is by `fullUrl` only: entries without one are always kept, because two resources
+ * that decline to identify themselves cannot be shown to be the same resource.
+ */
+export function mergeBundles(bundles: Bundle[]): Bundle {
+  if (bundles.length === 1) {
+    return bundles[0];
+  }
+
+  const seen = new Set<string>();
+  const entry = bundles
+    .flatMap((bundle) => bundle.entry ?? [])
+    .filter((candidate) => {
+      if (candidate.fullUrl === undefined) {
+        return true;
+      }
+
+      if (seen.has(candidate.fullUrl)) {
+        return false;
+      }
+
+      seen.add(candidate.fullUrl);
+      return true;
+    });
+
+  return { resourceType: 'Bundle', type: 'collection', entry };
 }
 
 /** Find the first resource of a given type in a Bundle. */
@@ -172,14 +303,22 @@ export function encodingCodec(config: AppConfig, codecs: LinkCodec[]): LinkCodec
     throw new Error(`Configured linkCodec "${config.linkCodec}" is not registered.`);
   }
 
+  if (codec.decodeOnly) {
+    throw new Error(
+      `Configured linkCodec "${config.linkCodec}" is decode-only — its links can still be opened, ` +
+        'but nothing new is minted with it. Set linkCodec to "shl".'
+    );
+  }
+
   return codec;
 }
 
 /**
  * Resolve the codec for *reading* a link by sniffing its prefix.
  *
- * Decoding always considers every registered codec regardless of config, so links created before
- * a Phase 2 cutover keep working afterwards.
+ * Decoding always considers every registered codec regardless of config, and regardless of whether
+ * that codec is still used for minting. That asymmetry is what lets a transport be retired without
+ * invalidating links already in the wild.
  */
 export function decodingCodec(linkOrFragment: string, codecs: LinkCodec[]): LinkCodec {
   const codec = codecs.find((candidate) => candidate.canDecode(linkOrFragment));

@@ -1,4 +1,5 @@
-import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
+import type { Meta, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
+import { buildRequestBundle } from '@/link/exchange';
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -73,6 +74,8 @@ export interface SubmitResult {
   responseId?: string;
   /** Server-assigned id of the created Task, when one was submitted. */
   taskId?: string;
+  /** Server-assigned id of the created Provenance, when one accompanied the response. */
+  provenanceId?: string;
   error?: string;
 }
 
@@ -81,15 +84,28 @@ function trimTrailingSlash(url: string): string {
 }
 
 /**
- * Strip identity a foreign server assigned.
+ * Strip identity a foreign server assigned, and **only** that.
  *
- * A response arriving from another app may carry an `id` and `meta` from *its* server. Those mean
- * nothing here, and keeping them risks colliding with, or overwriting, an unrelated local resource.
- * Creating a fresh resource is the only safe interpretation of "accept these answers".
+ * A response arriving from another app carries an `id` and version metadata from *its* server. Those
+ * mean nothing here, and keeping them risks colliding with, or overwriting, an unrelated local
+ * resource. Creating a fresh resource is the only safe interpretation of "accept these answers".
+ *
+ * What must survive is the rest of `meta`. This used to drop `meta` wholesale, which was wrong in a
+ * way that only shows up with third-party fillers: `meta.security` is where a patient-asserted
+ * (`PATAST`) label lives, and discarding it files answers a patient typed on their own phone as though
+ * a clinician had recorded them. `profile` and `tag` are likewise the sender's claims about the
+ * content, not the sender's server's bookkeeping.
  */
-function asNewResource<T extends { id?: string; meta?: unknown }>(resource: T): T {
-  const { id: _id, meta: _meta, ...rest } = resource;
-  return rest as T;
+function asNewResource<T extends { id?: string; meta?: Meta }>(resource: T): T {
+  const { id: _id, meta, ...rest } = resource;
+
+  if (!meta) {
+    return rest as T;
+  }
+
+  const { versionId: _versionId, lastUpdated: _lastUpdated, source: _source, ...keptMeta } = meta;
+
+  return (Object.keys(keptMeta).length > 0 ? { ...rest, meta: keptMeta } : rest) as T;
 }
 
 interface OperationOutcome {
@@ -125,7 +141,7 @@ async function describeFailure(response: Response): Promise<string> {
 
 async function createResource(
   serverUrl: string,
-  resource: QuestionnaireResponse | Task
+  resource: QuestionnaireResponse | Task | Provenance
 ): Promise<string> {
   const response = await fetch(`${trimTrailingSlash(serverUrl)}/${resource.resourceType}`, {
     method: 'POST',
@@ -151,19 +167,23 @@ export interface SubmitOptions {
   response: QuestionnaireResponse;
   /** Round-tripped from the request; its `output` is rewired to the real response id. */
   task?: Task;
+  /** Who asserted the answers, when the filler said. Its `target` is rewired like the Task's. */
+  provenance?: Provenance;
   questionnaire?: Questionnaire;
   responseServerUrl?: string | null;
 }
 
 /**
- * Submit a reviewed response, plus its correlating Task.
+ * Submit a reviewed response, plus its correlating Task and any attribution that came with it.
  *
- * Order matters: the QuestionnaireResponse is created first so the Task's `output` can reference its
- * real server id rather than the `urn:uuid` that was only meaningful inside the transported Bundle.
+ * Order matters: the QuestionnaireResponse is created first so the Task's `output` and the
+ * Provenance's `target` can reference its real server id rather than the `urn:uuid` that was only
+ * meaningful inside the transported Bundle.
  *
- * A Task failure does not fail the submission. The clinical content is the response; losing the
- * correlation record is a reporting problem, not a data-loss one, and re-submitting the response to
- * fix it would duplicate it.
+ * Neither companion resource failing fails the submission. The clinical content is the response;
+ * losing the correlation or attribution record is a reporting problem, not a data-loss one, and
+ * re-submitting the response to fix it would duplicate it. They are reported rather than swallowed so
+ * the gap is visible.
  */
 export async function submitResponse(options: SubmitOptions): Promise<SubmitResult[]> {
   const destinations = resolveDestinations(options);
@@ -176,6 +196,7 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
     destinations.map(async (serverUrl): Promise<SubmitResult> => {
       try {
         const responseId = await createResource(serverUrl, asNewResource(options.response));
+        const responseReference = `QuestionnaireResponse/${responseId}`;
 
         let taskId: string | undefined;
         if (options.task) {
@@ -185,7 +206,7 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
               output: [
                 {
                   type: { text: 'questionnaire-response' },
-                  valueReference: { reference: `QuestionnaireResponse/${responseId}` }
+                  valueReference: { reference: responseReference }
                 }
               ]
             });
@@ -195,7 +216,25 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
           }
         }
 
-        return { serverUrl, responseId, taskId };
+        let provenanceId: string | undefined;
+        if (options.provenance) {
+          try {
+            const provenance = asNewResource<Provenance>({
+              ...options.provenance,
+              // Targeted the response's `urn:uuid` inside the Bundle; that entry is gone, so point it
+              // at what was actually created.
+              target: [{ reference: responseReference }]
+            });
+            provenanceId = await createResource(serverUrl, provenance);
+          } catch (cause) {
+            console.warn(
+              `Saved the response but could not save its Provenance to ${serverUrl}`,
+              cause
+            );
+          }
+        }
+
+        return { serverUrl, responseId, taskId, provenanceId };
       } catch (cause) {
         return {
           serverUrl,
@@ -204,4 +243,121 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
       }
     })
   );
+}
+
+/**
+ * Whether a reference resolves on the server the response is about to be written to.
+ *
+ * Worth checking before offering to save. A response from a third-party filler names a patient in
+ * *that* app's terms — Platypus sends its own vault key — and a server enforcing referential integrity
+ * rejects the whole write with `HAPI-1094`. Finding that out before the reviewer clicks Accept turns a
+ * confusing failure into a question they can answer.
+ *
+ * `true` on any non-404: a server that does not enforce integrity, or that refuses the probe, is not
+ * evidence of a missing subject, and blocking the write on that would be worse than attempting it.
+ */
+export async function referenceResolves(serverUrl: string, reference: string): Promise<boolean> {
+  if (/^https?:\/\//i.test(reference) || !/^[A-Za-z]+\/[^/]+$/.test(reference)) {
+    // Absolute or contained/logical references are not ours to resolve against this server.
+    return true;
+  }
+
+  try {
+    const response = await fetch(`${trimTrailingSlash(serverUrl)}/${reference}`, {
+      headers: { Accept: FHIR_JSON }
+    });
+    return response.status !== 404;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Add `sdc-questionnaire-endpoint` to a copy of a Questionnaire — the outbound half of channel B.
+ *
+ * This is the SDC-standard way to say "send answers here", and the same extension
+ * {@link declaredEndpoints} already honours on the way back in. Using it rather than inventing a field
+ * means any SDC-aware filler already knows where to look.
+ *
+ * Only ever applied to the embedded copy inside a request payload. The catalogue Questionnaire on the
+ * forms server is never modified — that server is read-only.
+ */
+export function declareResponseEndpoint(
+  questionnaire: Questionnaire,
+  endpoint: string
+): Questionnaire {
+  if (declaredEndpoints(questionnaire).includes(endpoint)) {
+    return questionnaire;
+  }
+
+  return {
+    ...questionnaire,
+    extension: [
+      ...(questionnaire.extension ?? []),
+      { url: SDC_QUESTIONNAIRE_ENDPOINT, valueUri: endpoint }
+    ]
+  };
+}
+
+/**
+ * Marks a Task on the EHR as a request this app sent, so sent requests can be listed back.
+ *
+ * A tag rather than a naming convention because it is searchable: `Task?_tag=…|shl-form-request`
+ * returns exactly our requests and nothing else on a server we share with other tools.
+ */
+export const SHL_REQUEST_TAG = {
+  system: 'http://smartforms.csiro.au/CodeSystem/shl-request',
+  code: 'shl-form-request',
+  display: 'Form request sent as a SMART Health Link'
+} as const;
+
+/**
+ * Publish a request's Task to the EHR, and return its absolute URL.
+ *
+ * Two jobs, and they are worth separating in your head: it makes a sent request **discoverable** —
+ * `/requests` lists these, so a request is visible even from a browser that did not create it — and,
+ * when channel B is enabled, it gives a filler something to write against.
+ *
+ * Three deliberate differences from the Task inside the invitation:
+ *
+ *  - **No extensions.** The invitation's copy holds the reply descriptor, including any token
+ *    authorising a write to the reply slot. Putting that on a server whose purpose is to be read would
+ *    hand the capability to anyone who can read a Task.
+ *  - **No `focus`.** The invitation names the Questionnaire by canonical, because that is the only
+ *    form of the reference that still means something to a filler once the Bundle is taken apart. FHIR
+ *    servers will not store that as a `Reference`:
+ *
+ *      HAPI-0506: Invalid resource reference found at path[Task.focus] — Resource type is unknown or
+ *                 not supported on this server — http://example.org/Q/probe|1.0
+ *
+ *    So the server copy drops it and relies on `input[].valueCanonical`, which is a `canonical` rather
+ *    than a `Reference` and stores fine. This is the same split the return leg already makes.
+ *  - **A tracking tag**, so these can be searched back out.
+ *
+ * `buildRequestBundle` is reused with the same `requestId` so both copies share one business
+ * identifier — that identifier is what joins a listed Task to the locally-held reply key.
+ */
+export async function publishRequestTask(
+  serverUrl: string,
+  questionnaire: Questionnaire,
+  options: { subjectReference?: string; subjectDisplay?: string; requestId?: string } = {}
+): Promise<string> {
+  const { task } = buildRequestBundle(questionnaire, {
+    subjectReference: options.subjectReference,
+    subjectDisplay: options.subjectDisplay,
+    requestId: options.requestId
+  });
+
+  const id = await createResource(serverUrl, asPublishedTask(task));
+  return `${trimTrailingSlash(serverUrl)}/Task/${id}`;
+}
+
+/** The server-storable form of a request Task. Exported so `check:roundtrip` can assert its shape. */
+export function asPublishedTask(task: Task): Task {
+  const { focus: _focus, extension: _extension, ...rest } = task;
+
+  return {
+    ...rest,
+    meta: { ...task.meta, tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }] }
+  };
 }

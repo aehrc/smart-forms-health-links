@@ -130,7 +130,7 @@ export default function Scan() {
               setRejected(false);
             }}
             rows={4}
-            placeholder="https://…/view#sfhl:/…"
+            placeholder="https://…/view#shlink:/…"
             className="w-full resize-none rounded-md border border-slate-300 p-2 font-mono text-xs break-all"
           />
           <Button onClick={openPasted} disabled={pasted.trim() === ''} size="sm">
