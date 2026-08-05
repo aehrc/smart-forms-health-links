@@ -3,8 +3,13 @@
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
   "linkBaseUrl": null,
   "linkCodec": "shl",
-  "responseServerUrl": "https://hapi.fhir.org/baseR4",
-  "blobServerUrl": "https://hapi.fhir.org/baseR4",
+  "responseServerUrl": "https://proxy.smartforms.io/fhir",
+  "blobServerUrl": "https://proxy.smartforms.io/fhir",
   "blobStore": "fhir-binary",
-  "shlManifestUrl": null
+  "shlManifestUrl": null,
+  "senderName": null,
+  "enableServerReturn": false,
+  "enableEncryptedReply": false,
+  "linkLifetimeDays": 30,
+  "publishRequestTasks": true
 }

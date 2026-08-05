@@ -6,3 +6,6 @@ dist
 .env.local
 .idea
 .vscode
+
+# Per-developer tool state. Only ignored by one contributor's global gitignore otherwise.
+.claude/settings.local.json
