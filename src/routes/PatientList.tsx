@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ClipboardList, Loader2, Search, Send, User } from 'lucide-react';
 import type { Patient } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
-import { patientDisplay, searchPatients } from '@/fhir/ehrServer';
+import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
 import { useDebounced } from '@/lib/useDebounced';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,27 +22,8 @@ import { Card, CardContent } from '@/components/ui/card';
  * than dead-ending here.
  */
 
-const IHI_SYSTEM = 'http://ns.electronichealth.net.au/id/hi/ihi/1.0';
-
-function identifierSummary(patient: Patient): string | undefined {
-  const ihi = patient.identifier?.find((identifier) => identifier.system === IHI_SYSTEM)?.value;
-  if (ihi) {
-    return `IHI ${ihi}`;
-  }
-
-  const first = patient.identifier?.find((identifier) => identifier.value)?.value;
-  return first ? `id ${first}` : undefined;
-}
-
-function describe(patient: Patient): string {
-  return [
-    patient.gender,
-    patient.birthDate ? `born ${patient.birthDate}` : undefined,
-    identifierSummary(patient)
-  ]
-    .filter(Boolean)
-    .join(' · ');
-}
+/** Rows per page here. Larger than the inline picker's, because this page is for browsing. */
+const PAGE_SIZE = 50;
 
 export default function PatientList() {
   const config = useConfig();
@@ -64,8 +45,8 @@ export default function PatientList() {
     isPending,
     error
   } = useQuery({
-    queryKey: ['ehr-patients', ehrServerUrl, debouncedSearch],
-    queryFn: ({ signal }) => searchPatients(ehrServerUrl!, debouncedSearch, 50, signal),
+    queryKey: ['ehr-patients', ehrServerUrl, debouncedSearch, PAGE_SIZE],
+    queryFn: ({ signal }) => searchPatients(ehrServerUrl!, debouncedSearch, PAGE_SIZE, signal),
     enabled: ehrServerUrl !== null
   });
 
@@ -155,7 +136,7 @@ export default function PatientList() {
                   <p className="font-medium text-slate-900">{patientDisplay(patient)}</p>
                   <p className="truncate text-xs text-slate-500">
                     Patient/{patient.id}
-                    {describe(patient) ? ` · ${describe(patient)}` : null}
+                    {describePatient(patient) ? ` · ${describePatient(patient)}` : null}
                   </p>
                 </div>
 

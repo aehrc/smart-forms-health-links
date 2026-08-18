@@ -13,6 +13,7 @@ import {
 import { taskCorrelationId } from '@/link/exchange';
 import type { OutstandingRequest } from '@/lib/requestStore';
 import FormRenderer from '@/components/FormRenderer';
+import PatientPicker from '@/components/PatientPicker';
 import RawAnswers from '@/components/RawAnswers';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -84,6 +85,8 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     'unknown'
   );
   const [subjectOverride, setSubjectOverride] = useState('');
+  /** Name of the patient chosen, when one was chosen rather than typed. Empty for a hand-typed reference. */
+  const [subjectOverrideDisplay, setSubjectOverrideDisplay] = useState('');
   const [clearSubject, setClearSubject] = useState(false);
 
   const destinations = resolveDestinations({
@@ -135,11 +138,38 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       return response;
     }
 
-    return { ...response, subject: { ...response.subject, reference: replacement } };
+    /*
+     * The display is replaced rather than merged. Whatever the filler wrote described the patient as
+     * *their* system knows them, and carrying that name across onto a reference the reviewer has just
+     * repointed would label the answers with a name nobody on the destination server chose. A
+     * hand-typed reference therefore gets no display at all, which is the honest result.
+     */
+    return {
+      ...response,
+      subject:
+        subjectOverrideDisplay === ''
+          ? { reference: replacement }
+          : { reference: replacement, display: subjectOverrideDisplay }
+    };
   }
 
-  const needsReconciliation = subjectCheck === 'missing';
+  /** Apply a patient to the answers — from the picker, from the matched request, or typed in. */
+  function chooseSubject(reference: string, display?: string) {
+    setSubjectOverride(reference);
+    setSubjectOverrideDisplay(display ?? '');
+    setClearSubject(false);
+  }
+
+  const hasSubject = originalSubject !== undefined;
   const hasReconciliation = clearSubject || subjectOverride.trim() !== '';
+  /*
+   * Two ways a response arrives unfiled, and both end at the same question. Either it names a patient
+   * the destination server does not hold — normal for a third-party filler, and a write that will be
+   * rejected — or it names nobody at all, which no server objects to and which quietly files answers
+   * against no one. The second is the more dangerous of the two, so it gets asked about just as loudly.
+   */
+  const needsSubject = results === null && canSave && (subjectCheck === 'missing' || !hasSubject);
+  const searchServer = destinations[0];
 
   async function handleAccept() {
     setError(null);
@@ -228,15 +258,30 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         </Alert>
       ) : null}
 
-      {results === null && needsReconciliation ? (
-        <Alert tone="warning" title="This patient does not exist on the destination server">
-          <p>
-            The answers name <span className="font-mono text-xs">{originalSubject}</span>, which{' '}
-            <span className="font-mono text-xs">{destinations[0]}</span> does not hold. A filler
-            identifies the patient in its own terms, so this is expected for answers from another app —
-            but the write will be rejected until it is reconciled.
-          </p>
-          <div className="mt-2 space-y-2">
+      {needsSubject ? (
+        <Alert
+          tone="warning"
+          title={
+            hasSubject
+              ? 'This patient does not exist on the destination server'
+              : 'These answers do not say who they are about'
+          }>
+          {hasSubject ? (
+            <p>
+              The answers name <span className="font-mono text-xs">{originalSubject}</span>, which{' '}
+              <span className="font-mono text-xs">{searchServer}</span> does not hold. A filler
+              identifies the patient in its own terms, so this is expected for answers from another app
+              — but the write will be rejected until it is reconciled.
+            </p>
+          ) : (
+            <p>
+              No subject came back with them. Nothing on{' '}
+              <span className="font-mono text-xs">{searchServer}</span> will refuse that, which is the
+              problem: the answers would be filed against nobody and stay that way. Search for who
+              they belong to.
+            </p>
+          )}
+          <div className="mt-2 space-y-3">
             {matchedRequest?.subjectReference ? (
               <p>
                 This request was addressed to{' '}
@@ -245,49 +290,82 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 <button
                   type="button"
                   className="underline underline-offset-2 hover:text-slate-900"
-                  onClick={() => {
-                    setSubjectOverride(matchedRequest.subjectReference!);
-                    setClearSubject(false);
-                  }}>
+                  onClick={() =>
+                    chooseSubject(matchedRequest.subjectReference!, matchedRequest.subjectDisplay)
+                  }>
                   Use that patient
                 </button>
                 .
               </p>
             ) : null}
-            <label className="block text-xs font-medium text-slate-700" htmlFor="subject-override">
-              Replace with a reference on that server
-            </label>
-            <Input
-              id="subject-override"
-              value={subjectOverride}
-              onChange={(event) => {
-                setSubjectOverride(event.target.value);
-                setClearSubject(false);
-              }}
-              placeholder="Patient/123"
-              aria-label="Replacement subject reference"
-            />
-            <label className="flex items-start gap-2 text-xs text-slate-700">
-              <input
-                type="checkbox"
-                checked={clearSubject}
-                onChange={(event) => {
-                  setClearSubject(event.target.checked);
-                  if (event.target.checked) {
-                    setSubjectOverride('');
-                  }
-                }}
-                className="mt-0.5"
+
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-slate-800">
+                Search <span className="font-mono">{searchServer}</span>
+              </p>
+              {/*
+                * Searched on the destination server rather than on `responseServerUrl`, because a
+                * questionnaire declaring its own sdc-questionnaire-endpoint sends the write somewhere
+                * else — and a reference is only worth anything on the server it will be stored on.
+                */}
+              <PatientPicker
+                serverUrl={searchServer}
+                selectedReference={subjectOverride.trim() === '' ? undefined : subjectOverride.trim()}
+                onChoose={(chosen) => chooseSubject(chosen.reference, chosen.display)}
+                label="Search the destination server for the patient these answers are about"
               />
-              <span>
-                Save without a subject instead. The answers will be stored{' '}
-                <strong>with no record of who they are about</strong>, which is rarely what you want —
-                matching the patient is a clinical decision, not a technical one.
-              </span>
-            </label>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-slate-800" htmlFor="subject-override">
+                Or enter a reference on that server by hand
+              </label>
+              <Input
+                id="subject-override"
+                value={subjectOverride}
+                onChange={(event) => chooseSubject(event.target.value)}
+                placeholder="Patient/123"
+                aria-label={
+                  hasSubject ? 'Replacement subject reference' : 'Subject reference for these answers'
+                }
+              />
+            </div>
+
+            {subjectOverrideDisplay !== '' ? (
+              <p className="text-xs">
+                Will be filed against <strong>{subjectOverrideDisplay}</strong> —{' '}
+                <span className="font-mono">{subjectOverride}</span>.
+              </p>
+            ) : null}
+
+            {hasSubject ? (
+              <label className="flex items-start gap-2 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={clearSubject}
+                  onChange={(event) => {
+                    setClearSubject(event.target.checked);
+                    if (event.target.checked) {
+                      setSubjectOverride('');
+                      setSubjectOverrideDisplay('');
+                    }
+                  }}
+                  className="mt-0.5"
+                />
+                <span>
+                  Save without a subject instead. The answers will be stored{' '}
+                  <strong>with no record of who they are about</strong>, which is rarely what you want
+                  — matching the patient is a clinical decision, not a technical one.
+                </span>
+              </label>
+            ) : null}
           </div>
           {!hasReconciliation ? (
-            <p className="mt-2">Saving now will attempt the write as-is and report the rejection.</p>
+            <p className="mt-2">
+              {hasSubject
+                ? 'Saving now will attempt the write as-is and report the rejection.'
+                : 'Saving now will store the answers with no record of who they are about.'}
+            </p>
           ) : null}
         </Alert>
       ) : null}

@@ -66,6 +66,39 @@ export function patientDisplay(patient: Patient | undefined): string {
   return name.text ?? (joined !== '' ? joined : (patient?.id ?? 'Unnamed patient'));
 }
 
+/**
+ * The Australian national patient identifier, surfaced ahead of any other because it is the one a
+ * clinician recognises. Everything else a sandbox server holds is bookkeeping.
+ */
+const IHI_SYSTEM = 'http://ns.electronichealth.net.au/id/hi/ihi/1.0';
+
+function identifierSummary(patient: Patient): string | undefined {
+  const ihi = patient.identifier?.find((identifier) => identifier.system === IHI_SYSTEM)?.value;
+  if (ihi) {
+    return `IHI ${ihi}`;
+  }
+
+  const first = patient.identifier?.find((identifier) => identifier.value)?.value;
+  return first ? `id ${first}` : undefined;
+}
+
+/**
+ * The supporting line under a patient's name — gender, birth date, identifier.
+ *
+ * Names collide, so picking the right patient from a search is rarely possible on the name alone.
+ * Returns an empty string when the server holds none of it, which callers should render as nothing
+ * rather than as an empty separator.
+ */
+export function describePatient(patient: Patient): string {
+  return [
+    patient.gender,
+    patient.birthDate ? `born ${patient.birthDate}` : undefined,
+    identifierSummary(patient)
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 export interface SearchResponsesOptions {
   /** Restrict to one patient, e.g. `Patient/pat-sf`. */
   subject?: string;
