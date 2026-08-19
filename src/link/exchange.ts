@@ -56,7 +56,7 @@ export const PATIENT_ASSERTED_SECURITY = {
   display: 'patient asserted'
 } as const;
 
-const PROVENANCE_PARTICIPANT_TYPE =
+export const PROVENANCE_PARTICIPANT_TYPE =
   'http://terminology.hl7.org/CodeSystem/provenance-participant-type';
 
 export interface RequestPayload {

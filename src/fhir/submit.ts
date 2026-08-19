@@ -1,5 +1,6 @@
 import type { Meta, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { buildRequestBundle } from '@/link/exchange';
+import type { Amendment } from './amend';
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -76,6 +77,15 @@ export interface SubmitResult {
   taskId?: string;
   /** Server-assigned id of the created Provenance, when one accompanied the response. */
   provenanceId?: string;
+  /**
+   * The response was written but its Provenance was not.
+   *
+   * Separate from {@link error}, which means the response itself failed. For an *amendment* this is
+   * the serious half: the Provenance is the only thing joining the new resource to the one it
+   * revises, so without it the server holds two responses and no record that one supersedes the
+   * other.
+   */
+  provenanceError?: string;
   error?: string;
 }
 
@@ -240,6 +250,73 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
           serverUrl,
           error: cause instanceof Error ? cause.message : String(cause)
         };
+      }
+    })
+  );
+}
+
+export interface SavedResponse {
+  serverUrl: string;
+  /** Id the server gave the original. What the amendment's `entity.what` points back at. */
+  responseId: string;
+}
+
+export interface SubmitAmendmentOptions {
+  /**
+   * Where the original landed. Only a server that stored it can hold a revision of it, and each one
+   * assigned its own id — hence a list of pairs rather than a destination list.
+   */
+  saved: SavedResponse[];
+  /** Builds the amendment against one server's id for the original. */
+  amend: (originalResponseId: string) => Amendment;
+}
+
+export const NO_AMENDMENT_TARGET_MESSAGE =
+  'There is nothing to amend: the original response was not stored on any server, so there is no ' +
+  'resource for an amendment to revise.';
+
+/**
+ * Write an amendment: a second QuestionnaireResponse, plus the Provenance saying what it revises.
+ *
+ * Deliberately *not* an update of the original. See `src/fhir/amend.ts` for why — the short version is
+ * that the original carries claims about who asserted it, and editing it in place would make those
+ * claims describe a document that no longer exists.
+ *
+ * The Provenance is built per destination, because the original's id differs between them. Unlike the
+ * inbound path, a failed Provenance is reported rather than shrugged off: there it is attribution
+ * accompanying the clinical content, here it is the only link between two otherwise unrelated
+ * responses, and a reviewer needs to know they now have an orphan to fix by hand.
+ */
+export async function submitAmendment(options: SubmitAmendmentOptions): Promise<SubmitResult[]> {
+  if (options.saved.length === 0) {
+    throw new Error(NO_AMENDMENT_TARGET_MESSAGE);
+  }
+
+  return Promise.all(
+    options.saved.map(async ({ serverUrl, responseId }): Promise<SubmitResult> => {
+      try {
+        const { response, provenance } = options.amend(responseId);
+        const amendedId = await createResource(serverUrl, asNewResource(response));
+
+        try {
+          const provenanceId = await createResource(
+            serverUrl,
+            asNewResource<Provenance>({
+              ...provenance,
+              // Built against a placeholder, because the id did not exist until the line above.
+              target: [{ reference: `QuestionnaireResponse/${amendedId}` }]
+            })
+          );
+          return { serverUrl, responseId: amendedId, provenanceId };
+        } catch (cause) {
+          return {
+            serverUrl,
+            responseId: amendedId,
+            provenanceError: cause instanceof Error ? cause.message : String(cause)
+          };
+        }
+      } catch (cause) {
+        return { serverUrl, error: cause instanceof Error ? cause.message : String(cause) };
       }
     })
   );

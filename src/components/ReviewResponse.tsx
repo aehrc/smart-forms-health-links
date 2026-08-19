@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Loader2, Save, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, FilePlus2, Loader2, PencilLine, Save, ShieldCheck, X } from 'lucide-react';
+import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
 import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
 import {
@@ -7,9 +8,12 @@ import {
   declaredEndpoints,
   referenceResolves,
   resolveDestinations,
+  submitAmendment,
   submitResponse,
+  type SavedResponse,
   type SubmitResult
 } from '@/fhir/submit';
+import { buildAmendment } from '@/fhir/amend';
 import { taskCorrelationId } from '@/link/exchange';
 import type { OutstandingRequest } from '@/lib/requestStore';
 import FormRenderer from '@/components/FormRenderer';
@@ -18,6 +22,7 @@ import RawAnswers from '@/components/RawAnswers';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/alert';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export interface ReviewResponseProps {
   /**
@@ -74,6 +79,28 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const [results, setResults] = useState<SubmitResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  /*
+   * Amendment. The received answers are stored exactly as they arrived and are never edited — see
+   * `src/fhir/amend.ts` for why that is a decision rather than an omission. Changing something means
+   * writing a *second* response authored by the reviewer, joined to the first by a Provenance.
+   */
+  const [isAmending, setIsAmending] = useState(false);
+  /*
+   * The response the editable form is seeded from, snapshotted when amending starts.
+   *
+   * Held in state rather than computed during render because `useBuildForm` compares
+   * `questionnaireResponse` **by reference**: handing it a freshly-built object each render rebuilds
+   * the form in a loop and throws away every keystroke the reviewer has made.
+   */
+  const [amendSeed, setAmendSeed] = useState<QuestionnaireResponse | null>(null);
+  const [amender, setAmender] = useState(config.senderName ?? '');
+  const [amendResults, setAmendResults] = useState<SubmitResult[] | null>(null);
+  const [amendedResponse, setAmendedResponse] = useState<QuestionnaireResponse | null>(null);
+  const [amendError, setAmendError] = useState<string | null>(null);
+  const [isAmendSaving, setIsAmendSaving] = useState(false);
+  /** Bumped on every mode change, to remount the renderer rather than mutate its singleton stores. */
+  const [formEpoch, setFormEpoch] = useState(0);
 
   /*
    * Patient reconciliation. A response from a third-party filler names a patient in *that* app's terms
@@ -193,8 +220,62 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     }
   }
 
+  /**
+   * What an amendment would revise, per server.
+   *
+   * Taken from the most recent write, so amending twice chains: the second revises the first rather
+   * than the original. Each entry keeps its own server's id, because a response written to several
+   * destinations gets a different id from each and a reference to one means nothing on another.
+   */
+  const amendTargets: SavedResponse[] = (amendResults ?? results ?? [])
+    .filter((result): result is SubmitResult & { responseId: string } => !!result.responseId)
+    .map((result) => ({ serverUrl: result.serverUrl, responseId: result.responseId }));
+
+  /*
+   * Needs the form definition, because an amendment means editing answers and there is nothing to
+   * render without it. The `RawAnswers` fallback is a table, not an editor.
+   */
+  const canAmend = amendTargets.length > 0 && questionnaire !== undefined;
+
+  async function handleAmend() {
+    if (!questionnaire) {
+      return;
+    }
+
+    setAmendError(null);
+    setIsAmendSaving(true);
+    try {
+      // The only thing taken from the renderer is the answers; `buildAmendment` carries identity
+      // across from the stored original itself.
+      const edited = removeEmptyAnswersFromResponse(questionnaire, getResponse());
+      const original = amendSeed ?? reconciledResponse();
+      const recorded = new Date().toISOString();
+
+      const amend = (originalResponseId: string) =>
+        buildAmendment({ original, originalResponseId, edited, amender: amender.trim(), recorded });
+
+      const submitted = await submitAmendment({ saved: amendTargets, amend });
+      setAmendResults(submitted);
+
+      if (submitted.some((result) => result.responseId)) {
+        // Identical across destinations — only the Provenance's `entity.what` differs by server — so
+        // any one of them describes what is now on record.
+        setAmendedResponse(amend(amendTargets[0].responseId).response);
+        setIsAmending(false);
+        setFormEpoch((epoch) => epoch + 1);
+        onSaved?.();
+      }
+    } catch (cause) {
+      setAmendError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsAmendSaving(false);
+    }
+  }
+
   const saved = results?.filter((result) => result.responseId) ?? [];
   const failed = results?.filter((result) => result.error) ?? [];
+  const amendSaved = amendResults?.filter((result) => result.responseId) ?? [];
+  const amendFailed = amendResults?.filter((result) => result.error) ?? [];
   const correlationId = taskCorrelationId(task);
 
   return (
@@ -411,6 +492,158 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         </Alert>
       ) : null}
 
+      {amendSaved.length > 0 ? (
+        <Alert title="Amendment saved">
+          <ul className="space-y-0.5">
+            {amendSaved.map((result) => (
+              <li key={result.serverUrl} className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" aria-hidden />
+                <span className="font-mono text-xs">
+                  QuestionnaireResponse/{result.responseId}
+                  {result.provenanceId ? ` · Provenance/${result.provenanceId}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1">
+            Written as a new response authored by <strong>{amender.trim()}</strong>. The answers as
+            they arrived are untouched, and the Provenance records that this revises them.
+          </p>
+        </Alert>
+      ) : null}
+
+      {(amendResults ?? []).some((result) => result.provenanceError) ? (
+        <Alert tone="error" title="The amendment was saved but its Provenance was not">
+          <ul className="space-y-0.5">
+            {(amendResults ?? [])
+              .filter((result) => result.provenanceError)
+              .map((result) => (
+                <li key={result.serverUrl} className="text-xs">
+                  <span className="font-mono">{result.serverUrl}</span> — {result.provenanceError}
+                </li>
+              ))}
+          </ul>
+          <p className="mt-1">
+            That link is the only thing joining the two resources, so the server now holds an
+            amendment and the answers it revises with nothing saying so. Worth fixing by hand.
+          </p>
+        </Alert>
+      ) : null}
+
+      {amendFailed.length > 0 ? (
+        <Alert tone="error" title="Could not save the amendment">
+          <ul className="space-y-0.5">
+            {amendFailed.map((result) => (
+              <li key={result.serverUrl} className="text-xs">
+                <span className="font-mono">{result.serverUrl}</span> — {result.error}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      ) : null}
+
+      {amendError ? (
+        <Alert tone="error" title="Could not save the amendment">
+          {amendError}
+        </Alert>
+      ) : null}
+
+      {isAmending ? (
+        <Card className="border-slate-400">
+          <CardHeader>
+            <CardTitle className="text-base">Amending</CardTitle>
+            <CardDescription>
+              The form below is editable. Saving writes a <strong>new</strong> QuestionnaireResponse
+              with your changes, authored by you, plus a Provenance recording that it revises{' '}
+              {amendTargets.length > 1 ? 'the stored responses' : 'the stored response'}. Nothing
+              already written is modified or deleted, so the record keeps both versions and who wrote
+              each.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-slate-800" htmlFor="amender">
+                Your name
+              </label>
+              <Input
+                id="amender"
+                value={amender}
+                onChange={(event) => setAmender(event.target.value)}
+                placeholder="Dr Jane Roe"
+                aria-label="Name of the person making the amendment"
+              />
+              <p className="text-xs text-slate-500">
+                Required. It becomes the amended response&rsquo;s <span className="font-mono">author</span>{' '}
+                and the Provenance&rsquo;s agent — an amendment nobody is named for is the thing this
+                whole path exists to avoid.
+              </p>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              The patient-asserted label is dropped from the amended copy, because it would no longer
+              be true of the parts you change. It stays on the original, which the Provenance points
+              at.
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={handleAmend} disabled={isAmendSaving || amender.trim() === ''}>
+                {isAmendSaving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <FilePlus2 className="h-4 w-4" aria-hidden />
+                )}
+                {isAmendSaving ? 'Saving amendment…' : 'Save as amendment'}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setIsAmending(false);
+                  setAmendError(null);
+                  setFormEpoch((epoch) => epoch + 1);
+                }}
+                disabled={isAmendSaving}>
+                <X className="h-4 w-4" aria-hidden />
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {results !== null && !isAmending && canAmend ? (
+        <Alert title={amendResults === null ? 'Need to change something?' : 'Amend again?'}>
+          <p>
+            These answers are stored as they arrived and stay that way — editing them in place would
+            file your words under the label and Provenance saying the patient asserted them. An
+            amendment is written as a separate response authored by you, with a Provenance recording
+            what it revises.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-2"
+            onClick={() => {
+              setAmendSeed(amendedResponse ?? reconciledResponse());
+              setIsAmending(true);
+              setAmendError(null);
+              setFormEpoch((epoch) => epoch + 1);
+              // `amendResults` is deliberately kept: it is what `amendTargets` reads, so a second
+              // amendment revises the first rather than reaching back past it to the original.
+            }}>
+            <PencilLine className="h-3.5 w-3.5" aria-hidden />
+            {amendResults === null ? 'Amend these answers' : 'Amend again'}
+          </Button>
+        </Alert>
+      ) : null}
+
+      {results !== null && saved.length > 0 && !questionnaire ? (
+        <Alert title="These cannot be amended here">
+          Amending means editing the answers, and the form definition could not be resolved — so there
+          is nothing to render an editor from. The stored response can still be amended by any app
+          that can resolve the questionnaire.
+        </Alert>
+      ) : null}
+
       {failed.length > 0 ? (
         <Alert tone="error" title="Could not save">
           <ul className="space-y-0.5">
@@ -431,11 +664,19 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
       {questionnaire ? (
         <div className="form-surface">
+          {/*
+            * Read-only everywhere except an explicit amendment. Keyed so a mode change remounts the
+            * renderer: its questionnaire and response stores are module-level singletons, so
+            * rebuilding is the supported way to reseed them.
+            */}
           <FormRenderer
+            key={`${isAmending ? 'edit' : 'view'}-${formEpoch}`}
             questionnaire={questionnaire}
-            questionnaireResponse={response}
+            questionnaireResponse={
+              isAmending ? (amendSeed ?? response) : (amendedResponse ?? response)
+            }
             terminologyServerUrl={config.terminologyServerUrl}
-            readOnly
+            readOnly={!isAmending}
           />
         </div>
       ) : (

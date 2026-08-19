@@ -27,6 +27,7 @@ cannot currently be opened by third-party SHL wallets.
 - [What it does](#what-it-does) — the routes
 - [The round trip](#the-round-trip) — ten steps, with measured sizes
 - [Three ways to return answers](#three-ways-to-return-answers) — and why A is the default
+- [Amendments are new resources](#amendments-are-new-resources) — why the review screen is read-only
 - [How links work](#how-links-work)
 - [Two transports, one interface](#two-transports-one-interface)
 - [Three servers, three jobs](#three-servers-three-jobs)
@@ -127,7 +128,11 @@ demo the QR codes.
    destination for the right patient there and then; the answers only exist in the browser at that
    point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
    `QuestionnaireResponse` and the `Task`.
-9. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
+9. **Amend, if you have to.** The form stays read-only — see
+   [Amendments are new resources](#amendments-are-new-resources). *Amend these answers* opens an
+   editable copy and writes your changes as a **second** response authored by you, joined to the
+   first by a `Provenance`. Both versions survive, and the record says who wrote each.
+10. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
    flips to **Accepted** — the scanned answers are matched back to the request on `Task.identifier`,
    which is the one key that survives both copies.
 
@@ -318,6 +323,51 @@ untrusted host: the file is a JWE and the key travels only in the link, so the h
 plaintext. That is why a FHIR `Binary` on an open server is a legitimate file host and no
 S3/lambda tier is required. It is also, for a different reason, currently the thing that stops
 third-party wallets opening these links — see [Known limitations](#known-limitations).
+
+## Amendments are new resources
+
+The review screen renders the incoming form **read-only**, and that is a design decision rather than a
+missing feature. It is the first thing people try to change, so it is worth setting out why.
+
+Answers arriving over the encrypted channel carry two claims about who said them: `meta.security` =
+`PATAST`, and a `Provenance` naming the patient as author. `submit.ts` deliberately preserves both on
+save. Editing the answers in place and writing them under those would file words the reviewer typed as
+words the patient asserted, and nothing downstream could separate the two.
+
+So the original is stored exactly as it arrived, and an amendment is a **second**
+`QuestionnaireResponse`:
+
+| | original | amendment |
+| --- | --- | --- |
+| `author` | absent, or the filler's | the reviewer, by name — required before the button enables |
+| `source` | the patient | **still the patient** — they did answer the questions |
+| `meta.security` | `PATAST` | `PATAST` removed; every other label, tag and profile kept |
+| `item` | as given | as edited |
+
+The two are joined by a `Provenance` with `activity` = v3 `UPDATE` and `entity.role` = `revision`
+pointing at the original. It has to be a Provenance because R4 offers nothing better:
+`QuestionnaireResponse.partOf` takes only `Procedure|Observation` and `basedOn` only
+`CarePlan|ServiceRequest`, so neither can name the response being revised. This is the same shape as
+the correlation problem in [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel),
+and it has the same cause.
+
+Three details that are easy to get wrong:
+
+- **`author` and `source` are not the same field.** `author` is who *recorded* the answers, `source` is
+  who *answered* them. The amender becomes the author of their version; `source` rides through
+  untouched, because overwriting it would erase that a patient answered at all.
+- **`PATAST` is dropped from the amended copy, not from the original.** An amended document is no
+  longer wholly the patient's words, so carrying the label across would assert something false about
+  the parts that changed. Removing it understates the other direction — most of the content usually
+  *is* patient-asserted — but that error is recoverable through the Provenance, and the other is not.
+- **The `Provenance` failing is not a footnote here.** On the inbound path a lost Provenance costs
+  attribution accompanying the clinical content, so it is warned about and shrugged off. On this path
+  it is the *only* thing joining two otherwise unrelated responses, so a failure is reported as an
+  error telling the reviewer they have an orphan to fix by hand.
+
+Amending twice chains: the second revises the first, not the original. And the original's `versionId`
+is never bumped, which `check:amend` asserts by re-reading it — a server-side fact that no amount of
+reading the code will prove.
 
 ## How links work
 
@@ -595,6 +645,7 @@ src/
     ehrServer.ts       patients, responses, published request Tasks
     blobStore.ts       Binary create/read, and the Location-header workaround
     submit.ts          the write: endpoint resolution, meta handling, Provenance
+    amend.ts           amendments as a new resource joined by a revision Provenance
   lib/
     config.ts          AppConfig, validation, and the fallback
     requestStore.ts    reply keys in localStorage
@@ -604,6 +655,7 @@ scripts/
   roundtrip.ts         npm run check:roundtrip — no network
   e2eShl.ts            npm run check:e2e-shl   — live, writes and cleans up
   e2eLink.ts           npm run check:e2e       — the legacy decode path
+  e2eAmend.ts          npm run check:amend     — live, writes and cleans up
 docs/
   shl-form-reply-channel.md   wire format for channels B and C
   response-links.md           what counts as an inbound response link
@@ -661,6 +713,9 @@ npm run check:e2e        # the retained bespoke decode path, against the live fo
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
 # Reads the forms server, writes only to SHL_WRITE_SERVER
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-shl
+
+# 21 checks: amending answers somebody else gave, without editing what they said
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
 ```
 
 `check:roundtrip` needs neither network nor hosting, so it is the one to run on every change. It
@@ -691,6 +746,13 @@ nowhere in the `shlink:` string, that the slot holds ciphertext only, that a str
 decrypt it, that `PATAST` and the `Provenance` survive all the way into storage, and that the stored
 Task points at the response's *real* id rather than a `urn:uuid`. It also asserts the
 unresolvable-subject failure mode above.
+
+`check:amend` covers the amendment path, and it is written mostly as a set of things that must **not**
+happen: the original is never updated in place, its `PATAST` label never rides along onto content the
+reviewer wrote, and the patient never ends up named as the author of words they did not say. Each is a
+one-line mistake to make and invisible afterwards, so the original is re-read and compared — version
+included — rather than assumed untouched. It also asserts the `Provenance` actually joins the two, since
+without it the server holds two unrelated responses.
 
 It also publishes a request `Task` and searches it back out by tag, because that is a **server-side**
 constraint a unit check cannot prove — a canonical in `Task.focus` is rejected outright, and nothing
@@ -753,7 +815,9 @@ foreign-shaped payloads this app would never itself produce.
   against nobody, permanently, so it is asked about just as loudly as a subject that does not resolve.
 - **Nothing is written without review — on channels A and C.** `ReviewResponse` renders read-only on
   purpose: editing another party's answers before committing them would blur who recorded what and make
-  the response's `author`/`source` describe a document that no longer exists. Channel B is the
+  the response's `author`/`source` describe a document that no longer exists. Changing something is
+  still possible, as a separate amendment resource — see
+  [Amendments are new resources](#amendments-are-new-resources). Channel B is the
   exception, by construction: it hands a filler an endpoint and the answers land unreviewed. That is
   why it is off by default.
 - **A foreign `id` is stripped before writing, but not the whole of `meta`.** A response from another
