@@ -84,7 +84,8 @@ export function mergeSentRequests(
       subjectDisplay: request.subjectDisplay,
       expiresAt: request.expiresAt,
       local: request,
-      collectable: request.reply !== undefined && !isExpired(request)
+      collectable:
+        (request.reply !== undefined || request.write !== undefined) && !isExpired(request)
     });
   }
 
@@ -135,13 +136,13 @@ export function whyNotCollectable(request: SentRequest): string | undefined {
     return 'Sent from another browser. Its reply key is held there — import it to collect the answers here.';
   }
 
-  if (!request.local?.reply) {
-    // Not a fault: with the encrypted channel off, this is what every request looks like, and the
+  if (!request.local?.reply && !request.local?.write) {
+    // Not a fault: with both slot channels off, this is what every request looks like, and the
     // answers come back as a link to scan rather than into a slot to poll.
     return 'Answers to this request come back as a link. Scan or paste it to review them.';
   }
 
-  return 'This request has expired, so its reply slot no longer accepts answers.';
+  return 'This request has expired, so its slot no longer accepts answers.';
 }
 
 /**

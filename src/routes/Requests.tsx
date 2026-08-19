@@ -25,7 +25,7 @@ import {
 } from '@/lib/requestStore';
 import { mergeSentRequests, whyNotCollectable, type SentRequest } from '@/lib/sentRequests';
 import { searchPublishedRequests } from '@/fhir/ehrServer';
-import { collectReply, type CollectOutcome } from '@/link/collectReply';
+import { collectAnswers, type CollectOutcome } from '@/link/collectReply';
 import ReviewResponse from '@/components/ReviewResponse';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
 import { Button } from '@/components/ui/button';
@@ -39,9 +39,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
  * has to be somewhere to come back to. This is it.
  *
  * By default answers return as a link the filler mints, so there is nothing here to poll: a row
- * simply waits until someone opens that link, and `/view` stamps the match onto it. Rows only gain a
- * Check button when the request offered an encrypted reply slot (`enableEncryptedReply`), which is
- * the case this page's polling machinery exists for.
+ * simply waits until someone opens that link, and `/view` stamps the match onto it. Rows gain a Check
+ * button when the request offered a slot — encrypted (`enableEncryptedReply`) or plain
+ * (`enableOneShotWrite`) — which is the case this page's polling machinery exists for.
  *
  * The list is the union of two sources with different reach, described in `src/lib/sentRequests.ts`:
  * the EHR knows every published request, and this browser knows the reply keys. A request that is
@@ -84,7 +84,7 @@ export default function Requests() {
     async (request: OutstandingRequest) => {
       setState(request.id, { kind: 'checking' });
       try {
-        const outcome = await collectReply(request, config.formsServerUrl);
+        const outcome = await collectAnswers(request, config.formsServerUrl);
         setState(
           request.id,
           outcome.status === 'ready' ? { kind: 'ready', outcome } : { kind: outcome.status }
@@ -106,7 +106,7 @@ export default function Requests() {
    */
   useEffect(() => {
     for (const request of listRequests()) {
-      if (request.reply && !request.collectedAt && !isExpired(request)) {
+      if ((request.reply || request.write) && !request.collectedAt && !isExpired(request)) {
         void check(request);
       }
     }
@@ -122,7 +122,9 @@ export default function Requests() {
     }
 
     const answered = states[request.id]?.kind === 'ready';
-    const warning = !request.local.reply
+    const warning = !request.local.reply && request.local.write
+      ? `Forget "${request.label}"? Its write slot stays where it is and any answers written there remain readable — you just lose the address for them.`
+      : !request.local.reply
       ? `Forget "${request.label}"? Answers returned as a link can still be opened, but they will no longer be matched to this request.`
       : answered
         ? `Forget "${request.label}"? A reply has already arrived, and discarding the key makes it permanently unreadable.`
@@ -286,7 +288,9 @@ export default function Requests() {
           <CardHeader>
             <CardTitle className="text-base">Reply to “{reviewing.request.label}”</CardTitle>
             <CardDescription>
-              Decrypted in this browser. Nothing has been written yet — review the answers, then accept.
+              {reviewing.request.local?.reply
+                ? 'Decrypted in this browser. Nothing has been written yet — review the answers, then accept.'
+                : 'Collected from the slot this request set aside. Nothing has been written to your record yet — review the answers, then accept.'}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -295,6 +299,13 @@ export default function Requests() {
               response={reviewing.state.outcome.payload.response}
               task={reviewing.state.outcome.payload.task}
               provenance={reviewing.state.outcome.payload.provenance}
+              /*
+               * Answers written into a slot carry a `subject` display and no reference — a filler's
+               * own patient id resolves nowhere, and on the slot server it would fail the write
+               * outright. Handing the review the request's own record gives the reviewer the patient
+               * it was addressed to as a one-click reconciliation instead of a free-text search.
+               */
+              matchedRequest={reviewing.request.local}
               label={reviewing.request.label}
               onSaved={() => {
                 updateRequest(reviewing.request.id, { collectedAt: new Date().toISOString() });
@@ -341,7 +352,7 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
               collectedAt={request.local?.collectedAt}
               expired={expired}
               collectable={request.collectable}
-              hasReplySlot={request.local?.reply !== undefined}
+              hasReplySlot={request.local?.reply !== undefined || request.local?.write !== undefined}
             />
             {request.collectable && !request.local?.collectedAt ? (
               <Button
@@ -379,6 +390,12 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
             <>
               <dt className="font-medium">Reply slot</dt>
               <dd className="font-mono break-all">{request.local.reply.url}</dd>
+            </>
+          ) : null}
+          {request.local?.write ? (
+            <>
+              <dt className="font-medium">Write slot</dt>
+              <dd className="font-mono break-all">{request.local.write.url}</dd>
             </>
           ) : null}
           {request.serverTask?.id ? (

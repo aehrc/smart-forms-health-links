@@ -10,7 +10,9 @@ import { collectionBundle, findInBundle, questionnaireCanonical } from './codec'
 import {
   buildReplyDescriptorExtension,
   buildServerTaskUrlExtension,
-  type ReplyDescriptor
+  buildWriteDescriptorExtension,
+  type ReplyDescriptor,
+  type WriteDescriptor
 } from './replyDescriptor';
 
 /**
@@ -98,6 +100,8 @@ export interface BuildRequestOptions {
   authoredOn?: string;
   /** Channel C: where an encrypted reply may be parked, and the key to encrypt it to. */
   replyDescriptor?: ReplyDescriptor;
+  /** Channel D: a pre-allocated slot the answers may be written to, once. */
+  writeDescriptor?: WriteDescriptor;
   /** Channel B: absolute URL of this Task on the requester's own server. */
   serverTaskUrl?: string;
 }
@@ -172,6 +176,9 @@ export function buildRequestBundle(
   const extensions: Extension[] = [];
   if (options.replyDescriptor) {
     extensions.push(buildReplyDescriptorExtension(options.replyDescriptor));
+  }
+  if (options.writeDescriptor) {
+    extensions.push(buildWriteDescriptorExtension(options.writeDescriptor));
   }
   if (options.serverTaskUrl) {
     extensions.push(buildServerTaskUrlExtension(options.serverTaskUrl));
@@ -362,6 +369,49 @@ export function buildReplyBundle(
       { fullUrl: `urn:uuid:${newUuid()}`, resource: provenance }
     ]),
     provenance
+  };
+}
+
+/**
+ * Build the resource written into a one-shot write slot (channel D).
+ *
+ * A bare `QuestionnaireResponse`, not a Bundle: the capability addresses exactly one resource, so
+ * there is nowhere to put a second one. Three consequences follow, and each is a deliberate trade
+ * rather than an oversight:
+ *
+ *  - **No `Provenance`.** `meta.security` = `PATAST` is therefore carrying the whole attribution
+ *    story, which is why it is stamped here and must survive the requester's write
+ *    (`asNewResource` keeps it).
+ *  - **No `Task` echo, so correlation moves onto `identifier`.** R4 allows `QuestionnaireResponse`
+ *    only one, which is exactly enough for the request's `urn:uuid`. In practice the requester also
+ *    knows *which slot* answered, so this is belt and braces for a reader holding only the resource.
+ *  - **`subject` carries a display and no reference.** A filler names the patient in its own terms —
+ *    Platypus uses a local vault key — and that reference resolves nowhere. On the record server that
+ *    is a reconciliation for a human (`referenceResolves` exists for it); on the *slot* server it is
+ *    a hard `HAPI-1094` that would fail the write outright and strand the answers. The name is what
+ *    survives, and the requester reconciles it against the patient it addressed the request to.
+ *
+ * The local `id` is dropped here; {@link putResponseToSlot} sets the slot's own id, because a FHIR
+ * update requires the body's id to match the URL.
+ */
+export function buildWriteResponse(
+  response: QuestionnaireResponse,
+  options: { requestTask?: Task } = {}
+): QuestionnaireResponse {
+  const { id: _id, subject: _subject, author: _author, ...rest } = response;
+
+  const subjectDisplay = options.requestTask?.for?.display ?? response.subject?.display;
+  const requestIdentifier = options.requestTask?.identifier?.[0];
+
+  return {
+    ...rest,
+    status: 'completed',
+    ...(subjectDisplay ? { subject: { display: subjectDisplay } } : {}),
+    ...(requestIdentifier ? { identifier: requestIdentifier } : {}),
+    meta: {
+      ...response.meta,
+      security: [...(response.meta?.security ?? []), { ...PATIENT_ASSERTED_SECURITY }]
+    }
   };
 }
 

@@ -26,7 +26,7 @@ cannot currently be opened by third-party SHL wallets.
 - [Quick start](#quick-start) — install, then walk the round trip end to end
 - [What it does](#what-it-does) — the routes
 - [The round trip](#the-round-trip) — ten steps, with measured sizes
-- [Three ways to return answers](#three-ways-to-return-answers) — and why A is the default
+- [Four ways to return answers](#four-ways-to-return-answers) — and why A is the default
 - [Amendments are new resources](#amendments-are-new-resources) — why the review screen is read-only
 - [Creating a patient at review time](#creating-a-patient-at-review-time) — the duplicate problem
 - [How links work](#how-links-work)
@@ -55,7 +55,7 @@ how SHL is usually described:
 3. **Answers can come back over SHL without going off-spec.** SHL is strictly one-directional and
    defines no upload channel — so the return leg is *another SHL*, minted by the filler and scanned
    by the requester, who performs the write themselves. See
-   [Three ways to return answers](#three-ways-to-return-answers).
+   [Four ways to return answers](#four-ways-to-return-answers).
 4. **A human reviews before anything is stored.** Answers arrive, get rendered read-only, and are
    written only on accept. The one channel that skips review is off by default and labelled as such.
 5. **Reading a link somebody else wrote is the hard part**, and it is where a strict implementation
@@ -210,7 +210,7 @@ Measured on the live server for the GP Chronic Condition Management Plan:
 | **The link itself** | **271** |
 | Return payload (no Questionnaire) | 1,119 |
 
-## Three ways to return answers
+## Four ways to return answers
 
 **SMART Health Links are strictly one-directional.** Neither the
 [SHL spec](https://docs.smarthealthit.org/smart-health-links/spec/) nor the
@@ -223,13 +223,15 @@ a filler publishes a link, this app pulls it, shows a human, and only then write
 Answers travel the same way the request did — as a SMART Health Link, in the direction SHL already
 supports — and the return leg is just another scan.
 
-| | A · return a link | B · write to our server | C · encrypted reply |
-|---|---|---|---|
-| Who it suits | anything that can mint a link and show a QR | a filler that can reach our server | a filler that cannot get a QR back to us |
-| Needs from us | nothing | a writable FHIR endpoint | somewhere to `PUT` a file |
-| Reviewed before it lands? | yes | **no** | yes |
-| Host sees answers? | no, ciphertext only | yes — it is the record | no, ciphertext only |
-| Default | **on** | off | off |
+| | A · return a link | B · write to our server | C · encrypted reply | D · write once to a slot |
+|---|---|---|---|---|
+| Who it suits | anything that can mint a link and show a QR | a filler that can reach our server | a filler that cannot get a QR back to us | a filler that cannot do C's crypto |
+| Needs from us | nothing | a writable FHIR endpoint | somewhere to `PUT` a file | a FHIR server we can create on |
+| Needs from them | mint a link, show a QR | `POST` | ECDH-ES + A256GCM | `PUT` |
+| Reviewed before it lands? | yes | **no** | yes | yes |
+| Host sees answers? | no, ciphertext only | yes — it is the record | no, ciphertext only | yes — but it is transport |
+| Answerable more than once? | yes | yes | yes, last wins | **no** |
+| Default | **on** | off (superseded by D) | off | off |
 
 **A is the primary channel**, and it is the one [Platypus](https://github.com/aehrc/platypus) uses:
 the form is filled there, Platypus mints its own `shlink:/` carrying the QuestionnaireResponse, and
@@ -247,13 +249,35 @@ only what this app *mints*. A request from a third party that offers a reply des
 answerable here regardless, because refusing to honour someone else's return channel would strand
 their answers rather than protect anyone.
 
-**B is opt-in and does not preserve the review posture.** It declares `sdc-questionnaire-endpoint` on
-the form and publishes the request's `Task`, so a filler holding nothing but the link can `POST` a
-response straight into the configured server. That is ordinary SDC and needs no infrastructure, but
-the answers arrive unreviewed and the endpoint must accept anonymous writes. Point it at a staging
-server if you want both. Off unless `enableServerReturn` is set.
+**D is C's answer for a filler that cannot do crypto**, and is off by default
+(`enableOneShotWrite`). The request pre-allocates an empty `QuestionnaireResponse` on the blob server
+and carries its address, the version it is at, and a token. The filler `PUT`s the answers there with
+`If-Match`; the requester polls the slot, reviews, and only then writes to the record. Turn it on
+alongside or instead of C when the fillers you expect can manage a `PUT` and not much more.
 
-The wire format for B and C is specified in [`docs/shl-form-reply-channel.md`](docs/shl-form-reply-channel.md);
+Two things about D that are easy to get wrong, and both are load-bearing:
+
+- **"Once" comes from `If-Match`, not from the token.** The second write collides with the version the
+  first one created and the server refuses it — verified live against public HAPI, which answers
+  `HAPI-0989: Trying to update QuestionnaireResponse/… but this is not the current version`. A plain
+  FHIR server has no notion of bearer tokens and ignores ours entirely; it is carried because it is
+  the field a gating host would check, and it is **advisory** anywhere else. Nothing in this app
+  implies otherwise.
+- **The slot is not on the record server.** It is minted on `blobServerUrl` — transport, the same
+  trust class as the host already holding the encrypted payload — so answers are collected and
+  reviewed before anything reaches a record. Point it at the record server and you have rebuilt B.
+
+The cost, stated plainly: **the slot host sees the answers.** They are ordinary FHIR, not ciphertext.
+That is the trade for a channel a filler can implement in an afternoon, and it is why C is not
+retired.
+
+**B is superseded by D and should not be turned on for anything new.** It declares
+`sdc-questionnaire-endpoint` on the form and publishes the request's `Task`, so a filler holding
+nothing but the link can `POST` a response straight into the configured server. That is ordinary SDC
+and needs no infrastructure, but it names a record server, carries no capability, cannot be made
+single-use, and the answers arrive unreviewed. Off unless `enableServerReturn` is set.
+
+The wire format for B, C and D is specified in [`docs/shl-form-reply-channel.md`](docs/shl-form-reply-channel.md);
 what this app accepts as an inbound response link is in [`docs/response-links.md`](docs/response-links.md).
 Both are written so a third party can implement against them without reading this source.
 
@@ -576,6 +600,8 @@ This is what ships, and it is a working demo as-is:
   "senderName": null,
   "enableServerReturn": false,
   "enableEncryptedReply": false,
+  "enableOneShotWrite": false,
+  "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
   "publishRequestTasks": true
 }
@@ -598,6 +624,8 @@ rather than a demo.
 | `senderName` | `Task.requester.display`. An invitation that cannot say who sent it is one a patient has reason to decline |
 | `enableServerReturn` | offer channel B. **Off by default** — it accepts answers without review |
 | `enableEncryptedReply` | offer channel C, the encrypted reply slot. **Off by default** — answers come back as a link the filler mints. Turn it on when a filler may have no way to show you a QR code. Requires `blobServerUrl` |
+| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **Off by default.** Turn it on for fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
+| `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
 | `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
 | `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
 
@@ -700,6 +728,7 @@ src/
     exchange.ts        resolves a link into something renderable
     jwe.ts             alg:dir + A256GCM
     replyCrypto.ts     ECDH-ES + A256GCM, P-256 — channel C
+    writeSlot.ts       pre-allocate, write once, poll — channel D
     replySlot.ts       minting and reading the reply slot
     replyDescriptor.ts the wire format for channels B and C
     collectReply.ts    pulling and decrypting a reply
@@ -719,11 +748,12 @@ src/
 scripts/
   roundtrip.ts         npm run check:roundtrip — no network
   e2eShl.ts            npm run check:e2e-shl   — live, writes and cleans up
+  e2eWrite.ts          npm run check:e2e-write — live, writes and cleans up
   e2eLink.ts           npm run check:e2e       — the legacy decode path
   e2eAmend.ts          npm run check:amend     — live, writes and cleans up
   e2ePatient.ts        npm run check:patient   — live, writes and cleans up
 docs/
-  shl-form-reply-channel.md   wire format for channels B and C
+  shl-form-reply-channel.md   wire format for channels B, C and D
   response-links.md           what counts as an inbound response link
   u-flag-hosting.md           the third-party blocker, in full
 public/config.json     runtime config
@@ -779,12 +809,15 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 195 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
+npm run check:roundtrip  # 225 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
 # Reads the forms server, writes only to SHL_WRITE_SERVER
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-shl
+
+# 23 checks: the one-shot write channel, including that a SECOND write is actually refused
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-write
 
 # 21 checks: amending answers somebody else gave, without editing what they said
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
@@ -821,6 +854,16 @@ nowhere in the `shlink:` string, that the slot holds ciphertext only, that a str
 decrypt it, that `PATAST` and the `Provenance` survive all the way into storage, and that the stored
 Task points at the response's *real* id rather than a `urn:uuid`. It also asserts the
 unresolvable-subject failure mode above.
+
+`check:e2e-write` exists for one assertion, and the rest of it is scaffolding to reach that assertion:
+**the second write is refused.** Everything about channel D that could be checked offline already is;
+what cannot be is whether a real FHIR server actually honours `If-Match`, and therefore whether
+"once" is a fact or a hope. It mints a slot, seals a request around it, decodes it as the filler
+would, writes the answers, writes them *again*, and requires the second attempt to come back
+`taken` — against public HAPI that is `409 HAPI-0989`. It also asserts the token and the slot id
+appear nowhere in the `shlink:` string, that `PATAST` survives the round trip, that the filler's own
+patient reference deliberately does not, and that what lands in the record is a new resource rather
+than the transport slot.
 
 `check:amend` covers the amendment path, and it is written mostly as a set of things that must **not**
 happen: the original is never updated in place, its `PATAST` label never rides along onto content the

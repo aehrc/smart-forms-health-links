@@ -4,7 +4,12 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Inbox, Loader2, Send } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
-import { canUseEncryptedReply, canUseServerReturn } from '@/lib/config';
+import {
+  canUseEncryptedReply,
+  canUseOneShotWrite,
+  canUseServerReturn,
+  resolveWriteSlotServerUrl
+} from '@/lib/config';
 import { saveRequest } from '@/lib/requestStore';
 import { canCreateHealthLinks, createRequestLink } from '@/link/createLink';
 import { questionnaireCanonicalOf, taskCorrelationId } from '@/link/exchange';
@@ -55,6 +60,7 @@ export default function RequestForm() {
   const canHost = canCreateHealthLinks(config);
   const serverReturn = canUseServerReturn(config);
   const encryptedReply = canUseEncryptedReply(config);
+  const oneShotWrite = canUseOneShotWrite(config);
 
   const {
     data: questionnaire,
@@ -102,7 +108,8 @@ export default function RequestForm() {
             ? { url: created.reply.url, privateJwk: created.reply.privateJwk }
             : undefined,
           serverTaskUrl: created.serverTaskUrl,
-          serverReturnOffered: created.serverReturnOffered
+          serverReturnOffered: created.serverReturnOffered,
+          write: created.write
         });
       }
 
@@ -256,6 +263,24 @@ export default function RequestForm() {
               . Useful when whoever fills this in cannot get a QR code back to you.
             </li>
           ) : null}
+          <li>
+            <strong>Write once to a slot</strong> —{' '}
+            {oneShotWrite ? (
+              <>
+                enabled. The request carries the address of an empty response on{' '}
+                <span className="font-mono text-xs">{resolveWriteSlotServerUrl(config)}</span>, plus a
+                token and the version to write against, so a filler can send the answers there without
+                showing you anything. The write succeeds <strong>once</strong>; you still collect and
+                review them here before they reach a record.
+              </>
+            ) : (
+              <>
+                off. Set <span className="font-mono text-xs">enableOneShotWrite</span> to offer it —
+                the channel to use when a filler has no way to get a QR code back to you and no way to
+                do the encrypted reply&rsquo;s crypto.
+              </>
+            )}
+          </li>
           <li>
             <strong>Direct write to your server</strong> —{' '}
             {serverReturn ? (

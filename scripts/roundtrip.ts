@@ -45,15 +45,24 @@ import {
 import { replySlotPlaceholder } from '../src/link/replySlot';
 import {
   REPLY_DESCRIPTOR_EXTENSION,
+  WRITE_DESCRIPTOR_EXTENSION,
   buildReplyDescriptorExtension,
   buildServerTaskUrlExtension,
+  buildWriteDescriptorExtension,
   isReplyDescriptorExpired,
+  isSafeWriteUrl,
+  isWriteDescriptorExpired,
   parseReplyDescriptor,
-  parseServerTaskUrl
+  parseReturnChannels,
+  parseServerTaskUrl,
+  parseWriteDescriptor,
+  writeSlotId
 } from '../src/link/replyDescriptor';
 import {
   buildReplyBundle,
   buildRequestBundle,
+  buildResponseBundle,
+  buildWriteResponse,
   isRequestBundle,
   parseResponseBundle,
   responseCanonical,
@@ -894,6 +903,199 @@ check(
 );
 check('descriptor/expiryHonoured', isReplyDescriptorExpired({ ...descriptor, expiresAt: 1 }));
 check('descriptor/unexpiredIsUsable', !isReplyDescriptorExpired(descriptor));
+
+// ---------------------------------------------------------------------------
+// Write descriptor (channel D) — build, parse, tolerance, and the invariants that
+// keep a write capability out of everything it must not appear in.
+// ---------------------------------------------------------------------------
+
+console.log('\nwrite descriptor\n');
+
+const writeDescriptor = {
+  writeUrl: 'https://blobs.test/fhir/QuestionnaireResponse/4821',
+  writeMethod: 'PUT' as const,
+  writeEtag: 'W/"1"',
+  writeToken: 'write-token-abc',
+  expiresAt: Math.floor(Date.now() / 1000) + 86400
+};
+
+const writeTask: Task = {
+  resourceType: 'Task',
+  status: 'requested',
+  intent: 'order',
+  identifier: [{ system: 'urn:ietf:rfc:3986', value: 'urn:uuid:3fb1cde7-0000-4000-8000-000000000001' }],
+  for: { reference: 'Patient/137287372', display: 'Jane Citizen' },
+  extension: [buildWriteDescriptorExtension(writeDescriptor)]
+};
+
+const parsedWrite = parseWriteDescriptor(writeTask);
+check('write/roundTripsUrl', parsedWrite?.writeUrl === writeDescriptor.writeUrl);
+check('write/roundTripsMethod', parsedWrite?.writeMethod === 'PUT');
+check('write/roundTripsEtag', parsedWrite?.writeEtag === 'W/"1"');
+check('write/roundTripsToken', parsedWrite?.writeToken === 'write-token-abc');
+check('write/roundTripsExpiry', parsedWrite?.expiresAt === writeDescriptor.expiresAt);
+check('write/expiryHonoured', isWriteDescriptorExpired({ ...writeDescriptor, expiresAt: 1 }));
+check('write/unexpiredIsUsable', !isWriteDescriptorExpired(writeDescriptor));
+
+check(
+  'write/slotIdFromUrl',
+  writeSlotId(writeDescriptor.writeUrl) === '4821',
+  'a FHIR update requires the body id to match the URL, so this has to be exact'
+);
+
+// Tolerance: anything we cannot use reads as "no write channel", never as an error.
+check(
+  'write/absentIsUndefined',
+  parseWriteDescriptor({ resourceType: 'Task', status: 'requested', intent: 'order' }) === undefined
+);
+check(
+  'write/missingUrlIsIgnored',
+  parseWriteDescriptor({
+    resourceType: 'Task',
+    status: 'requested',
+    intent: 'order',
+    extension: [{ url: WRITE_DESCRIPTOR_EXTENSION, extension: [{ url: 'writeEtag', valueString: 'W/"1"' }] }]
+  }) === undefined
+);
+check(
+  'write/unknownMethodIsIgnored',
+  parseWriteDescriptor({
+    resourceType: 'Task',
+    status: 'requested',
+    intent: 'order',
+    extension: [
+      {
+        url: WRITE_DESCRIPTOR_EXTENSION,
+        extension: [
+          { url: 'writeUrl', valueUrl: 'https://blobs.test/fhir/QuestionnaireResponse/1' },
+          { url: 'writeMethod', valueCode: 'relay-grant' }
+        ]
+      }
+    ]
+  }) === undefined,
+  'a delivery method we do not implement is a channel to decline, not one to attempt anyway'
+);
+
+// A Platypus-minted write descriptor, under their namespace and using valueString.
+check(
+  'write/readsPlatypusExtensionUrl',
+  parseWriteDescriptor({
+    resourceType: 'Task',
+    status: 'requested',
+    intent: 'order',
+    extension: [
+      {
+        url: 'https://platypushealth.app/StructureDefinition/shl-write-descriptor',
+        extension: [
+          { url: 'writeUrl', valueString: 'https://practice.test/fhir/QuestionnaireResponse/9' },
+          { url: 'writeEtag', valueString: 'W/"3"' }
+        ]
+      }
+    ]
+  })?.writeEtag === 'W/"3"'
+);
+
+// Unsafe addresses are dropped at the parse, so no UI ever offers a send that cannot work.
+check('write/rejectsCleartext', !isSafeWriteUrl('http://blobs.test/fhir/QuestionnaireResponse/1'));
+check('write/rejectsLoopback', !isSafeWriteUrl('https://localhost:8443/fhir/QuestionnaireResponse/1'));
+check('write/rejects127', !isSafeWriteUrl('https://127.0.0.1/fhir/QuestionnaireResponse/1'));
+check(
+  'write/rejectsLinkLocal',
+  !isSafeWriteUrl('https://169.254.169.254/latest/meta-data'),
+  'the cloud metadata address is the one a forged invitation would most like a filler to reach'
+);
+check('write/acceptsHttps', isSafeWriteUrl(writeDescriptor.writeUrl));
+check(
+  'write/unsafeUrlIsNoChannel',
+  parseWriteDescriptor({
+    resourceType: 'Task',
+    status: 'requested',
+    intent: 'order',
+    extension: [
+      {
+        url: WRITE_DESCRIPTOR_EXTENSION,
+        extension: [{ url: 'writeUrl', valueUrl: 'http://127.0.0.1/fhir/QuestionnaireResponse/1' }]
+      }
+    ]
+  }) === undefined
+);
+
+// Both channels on one Task must both be readable — a request may offer either, both, or neither.
+const bothChannels = parseReturnChannels({
+  ...writeTask,
+  extension: [
+    buildReplyDescriptorExtension(descriptor),
+    buildWriteDescriptorExtension(writeDescriptor),
+    buildServerTaskUrlExtension('https://ehr.test/fhir/Task/7')
+  ]
+});
+check('write/coexistsWithReply', bothChannels.reply !== undefined && bothChannels.write !== undefined);
+check('write/coexistsWithServerTaskUrl', bothChannels.serverTaskUrl === 'https://ehr.test/fhir/Task/7');
+
+// The written resource.
+const writeWire = buildWriteResponse(
+  {
+    resourceType: 'QuestionnaireResponse',
+    id: 'local-vault-key-77',
+    status: 'in-progress',
+    questionnaire: 'http://example.org/Q|1.0',
+    subject: { reference: 'Patient/local-vault-key', display: 'Someone Else' },
+    author: { reference: 'Patient/local-vault-key' },
+    item: [{ linkId: '1', answer: [{ valueString: 'yes' }] }]
+  },
+  { requestTask: writeTask }
+);
+
+check('write/wireIsCompleted', writeWire.status === 'completed');
+check(
+  'write/wireDropsLocalId',
+  writeWire.id === undefined,
+  'the slot id is applied at the PUT; a filler id here would address the wrong resource'
+);
+check(
+  'write/wireIsPatientAsserted',
+  (writeWire.meta?.security ?? []).some((coding) => coding.code === 'PATAST'),
+  'with no Provenance to send, this label is the whole attribution story'
+);
+check(
+  'write/wireDropsUnresolvableSubjectReference',
+  writeWire.subject?.reference === undefined,
+  'a filler patient id fails the slot write outright (HAPI-1094), stranding the answers'
+);
+check(
+  'write/wireKeepsSubjectName',
+  writeWire.subject?.display === 'Jane Citizen',
+  'the name is the only part of who the answers are about that survives'
+);
+check(
+  'write/wireCorrelatesByIdentifier',
+  writeWire.identifier?.value === 'urn:uuid:3fb1cde7-0000-4000-8000-000000000001',
+  'there is no Task echo on this channel, so the identifier is the correlation key'
+);
+check('write/wireKeepsAnswers', writeWire.item?.[0]?.answer?.[0]?.valueString === 'yes');
+
+// The three places a write token must never appear.
+const writeRequest = buildRequestBundle(
+  { resourceType: 'Questionnaire', status: 'active', url: 'http://example.org/Q', version: '1.0', title: 'Probe' },
+  { requestId: 'write-invariants', writeDescriptor }
+);
+check(
+  'write/tokenTravelsInsideThePayload',
+  JSON.stringify(writeRequest.bundle).includes(writeDescriptor.writeToken),
+  'the descriptor is what the filler reads; it has to be in the encrypted payload'
+);
+check(
+  'write/tokenNotOnPublishedTask',
+  !JSON.stringify(asPublishedTask(writeRequest.task)).includes(writeDescriptor.writeToken),
+  'a token on a server whose purpose is to be readable is a token given away'
+);
+check(
+  'write/tokenNotEchoedOnReturn',
+  !JSON.stringify(buildResponseBundle(writeWire, writeRequest.task).bundle).includes(
+    writeDescriptor.writeToken
+  ),
+  'echoing it back copies a write capability into whatever the answers travel on, possibly a plain QR'
+);
 
 // ---------------------------------------------------------------------------
 // The Platypus detection contract.

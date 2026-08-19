@@ -102,6 +102,39 @@ export interface AppConfig {
   enableEncryptedReply: boolean;
 
   /**
+   * Offer the one-shot write channel (channel D) on requests this app mints.
+   *
+   * Off by default, like the other two declared channels. With it on, each request pre-allocates an
+   * empty `QuestionnaireResponse` on {@link writeSlotServerUrl} and the invitation names its absolute
+   * URL, an `If-Match` ETag, and a write token. A filler holding the link may `PUT` the completed
+   * answers there **once** — the second attempt is refused by the server's own optimistic locking,
+   * which is what makes "once" a property of the wire rather than of trust.
+   *
+   * This is channel B done properly, and it supersedes it for new deployments: B named a server and
+   * carried no capability at all, so the endpoint had to accept writes from anyone holding a link,
+   * and the answers landed in a record **unreviewed**. Here the slot is staged off the record server,
+   * so the answers are collected, shown to a human, and only then written — the same posture as every
+   * other channel.
+   *
+   * It does **not** supersede {@link enableEncryptedReply}. The payload here is plaintext FHIR, so the
+   * slot host sees the answers; channel C exists precisely so it cannot. What this buys instead is a
+   * filler that needs no bespoke crypto — any app that can `PUT` a FHIR resource can answer.
+   *
+   * Requires a slot server: {@link writeSlotServerUrl}, or `blobServerUrl`.
+   */
+  enableOneShotWrite: boolean;
+
+  /**
+   * Where one-shot write slots are pre-allocated. `null` falls back to `blobServerUrl`.
+   *
+   * Separate from `responseServerUrl` on purpose, and the separation is the whole point of the
+   * channel: a slot is transient transport of the same trust class as the SHL payload host, not a
+   * record. Pointing it at the record server would put unreviewed third-party answers straight into
+   * it, which is the Channel B behaviour this replaces.
+   */
+  writeSlotServerUrl: string | null;
+
+  /**
    * How long a request stays openable, in days. `null` means no expiry.
    *
    * Sets the SHL payload's `exp` and the reply slot's `expiresAt`. Matches the 30-day default Platypus
@@ -138,6 +171,9 @@ export const FALLBACK_CONFIG: AppConfig = {
   enableServerReturn: false,
   // Deferred, not removed. The primary return path is a link the filler mints. See the field docs.
   enableEncryptedReply: false,
+  // Off unless asked for: it hands a filler a capability to write. See the field docs above.
+  enableOneShotWrite: false,
+  writeSlotServerUrl: null,
   linkLifetimeDays: 30,
   publishRequestTasks: true
 };
@@ -189,6 +225,8 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
     ) &&
     isAbsentOr(candidate.enableServerReturn, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableEncryptedReply, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(candidate.enableOneShotWrite, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(candidate.writeSlotServerUrl, (url) => url === null || isValidUrl(url)) &&
     isAbsentOr(candidate.publishRequestTasks, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(
       candidate.linkLifetimeDays,
@@ -253,6 +291,30 @@ export function canUseServerReturn(config: AppConfig): boolean {
  */
 export function canUseEncryptedReply(config: AppConfig): boolean {
   return config.enableEncryptedReply && config.blobServerUrl !== null;
+}
+
+/**
+ * Where a one-shot write slot is pre-allocated, or null if nowhere is configured.
+ *
+ * Falls back to `blobServerUrl` because a slot and an SHL payload are the same kind of thing: a
+ * transient blob on a host nobody has to trust. It deliberately does **not** fall back to
+ * `responseServerUrl` — that is the record, and staging answers off it is what lets a human review
+ * them first.
+ */
+export function resolveWriteSlotServerUrl(config: AppConfig): string | null {
+  return config.writeSlotServerUrl ?? config.blobServerUrl;
+}
+
+/**
+ * Whether a one-shot write slot can be minted: the channel is enabled *and* there is somewhere to
+ * pre-allocate the slot.
+ *
+ * The second half is what keeps {@link FALLBACK_CONFIG} safe, exactly as it does for
+ * {@link canUseEncryptedReply}: a deployment whose config failed to load has no slot server and
+ * therefore cannot hand out a write capability, whatever some future default does to the flag.
+ */
+export function canUseOneShotWrite(config: AppConfig): boolean {
+  return config.enableOneShotWrite && resolveWriteSlotServerUrl(config) !== null;
 }
 
 /** Whether sent requests can be recorded on, and listed back from, the EHR. */
