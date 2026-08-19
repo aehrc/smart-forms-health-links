@@ -108,8 +108,9 @@ demo the QR codes.
 1. **Pick a form.** On `/`, search for something small to start with — `sepsis` or
    `medications` — and click **Request** on a result. (`Fill` is the shortcut that skips the
    request leg and just fills the form yourself.)
-2. **Say who it is for.** Both fields are optional. Click *pick a patient from the server* to fill
-   them correctly from the EHR, which also makes step 8 succeed without reconciliation.
+2. **Say who it is for.** Optional, but worth doing. Search the EHR for the patient and click them
+   to fill both fields correctly, which also makes step 8 succeed without reconciliation. The two
+   fields underneath still take a reference typed by hand, for a server the app cannot search.
 3. **Create request link.** The app encrypts the entire Questionnaire plus a `Task` into a JWE,
    `POST`s it as a FHIR `Binary`, and shows you a QR code and a copyable `shlink:/…` URL. It also
    publishes the `Task`, so the request now appears under **Sent requests**.
@@ -120,9 +121,12 @@ demo the QR codes.
 6. **Return as Health Link.** The filler encrypts the answers into *its own* SHL, hosts them, and
    shows its own QR and link. Copy that.
 7. **Paste it into `/scan`** back in the first window. Reading it needs no infrastructure at all.
-8. **Review and accept.** The answers render read-only. The subject is probed against the EHR before
-   Accept is enabled, so a patient the destination does not hold surfaces as a question rather than a
-   failed write. On accept the app `POST`s the `QuestionnaireResponse` and the `Task`.
+8. **Review and accept.** The answers render read-only. The subject is probed against the EHR
+   first, so a patient the destination does not hold — or answers that name no patient at all —
+   surfaces as a question rather than a failed write or a silently unfiled record. Search the
+   destination for the right patient there and then; the answers only exist in the browser at that
+   point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
+   `QuestionnaireResponse` and the `Task`.
 9. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
    flips to **Accepted** — the scanned answers are matched back to the request on `Task.identifier`,
    which is the one key that survives both copies.
@@ -571,6 +575,7 @@ src/
     FormRenderer.tsx   the smart-forms-renderer composition
     FillFromRequest.tsx  the filler's side: render, then return answers
     ReviewResponse.tsx   the requester's side: read-only review, then write
+    PatientPicker.tsx  inline patient search, at both ends of the round trip
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
     ShareLinkPanel.tsx QR + copyable link
   link/
@@ -737,9 +742,15 @@ foreign-shaped payloads this app would never itself produce.
   own local vault key), so a response naming a patient the destination does not hold fails with
   `HAPI-1094: Resource Patient/x not found, specified in path: QuestionnaireResponse.subject`.
   `ReviewResponse` probes the subject against the destination *before* enabling Accept and offers
-  reconciliation, so this surfaces as a question rather than a rejected write. The subject is still
-  never silently stripped to force the write through — that would lose who the answers are about, and
-  clearing it is an explicit, labelled choice.
+  reconciliation — including a search of that destination, since a reference is only worth anything on
+  the server it will be stored on, and a questionnaire declaring its own `sdc-questionnaire-endpoint`
+  makes that a different server from the configured one. The subject is still never silently stripped
+  to force the write through — that would lose who the answers are about, and clearing it is an
+  explicit, labelled choice. Picking a patient replaces the foreign `display` rather than merging it,
+  because a name the filler's system chose does not describe the record the reviewer just pointed at.
+- **Answers naming *no* patient are the quieter half of the same problem.** An unresolvable subject at
+  least fails loudly. A response with no `subject` is accepted by every server and files the answers
+  against nobody, permanently, so it is asked about just as loudly as a subject that does not resolve.
 - **Nothing is written without review — on channels A and C.** `ReviewResponse` renders read-only on
   purpose: editing another party's answers before committing them would blur who recorded what and make
   the response's `author`/`source` describe a document that no longer exists. Channel B is the

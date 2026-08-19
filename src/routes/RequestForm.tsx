@@ -8,6 +8,7 @@ import { canUseEncryptedReply, canUseServerReturn } from '@/lib/config';
 import { saveRequest } from '@/lib/requestStore';
 import { canCreateHealthLinks, createRequestLink } from '@/link/createLink';
 import { questionnaireCanonicalOf, taskCorrelationId } from '@/link/exchange';
+import PatientPicker from '@/components/PatientPicker';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -169,30 +170,54 @@ export default function RequestForm() {
             access to.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <Input
-            value={subject}
-            onChange={(event) => setSubject(event.target.value)}
-            placeholder="Patient/123"
-            aria-label="Subject reference"
-          />
-          <Input
-            value={subjectDisplay}
-            onChange={(event) => setSubjectDisplay(event.target.value)}
-            placeholder="Jane Citizen"
-            aria-label="Subject name"
-          />
+        <CardContent className="space-y-4">
+          {config.responseServerUrl ? (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-slate-700">
+                Search <span className="font-mono">{config.responseServerUrl}</span>
+              </p>
+              <PatientPicker
+                serverUrl={config.responseServerUrl}
+                selectedReference={subject.trim() === '' ? undefined : subject.trim()}
+                onChoose={(chosen) => {
+                  setSubject(chosen.reference);
+                  setSubjectDisplay(chosen.display);
+                }}
+                label="Search patients to address this request to"
+              />
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-slate-700">
+              {config.responseServerUrl ? 'Or enter it by hand' : 'Subject'}
+            </p>
+            <Input
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="Patient/123"
+              aria-label="Subject reference"
+            />
+            <Input
+              value={subjectDisplay}
+              onChange={(event) => setSubjectDisplay(event.target.value)}
+              placeholder="Jane Citizen"
+              aria-label="Subject name"
+            />
+          </div>
+
           {config.responseServerUrl ? (
             <p className="text-xs text-slate-500">
-              or{' '}
+              Or{' '}
               <RouterLink
                 to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ''}`)}`}
                 className="underline">
-                pick a patient from the server
+                browse the full patient list
               </RouterLink>
-              , which fills both fields correctly.
+              , which also shows what each one has already answered.
             </p>
           ) : null}
+
           <Button onClick={handleCreate} disabled={isCreating || !canHost}>
             {isCreating ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
