@@ -809,7 +809,7 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 225 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
+npm run check:roundtrip  # 231 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.

@@ -1097,6 +1097,78 @@ check(
   'echoing it back copies a write capability into whatever the answers travel on, possibly a plain QR'
 );
 
+/*
+ * Platypus's own parser, ported verbatim from `apps/mobile/lib/shl-write.ts` and
+ * `apps/mobile/lib/shl-invitation.ts` (`parseWriteDescriptor`).
+ *
+ * Channel D is specified here and implemented there, which is the reverse of channel C, and it makes
+ * this the more important direction to guard: a change to what we emit that their parser stops
+ * accepting is invisible from this side. The form still opens there, it just silently loses the
+ * return channel and falls back to a QR the patient may have nobody to show.
+ */
+function platypusParseWriteDescriptor(task: Task):
+  | { writeUrl: string; writeEtag?: string; writeToken?: string; expiresAt?: number }
+  | undefined {
+  const urls = [
+    'https://platypushealth.app/StructureDefinition/shl-write-descriptor',
+    'http://smartforms.csiro.au/StructureDefinition/shl-write-descriptor'
+  ];
+  const ext = task?.extension?.find((e) => urls.includes(e.url ?? ''));
+  if (!ext?.extension) return undefined;
+  const sub = ext.extension;
+  const str = (url: string): string | undefined => {
+    const found = sub.find((e) => e.url === url);
+    return found?.valueUrl ?? found?.valueString;
+  };
+
+  const url = str('writeUrl');
+  if (!url) return undefined;
+
+  const method = sub.find((e) => e.url === 'writeMethod')?.valueCode;
+  if (method !== undefined && method !== 'PUT') return undefined;
+
+  const writeEtag = str('writeEtag');
+  const writeToken = str('writeToken');
+  const expiresAt = sub.find((e) => e.url === 'expiresAt')?.valueInteger;
+
+  return {
+    writeUrl: url,
+    ...(writeEtag ? { writeEtag } : {}),
+    ...(writeToken ? { writeToken } : {}),
+    ...(typeof expiresAt === 'number' ? { expiresAt } : {})
+  };
+}
+
+/** Verbatim port of Platypus's `writeSlotId`. */
+function platypusWriteSlotId(writeUrl: string): string | undefined {
+  const id = writeUrl.split(/[?#]/, 1)[0]?.replace(/\/+$/, '').split('/').pop();
+  return id !== undefined && id !== '' ? id : undefined;
+}
+
+const platypusRead = platypusParseWriteDescriptor(writeTask);
+check(
+  'write/platypusReadsOurDescriptor',
+  platypusRead !== undefined,
+  'we specify this channel; if their parser stops accepting what we emit, nobody here finds out'
+);
+check('write/platypusReadsOurUrl', platypusRead?.writeUrl === writeDescriptor.writeUrl);
+check(
+  'write/platypusReadsOurEtag',
+  platypusRead?.writeEtag === writeDescriptor.writeEtag,
+  'without the ETag their write is unconditional, and the single-use guarantee is gone'
+);
+check('write/platypusReadsOurToken', platypusRead?.writeToken === writeDescriptor.writeToken);
+check(
+  'write/platypusDerivesTheSameSlotId',
+  platypusWriteSlotId(writeDescriptor.writeUrl) === writeSlotId(writeDescriptor.writeUrl),
+  'a FHIR update writes to the id in the URL; disagreeing here means every write is rejected'
+);
+check(
+  'write/platypusReadsAMintedRequest',
+  platypusParseWriteDescriptor(writeRequest.task)?.writeUrl === writeDescriptor.writeUrl,
+  'asserted against a Task from buildRequestBundle, not a hand-built fixture'
+);
+
 // ---------------------------------------------------------------------------
 // The Platypus detection contract.
 //
