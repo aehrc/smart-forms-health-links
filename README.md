@@ -28,6 +28,7 @@ cannot currently be opened by third-party SHL wallets.
 - [The round trip](#the-round-trip) — ten steps, with measured sizes
 - [Three ways to return answers](#three-ways-to-return-answers) — and why A is the default
 - [Amendments are new resources](#amendments-are-new-resources) — why the review screen is read-only
+- [Creating a patient at review time](#creating-a-patient-at-review-time) — the duplicate problem
 - [How links work](#how-links-work)
 - [Two transports, one interface](#two-transports-one-interface)
 - [Three servers, three jobs](#three-servers-three-jobs)
@@ -125,8 +126,9 @@ demo the QR codes.
 8. **Review and accept.** The answers render read-only. The subject is probed against the EHR
    first, so a patient the destination does not hold — or answers that name no patient at all —
    surfaces as a question rather than a failed write or a silently unfiled record. Search the
-   destination for the right patient there and then; the answers only exist in the browser at that
-   point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
+   destination for the right patient there and then — and if they are genuinely not there, create
+   them, which is offered once a search has come back empty. The answers only exist in the browser at
+   that point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
    `QuestionnaireResponse` and the `Task`.
 9. **Amend, if you have to.** The form stays read-only — see
    [Amendments are new resources](#amendments-are-new-resources). *Amend these answers* opens an
@@ -368,6 +370,67 @@ Three details that are easy to get wrong:
 Amending twice chains: the second revises the first, not the original. And the original's `versionId`
 is never bumped, which `check:amend` asserts by re-reading it — a server-side fact that no amount of
 reading the code will prove.
+
+## Creating a patient at review time
+
+Answers come back for somebody the destination server has never heard of more often than the design
+admits — a walk-in, a new referral, anyone not yet registered. Until there was a way to create them,
+the only remaining option was *save without a subject*, which files the answers against nobody,
+permanently.
+
+So the picker offers a fourth way out, and the ordering is the whole safety story. There is no master
+patient index here and no fuzzy matching, and **a duplicate patient record is a worse outcome than a
+slow reconciliation** — a person's history split across two records, with nothing to notice it. What
+the design has instead is sequence: searching happens first, creating is the way out of an empty
+result, and before the write the form re-searches the family name alone, because the reviewer probably
+searched a full name and the server may spell the rest differently. A hit there is shown as a warning
+with the matching records offered as one-click alternatives, never as a block — two people really can
+share a surname.
+
+**Every field is typed by a human, and that is forced by the wire format rather than chosen.** No
+channel carries demographics: `parseResponseBundle` extracts only the QuestionnaireResponse, its Task
+and its Provenance, and a `Patient` entry in a bundle is dropped. The most that can travel is a
+free-text name in `subject.display` — which this app previously discarded and now reads, purely to
+seed a field a human checks. It is still never carried onto a reference: `reconciledResponse` replaces
+the display rather than merging it, and a created patient is labelled with the name *the destination
+server now holds*.
+
+What the created record carries, and does not:
+
+| | |
+| --- | --- |
+| `name.family` | **required** — `searchPatients` sorts and searches by it, so a record without one is invisible to the very picker that would have to find it next time |
+| `name.given` | optional, split from the seed name — the split is a guess, shown in two editable fields rather than applied silently |
+| `birthDate`, `gender` | optional, and omitted entirely when blank. A cleared `<input type="date">` yields `''`, which is not a FHIR `date` |
+| `identifier` | **never**. The one field where a typo makes a false claim that silently mis-matches records elsewhere. There is no HI Service lookup here and no authenticated user |
+| `name.text` | **never**. `patientDisplay` falls back to the joined parts, so omitting it costs nothing and removes the trap of `text` and the parts disagreeing |
+| `name.use`, `active` | **never**. Both are claims nothing here can support |
+
+Created on the *destination* server — `destinations[0]`, the same one the subject probe uses — because
+a reference is only worth anything on the server the answers will be stored on, and a questionnaire
+declaring its own `sdc-questionnaire-endpoint` sends the write elsewhere. With several destinations the
+others stay best-effort, and the panel says so.
+
+The `Patient` is `POST`ed on click rather than bundled into the save. That leaves an orphan if the
+reviewer then abandons the review, which is the honest cost of the alternative being worse: a
+`transaction` Bundle would make a Task the server dislikes lose the clinical content, demands
+transaction support from an arbitrary `sdc-questionnaire-endpoint`, and would never let the reviewer
+see the reference before committing to it. A patient with nothing filed against them is the least
+harmful orphan available; the one worth preventing is a duplicate, and only the search-first ordering
+prevents that.
+
+### The caching proxy, which is not a footnote
+
+`searchPatients` sends `Cache-Control: no-cache`, and the reason is worth knowing before anyone
+removes it. The default response server sits behind a caching proxy that stores search responses
+**including empty ones**. Search for a patient who does not exist, create them, repeat the same
+search, and the proxy replays the negative result — `x-cache: HIT` — so the patient just created
+appears not to exist. That is precisely the state that produces a second record. `check:patient`
+repeats the *identical* search that came back empty rather than varying it to dodge the cache, since
+a variation would test something nobody experiences.
+
+Belt and braces, the picker also pins what it created into its own list, so the UI stays truthful
+against a server with a genuine indexing lag rather than a cache.
 
 ## How links work
 
@@ -626,6 +689,7 @@ src/
     FillFromRequest.tsx  the filler's side: render, then return answers
     ReviewResponse.tsx   the requester's side: read-only review, then write
     PatientPicker.tsx  inline patient search, at both ends of the round trip
+    CreatePatientForm.tsx  registering somebody the destination server does not hold
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
     ShareLinkPanel.tsx QR + copyable link
   link/
@@ -646,6 +710,7 @@ src/
     blobStore.ts       Binary create/read, and the Location-header workaround
     submit.ts          the write: endpoint resolution, meta handling, Provenance
     amend.ts           amendments as a new resource joined by a revision Provenance
+    newPatient.ts      building a Patient from what a reviewer typed
   lib/
     config.ts          AppConfig, validation, and the fallback
     requestStore.ts    reply keys in localStorage
@@ -656,6 +721,7 @@ scripts/
   e2eShl.ts            npm run check:e2e-shl   — live, writes and cleans up
   e2eLink.ts           npm run check:e2e       — the legacy decode path
   e2eAmend.ts          npm run check:amend     — live, writes and cleans up
+  e2ePatient.ts        npm run check:patient   — live, writes and cleans up
 docs/
   shl-form-reply-channel.md   wire format for channels B and C
   response-links.md           what counts as an inbound response link
@@ -698,7 +764,13 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
   replies, permanently. See [Notes](#notes).
 - **A reply slot hosted as a plain `Binary` can be overwritten by anyone who can reach the server.**
   They cannot read it. `replyToken` is reserved in the descriptor for hosts that can gate writes.
-- **The default servers are shared public sandboxes** and are wiped periodically.
+- **The default servers are shared public sandboxes** and are wiped periodically. The response server
+  also sits behind a caching proxy that caches empty search results — see
+  [the caching proxy](#the-caching-proxy-which-is-not-a-footnote).
+- **A patient created at review time is not identity-verified and is not matched against anything.**
+  The demographics are typed by a reviewer from an unverified scan, no identifier is minted, and
+  duplicate detection goes no further than re-searching the family name. There is no master patient
+  index and no fuzzy matching.
 - **No automated browser tests.** The checks cover the codecs, crypto, wire formats and the live
   FHIR round trip; the UI is verified by hand.
 
@@ -716,6 +788,9 @@ SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-shl
 
 # 21 checks: amending answers somebody else gave, without editing what they said
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
+
+# 30 checks: creating a patient the destination server does not hold, and filing answers against them
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:patient
 ```
 
 `check:roundtrip` needs neither network nor hosting, so it is the one to run on every change. It
@@ -753,6 +828,15 @@ reviewer wrote, and the patient never ends up named as the author of words they 
 one-line mistake to make and invisible afterwards, so the original is re-read and compared — version
 included — rather than assumed untouched. It also asserts the `Provenance` actually joins the two, since
 without it the server holds two unrelated responses.
+
+`check:patient` ends at the assertion the feature exists for: a `QuestionnaireResponse` naming the
+newly created patient is accepted by a server that enforces referential integrity. That claim is only
+worth anything beside its **control** — the same write with the filler's original unresolvable subject
+must still be rejected. Without it, the success could equally mean the server had stopped enforcing
+integrity, and creating the patient achieved nothing. It also asserts the builder fabricates no
+identifier and no full-text name, that a blank date of birth is *absent* rather than an empty string,
+that a nameless create is refused before any network call, and that the repeated search really does
+find the new patient rather than a cached "nobody by that name".
 
 It also publishes a request `Task` and searches it back out by tag, because that is a **server-side**
 constraint a unit check cannot prove — a canonical in `Task.focus` is rejected outright, and nothing

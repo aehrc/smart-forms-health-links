@@ -1,6 +1,7 @@
-import type { Meta, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
+import type { Meta, Patient, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { buildRequestBundle } from '@/link/exchange';
 import type { Amendment } from './amend';
+import { buildPatient, type NewPatientDetails } from './newPatient';
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -149,9 +150,13 @@ async function describeFailure(response: Response): Promise<string> {
   return status;
 }
 
+/**
+ * The union is the point: it enumerates what this app is allowed to bring into existence. Widen it
+ * deliberately rather than making it generic.
+ */
 async function createResource(
   serverUrl: string,
-  resource: QuestionnaireResponse | Task | Provenance
+  resource: QuestionnaireResponse | Task | Provenance | Patient
 ): Promise<string> {
   const response = await fetch(`${trimTrailingSlash(serverUrl)}/${resource.resourceType}`, {
     method: 'POST',
@@ -320,6 +325,46 @@ export async function submitAmendment(options: SubmitAmendmentOptions): Promise<
       }
     })
   );
+}
+
+export interface CreatedPatient {
+  /** Relative, e.g. `Patient/123` — it only means anything against the server it was created on. */
+  reference: string;
+  /** What was sent, plus the id the server assigned. See below for why this is not a re-read. */
+  patient: Patient;
+}
+
+/**
+ * Create a Patient, so answers about somebody the server has never heard of can still be filed.
+ *
+ * The reference this returns is only valid on `serverUrl`, which is why the caller passes the
+ * *destination* server rather than the configured one — a questionnaire declaring its own
+ * `sdc-questionnaire-endpoint` sends the write somewhere else entirely.
+ *
+ * Two decisions worth knowing about:
+ *
+ *  - **The empty-family guard is here, not only in the form.** A Patient with no family name cannot
+ *    be found again by the very picker that would have to find it, so the primitive refuses rather
+ *    than trusting every future caller to validate first.
+ *  - **The returned `patient` is what was sent plus the id, not the server's echo.** `createResource`
+ *    already reads only `created.id`, and re-reading would spend a round trip on metadata nothing
+ *    here uses. Everything the UI needs — `patientDisplay`, `describePatient` — is in what was sent.
+ *
+ * Deliberately returns a plain shape rather than the picker's `ChosenPatient`: that type lives in a
+ * component, and the FHIR layer does not depend on components.
+ */
+export async function createPatient(
+  serverUrl: string,
+  details: NewPatientDetails
+): Promise<CreatedPatient> {
+  if (details.family.trim() === '') {
+    throw new Error('A patient cannot be created without a family name.');
+  }
+
+  const patient = buildPatient(details);
+  const id = await createResource(serverUrl, patient);
+
+  return { reference: `Patient/${id}`, patient: { ...patient, id } };
 }
 
 /**

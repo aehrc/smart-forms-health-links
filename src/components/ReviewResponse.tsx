@@ -188,6 +188,13 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   }
 
   const hasSubject = originalSubject !== undefined;
+  /*
+   * The name the filler put on the answers, and the only human identification any channel carries —
+   * no demographics cross the wire at all. Read here for the first time: `reconciledResponse` still
+   * refuses to carry it onto a reference the reviewer repoints, but seeding a box a human checks is a
+   * different thing from asserting it, and without it they have nothing to go on but an opaque key.
+   */
+  const assertedName = response.subject?.display ?? matchedRequest?.subjectDisplay;
   const hasReconciliation = clearSubject || subjectOverride.trim() !== '';
   /*
    * Two ways a response arrives unfiled, and both end at the same question. Either it names a patient
@@ -349,8 +356,13 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           }>
           {hasSubject ? (
             <p>
-              The answers name <span className="font-mono text-xs">{originalSubject}</span>, which{' '}
-              <span className="font-mono text-xs">{searchServer}</span> does not hold. A filler
+              The answers name <span className="font-mono text-xs">{originalSubject}</span>
+              {response.subject?.display ? (
+                <>
+                  , described as <strong>{response.subject.display}</strong>
+                </>
+              ) : null}
+              , which <span className="font-mono text-xs">{searchServer}</span> does not hold. A filler
               identifies the patient in its own terms, so this is expected for answers from another app
               — but the write will be rejected until it is reconciled.
             </p>
@@ -394,7 +406,16 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 selectedReference={subjectOverride.trim() === '' ? undefined : subjectOverride.trim()}
                 onChoose={(chosen) => chooseSubject(chosen.reference, chosen.display)}
                 label="Search the destination server for the patient these answers are about"
+                allowCreate
+                prefillName={assertedName}
               />
+              {destinations.length > 1 ? (
+                <p className="text-xs">
+                  A patient created here is created on{' '}
+                  <span className="font-mono">{searchServer}</span> only. The other destinations will
+                  still reject the write — the same best-effort posture the subject probe takes.
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-1.5">
@@ -437,6 +458,12 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                   Save without a subject instead. The answers will be stored{' '}
                   <strong>with no record of who they are about</strong>, which is rarely what you want
                   — matching the patient is a clinical decision, not a technical one.
+                  {subjectOverrideDisplay !== '' ? (
+                    <>
+                      {' '}
+                      Any patient you just created stays on the server with nothing filed against it.
+                    </>
+                  ) : null}
                 </span>
               </label>
             ) : null}

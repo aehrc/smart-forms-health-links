@@ -28,8 +28,27 @@ function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-async function fetchFhir<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { headers: { Accept: FHIR_JSON }, signal });
+/**
+ * `revalidate` forces an intermediate cache to go back to the origin.
+ *
+ * Not hypothetical: the default response server sits behind a caching proxy that stores search
+ * responses, **including empty ones**. Search for a patient who does not exist, create them, search
+ * again with the same URL, and the proxy replays the negative result (`x-cache: HIT`) — so a patient
+ * just created appears not to exist. `Cache-Control: no-cache` asks for revalidation rather than a
+ * replay, which is the standards-based fix and is honoured here.
+ */
+async function fetchFhir<T>(
+  url: string,
+  signal?: AbortSignal,
+  options: { revalidate?: boolean } = {}
+): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      Accept: FHIR_JSON,
+      ...(options.revalidate ? { 'Cache-Control': 'no-cache' } : {})
+    },
+    signal
+  });
 
   if (!response.ok) {
     throw new Error(`FHIR request failed (${response.status} ${response.statusText}): ${url}`);
@@ -157,7 +176,14 @@ export async function fetchQuestionnaireResponse(
   );
 }
 
-/** Search patients by name, or list them when the search text is empty. */
+/**
+ * Search patients by name, or list them when the search text is empty.
+ *
+ * Always revalidated. A stale patient list is not a cosmetic problem: it is what makes a patient
+ * somebody just created look like one who does not exist, which is precisely the state that leads to
+ * a duplicate being created. Correctness beats a cache hit here, and `staleTime` on the query client
+ * already keeps this from being chatty.
+ */
 export async function searchPatients(
   ehrServerUrl: string,
   searchText = '',
@@ -176,7 +202,8 @@ export async function searchPatients(
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient?${params.toString()}`,
-    signal
+    signal,
+    { revalidate: true }
   );
 
   return { resources: bundleResources<Patient>(bundle), total: bundle.total };

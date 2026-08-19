@@ -184,6 +184,8 @@ export default function RequestForm() {
                   setSubjectDisplay(chosen.display);
                 }}
                 label="Search patients to address this request to"
+                allowCreate
+                prefillName={subjectDisplay}
               />
             </div>
           ) : null}

@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Loader2, Search, User } from 'lucide-react';
 import type { Patient } from 'fhir/r4';
 import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
 import { useDebounced } from '@/lib/useDebounced';
+import CreatePatientForm from '@/components/CreatePatientForm';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
@@ -43,6 +44,19 @@ export interface PatientPickerProps {
   /** Accessible name for the search box, when the surrounding copy does not already supply one. */
   label?: string;
   id?: string;
+  /**
+   * Offer to create a patient on `serverUrl` when the right one is not there.
+   *
+   * Gated on a search having happened, and that gate lives here rather than in the caller because this
+   * component is the only thing that knows whether one has. "We looked, and there is no such patient"
+   * is the only honest precondition for creating one.
+   */
+  allowCreate?: boolean;
+  /**
+   * Name to seed a new patient from — typically what the filler called them, since a free-text
+   * `subject.display` is the only identifying thing any channel carries. Falls back to the search text.
+   */
+  prefillName?: string;
 }
 
 export default function PatientPicker(props: PatientPickerProps) {
@@ -53,11 +67,25 @@ export default function PatientPicker(props: PatientPickerProps) {
     count = 10,
     placeholder = 'Search patients by name…',
     label = 'Search patients by name',
-    id
+    id,
+    allowCreate = false,
+    prefillName
   } = props;
 
   const [searchText, setSearchText] = useState('');
   const debouncedSearch = useDebounced(searchText, 300);
+  const [isCreating, setIsCreating] = useState(false);
+  /**
+   * Patients created in this picker, held locally.
+   *
+   * Belt and braces over the refetch. `searchPatients` forces revalidation past the caching proxy the
+   * default server sits behind, but a server with a genuine indexing lag would still not return
+   * somebody created a moment ago — and a picker that says "Nothing matched" about a record the
+   * reviewer just made is exactly the state that produces a second one. What was created is known
+   * here, so it is shown from here.
+   */
+  const [justCreated, setJustCreated] = useState<Patient[]>([]);
+  const queryClient = useQueryClient();
 
   /*
    * An empty search lists the server's patients rather than showing nothing, so the picker is useful
@@ -73,8 +101,34 @@ export default function PatientPicker(props: PatientPickerProps) {
     queryFn: ({ signal }) => searchPatients(serverUrl, debouncedSearch, count, signal)
   });
 
-  const patients = page?.resources ?? [];
-  const more = page?.total !== undefined && page.total > patients.length;
+  const found = page?.resources ?? [];
+  // Pinned first, and de-duplicated in case the search has caught up and returned them too.
+  const patients = [
+    ...justCreated.filter((patient) => !found.some((row) => row.id === patient.id)),
+    ...found
+  ];
+  const more = page?.total !== undefined && page.total > found.length;
+  const searched = debouncedSearch.trim() !== '';
+
+  /**
+   * Hand the created patient back down the same path a picked one takes, then re-search.
+   *
+   * The invalidation is not cosmetic: the app's QueryClient holds results for five minutes
+   * (`src/main.tsx`), so without it the picker goes on insisting nothing matched a patient that now
+   * exists. Refetching instead means the new row appears, ticked, in the widget that just said there
+   * was nobody — which is the confirmation the reviewer needs.
+   */
+  function handleCreated(created: { reference: string; patient: Patient }) {
+    setIsCreating(false);
+    setJustCreated((previous) => [...previous, created.patient]);
+    onChoose({
+      reference: created.reference,
+      // The name as this server now holds it, never the string that seeded the form.
+      display: patientDisplay(created.patient),
+      patient: created.patient
+    });
+    void queryClient.invalidateQueries({ queryKey: ['ehr-patients', serverUrl] });
+  }
 
   return (
     <div className="space-y-2">
@@ -109,9 +163,19 @@ export default function PatientPicker(props: PatientPickerProps) {
 
       {!isPending && !error && patients.length === 0 ? (
         <p className="text-xs text-slate-500">
-          {debouncedSearch.trim() === ''
-            ? 'This server holds no patients.'
-            : `Nothing matched “${debouncedSearch.trim()}”.`}
+          {searched ? `Nothing matched “${debouncedSearch.trim()}”.` : 'This server holds no patients.'}
+          {allowCreate && !isCreating ? (
+            <>
+              {' '}
+              <button
+                type="button"
+                onClick={() => setIsCreating(true)}
+                className="underline underline-offset-2 hover:text-slate-900">
+                Create a new patient
+              </button>
+              .
+            </>
+          ) : null}
         </p>
       ) : null}
 
@@ -157,6 +221,45 @@ export default function PatientPicker(props: PatientPickerProps) {
         <p className="text-xs text-slate-500">
           Showing {patients.length} of {page?.total} — narrow the search to see the rest.
         </p>
+      ) : null}
+
+      {/*
+        * Offered below results as well as in the empty state, quietly. Requiring *zero* matches would
+        * be too strict — searching a surname and getting three of the wrong people is the common case
+        * — but the prominent affordance stays in the empty state, so searching first remains the path
+        * of least resistance.
+        */}
+      {allowCreate && !isCreating && patients.length > 0 ? (
+        <p className="text-xs text-slate-500">
+          None of these?{' '}
+          <button
+            type="button"
+            onClick={() => setIsCreating(true)}
+            className="underline underline-offset-2 hover:text-slate-900">
+            Create a new patient
+          </button>
+          .
+        </p>
+      ) : null}
+
+      {allowCreate && isCreating ? (
+        <CreatePatientForm
+          serverUrl={serverUrl}
+          // What they just typed beats what arrived with the answers: it is the more recent statement
+          // of who they are looking for. `prefillName` carries the rest of the way when they have not
+          // typed anything.
+          seedName={searched ? debouncedSearch.trim() : (prefillName ?? '')}
+          onCreated={handleCreated}
+          onCancel={() => setIsCreating(false)}
+          onChooseExisting={(patient) => {
+            setIsCreating(false);
+            onChoose({
+              reference: `Patient/${patient.id}`,
+              display: patientDisplay(patient),
+              patient
+            });
+          }}
+        />
       ) : null}
     </div>
   );
