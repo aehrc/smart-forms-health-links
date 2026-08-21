@@ -1,27 +1,14 @@
-import { decodeUtf8, encodeUtf8, fromBase64Url, toBase64Url } from "./binary";
+import { decodeUtf8, fromBase64Url } from "./binary";
 import {
   bundleFromJson,
   extractFragment,
   mergeBundles,
   PasscodeRequiredError,
 } from "./codec";
-import {
-  decryptJwe,
-  encryptJwe,
-  generateKey,
-  keyFromBase64Url,
-  keyToBase64Url,
-} from "./jwe";
+import { decryptJwe, keyFromBase64Url } from "./jwe";
 
-import type {
-  DecodeOptions,
-  EncodeOptions,
-  LinkCodec,
-  LinkContent,
-} from "./codec";
+import type { DecodeOptions, LinkCodec, LinkContent } from "./codec";
 import type { Bundle } from "fhir/r4";
-
-import { JOSE_CONTENT_TYPE } from "@/fhir/blobStore";
 
 /**
  * SMART Health Links — https://docs.smarthealthit.org/smart-health-links/spec/
@@ -33,18 +20,19 @@ import { JOSE_CONTENT_TYPE } from "@/fhir/blobStore";
  * presented either bare or, as here, in the fragment of a viewer URL —
  * `https://viewer.example.org/view#shlink:/...` — which is the form the spec itself uses.
  *
- * ## What this codec writes
+ * ## This codec only reads
  *
- * Always the `U` flag: a single encrypted file fetched with a plain `GET`. That needs only a static
- * file host rather than a manifest service, which is why the payload can live as a FHIR `Binary` on
- * the forms server with no new infrastructure. The cost is real and worth stating plainly: **`U`
- * cannot be combined with `P`, so these links have no passcode**, and they can be neither revoked
- * nor varied per recipient.
+ * There is no `encode` here any more, and its absence is the architecture rather than a gap.
+ * Hosting an SHL payload means being a manifest server, and this deployment's manifest server is
+ * its own BFF: a requester's invitation is minted, published and hosted by
+ * `POST /api/invitations` under the session's authority, and the browser is handed a finished
+ * `shlink:/` (`contracts/http-api.md`). Minting from the page would mean parking transactional
+ * data on a third-party blob host, which is exactly what this feature removed (FR-013).
  *
  * ## What this codec reads
  *
  * Both hosting modes, because a link we read was probably not written by us — and, increasingly,
- * *is* not: the primary return path is now a filler minting its own link and the requester scanning
+ * is* not: the primary return path is now a filler minting its own link and the requester scanning
  * it back. A filler that hosts its payload behind a proper manifest endpoint produces a `U`-less
  * link, and that has to work here. Concretely, reading is tolerant in four ways:
  *
@@ -73,9 +61,6 @@ const SHL_VERSION = 1;
 /** Identifies us in the manifest request, per the spec's `recipient` field. */
 const RECIPIENT = "Smart Forms Health Links";
 
-/** The spec caps `label` at 80 characters. */
-const MAX_LABEL_LENGTH = 80;
-
 const FHIR_JSON = "application/fhir+json";
 
 interface ShlPayload {
@@ -102,7 +87,9 @@ function isShlPayload(value: unknown): value is ShlPayload {
   return typeof candidate.url === "string" && typeof candidate.key === "string";
 }
 
-/** Parse and validate the base64url JSON payload that follows `shlink:/`. */
+/**
+ * Parse and validate the base64url JSON payload that follows `shlink:/`.
+ */
 function decodePayload(fragment: string): ShlPayload {
   const body = fragment.slice(PREFIX.length);
   if (body === "") {
@@ -153,10 +140,13 @@ async function fetchJwe(url: string): Promise<string> {
     );
   }
 
-  return (await response.text()).trim();
+  const body = await response.text();
+  return body.trim();
 }
 
-/** Fetch the manifest, for links without the `U` flag. */
+/**
+ * Fetch the manifest, for links without the `U` flag.
+ */
 async function fetchManifest(
   payload: ShlPayload,
   options: DecodeOptions = {},
@@ -204,7 +194,9 @@ async function fetchManifest(
   return manifest.files;
 }
 
-/** Decrypt one manifest file, whether it arrived embedded or by reference. */
+/**
+ * Decrypt one manifest file, whether it arrived embedded or by reference.
+ */
 async function readManifestFile(
   file: ManifestFile,
   key: Uint8Array,
@@ -299,44 +291,6 @@ export const shlCodec: LinkCodec = {
 
   canDecode(linkOrFragment: string): boolean {
     return extractFragment(linkOrFragment).startsWith(PREFIX);
-  },
-
-  async encode(content: LinkContent, options: EncodeOptions): Promise<string> {
-    const { blobStore } = options;
-    if (!blobStore) {
-      throw new Error(
-        "Creating a SMART Health Link needs somewhere to host the encrypted payload. " +
-          "Pass a BlobStore in EncodeOptions.",
-      );
-    }
-
-    const key = generateKey();
-    const jwe = await encryptJwe(
-      encodeUtf8(JSON.stringify(content.bundle)),
-      key,
-    );
-    const url = await blobStore.put(encodeUtf8(jwe), JOSE_CONTENT_TYPE);
-
-    const payload: ShlPayload = {
-      url,
-      key: keyToBase64Url(key),
-      // Single encrypted file retrieved by GET — no manifest server required.
-      flag: "U",
-      v: SHL_VERSION,
-    };
-
-    if (content.label) {
-      payload.label = content.label.slice(0, MAX_LABEL_LENGTH);
-    }
-
-    if (options.expiresAt !== undefined) {
-      payload.exp = options.expiresAt;
-    }
-
-    const encoded = toBase64Url(encodeUtf8(JSON.stringify(payload)));
-    const base = options.baseUrl.replace(/\/+$/, "");
-
-    return `${base}/view#${PREFIX}${encoded}`;
   },
 
   async decode(

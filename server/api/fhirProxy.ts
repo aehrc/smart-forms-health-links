@@ -33,27 +33,14 @@
  * @author John Grimes
  */
 
-import { findIssuerRegistration } from "../config";
 import { readSessionCookie } from "../sessionCookie";
-import {
-  deleteSession,
-  findActiveSessionIgnoringExpiry,
-  updateSessionTokens,
-} from "../sessions";
-import { refreshLaunchToken } from "../smart/confidentialClient";
-import { discoverSmartConfiguration } from "../smart/discovery";
+import { deleteSession, findActiveSessionIgnoringExpiry } from "../sessions";
+import { freshSession, refreshSessionTokens } from "../smart/sessionAuthority";
 
-import type { ActiveSession } from "../sessions";
 import type { FastifyPluginCallback, FastifyRequest } from "fastify";
 
 /** The route prefix, stripped from the raw URL to leave the FHIR path suffix. */
 const ROUTE_PREFIX = "/api/fhir/";
-
-/**
- * Margin applied to the stored expiry, so a token that is about to lapse is refreshed before it
- * is used rather than after it fails.
- */
-const EXPIRY_MARGIN_SECONDS = 10;
 
 /**
  * Request headers that must not be forwarded: the ones that belong to this hop, the ones that
@@ -186,44 +173,8 @@ export const fhirProxyRoutes: FastifyPluginCallback = (
     },
   );
 
-  /**
-   * Exchange the session's refresh token for a fresh access token.
-   * @param request the request being served, for its logger
-   * @param session the session to refresh
-   * @returns the updated session, or undefined when it cannot be refreshed
-   */
-  async function refreshSession(
-    request: FastifyRequest,
-    session: ActiveSession,
-  ): Promise<ActiveSession | undefined> {
-    if (session.refreshToken === null) {
-      return undefined;
-    }
-    const registration = findIssuerRegistration(config.issuers, session.issuer);
-    if (registration === undefined) {
-      return undefined;
-    }
-    try {
-      const smart = await discoverSmartConfiguration(session.issuer);
-      const token = await refreshLaunchToken({
-        tokenEndpoint: smart.tokenEndpoint,
-        client: registration.launchClient,
-        refreshToken: session.refreshToken,
-      });
-      return updateSessionTokens(fastify.appDb, {
-        id: session.id,
-        accessToken: token.accessToken,
-        accessTokenExpiresAt: Math.floor(Date.now() / 1000) + token.expiresIn,
-        refreshToken: token.refreshToken ?? session.refreshToken,
-      });
-    } catch (error) {
-      request.log.warn(
-        { err: error, issuer: session.issuer },
-        "session refresh failed",
-      );
-      return undefined;
-    }
-  }
+  /** The context every refresh on this route is made with. */
+  const authority = { db: fastify.appDb, issuers: config.issuers };
 
   fastify.all("/api/fhir/*", async (request, reply) => {
     const db = fastify.appDb;
@@ -251,19 +202,16 @@ export const fhirProxyRoutes: FastifyPluginCallback = (
     // the raw buffer the content type parser kept.
     const body = request.body instanceof Buffer ? request.body : undefined;
 
-    let refreshed = false;
-    if (
-      session.accessTokenExpiresAt - EXPIRY_MARGIN_SECONDS <=
-      Math.floor(Date.now() / 1000)
-    ) {
-      const next = await refreshSession(request, session);
-      if (next === undefined) {
-        deleteSession(db, session.id);
-        return reply.code(401).send({ error: "session-expired" });
-      }
-      session = next;
-      refreshed = true;
+    const usable = await freshSession(
+      { ...authority, log: request.log },
+      session,
+    );
+    if (usable === undefined) {
+      deleteSession(db, session.id);
+      return reply.code(401).send({ error: "session-expired" });
     }
+    const refreshed = usable !== session;
+    session = usable;
 
     let upstream: Response;
     try {
@@ -273,7 +221,10 @@ export const fhirProxyRoutes: FastifyPluginCallback = (
         body,
       });
       if (upstream.status === 401 && !refreshed) {
-        const next = await refreshSession(request, session);
+        const next = await refreshSessionTokens(
+          { ...authority, log: request.log },
+          session,
+        );
         if (next !== undefined) {
           session = next;
           upstream = await fetch(target, {

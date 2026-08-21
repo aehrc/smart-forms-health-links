@@ -1,4 +1,3 @@
-import type { BlobStore } from "@/fhir/blobStore";
 import type { AppConfig, LinkCodecId } from "@/lib/config";
 import type {
   Bundle,
@@ -57,6 +56,9 @@ export class PasscodeRequiredError extends Error {
   /** True when a passcode was supplied and rejected; false when none had been tried yet. */
   readonly wasAttempted: boolean;
 
+  /**
+   *
+   */
   constructor(options: { remainingAttempts?: number; wasAttempted: boolean }) {
     super(
       options.wasAttempted
@@ -75,14 +77,6 @@ export class PasscodeRequiredError extends Error {
 export interface EncodeOptions {
   /** Origin the link should point at, e.g. `https://links.example.org`. */
   baseUrl: string;
-
-  /**
-   * Where to park an encrypted payload that is too large to travel inside the link.
-   *
-   * Required by the SHL codec, ignored by the bespoke codec — which is the whole distinction between
-   * them: bespoke carries its payload in the fragment, SHL carries a pointer to a hosted one.
-   */
-  blobStore?: BlobStore;
 
   /** Optional expiry, as Epoch seconds. Maps to the SHL payload's `exp`. */
   expiresAt?: number;
@@ -115,13 +109,27 @@ export interface LinkCodec {
   /** Whether this codec recognises the given link or bare fragment. */
   canDecode(linkOrFragment: string): boolean;
 
-  encode(content: LinkContent, options: EncodeOptions): Promise<string>;
+  /**
+   * Mint a link, when this codec can.
+   *
+   * Optional, because a transport can be readable without being writable here. The SHL codec is
+   * exactly that case: a hosted SHL needs a manifest server, and this app's manifest server is
+   * its own BFF (`POST /api/invitations`), which the browser asks rather than implements.
+   * {@link encodingCodec} refuses a codec that cannot mint.
+   */
+  encode?(content: LinkContent, options: EncodeOptions): Promise<string>;
 
   /**
    * `options` is optional so a codec that needs nothing can declare `decode(link)` and stay
    * assignable here — which is what keeps the passcode addition from rippling into every codec.
    */
   decode(linkOrFragment: string, options?: DecodeOptions): Promise<LinkContent>;
+}
+
+/** A codec that can mint, which is what {@link encodingCodec} resolves to. */
+export interface EncodingCodec extends LinkCodec {
+  /** Mint a link. */
+  encode(content: LinkContent, options: EncodeOptions): Promise<string>;
 }
 
 /**
@@ -163,7 +171,9 @@ export function collectionBundle(
   };
 }
 
-/** Build a `collection` Bundle around a QuestionnaireResponse — the simplest link payload. */
+/**
+ * Build a `collection` Bundle around a QuestionnaireResponse — the simplest link payload.
+ */
 export function bundleResponse(
   questionnaireResponse: QuestionnaireResponse,
 ): Bundle {
@@ -242,7 +252,9 @@ export function mergeBundles(bundles: Bundle[]): Bundle {
   return { resourceType: "Bundle", type: "collection", entry };
 }
 
-/** Find the first resource of a given type in a Bundle. */
+/**
+ * Find the first resource of a given type in a Bundle.
+ */
 export function findInBundle<T extends FhirResource>(
   bundle: Bundle,
   resourceType: T["resourceType"],
@@ -252,7 +264,9 @@ export function findInBundle<T extends FhirResource>(
     .find((resource): resource is T => resource?.resourceType === resourceType);
 }
 
-/** Pull the QuestionnaireResponse back out of a decoded payload. */
+/**
+ * Pull the QuestionnaireResponse back out of a decoded payload.
+ */
 export function responseFromBundle(bundle: Bundle): QuestionnaireResponse {
   const response = findInBundle<QuestionnaireResponse>(
     bundle,
@@ -311,6 +325,9 @@ export function ensureQuestionnaireCanonical(
   return { ...response, questionnaire: canonical };
 }
 
+/**
+ *
+ */
 export function defaultLabel(questionnaire: Questionnaire): string {
   return (
     questionnaire.title ??
@@ -320,11 +337,18 @@ export function defaultLabel(questionnaire: Questionnaire): string {
   );
 }
 
-/** Resolve the codec used for *creating* links. */
+/**
+ * Resolve the codec used for *creating* links.
+ * @param config the app configuration, naming the codec to mint with
+ * @param codecs the registered codecs
+ * @returns the codec, guaranteed to be able to mint
+ * @throws {Error} when the configured codec is not registered, has been retired, or cannot mint
+ *   in this build
+ */
 export function encodingCodec(
   config: AppConfig,
   codecs: LinkCodec[],
-): LinkCodec {
+): EncodingCodec {
   const codec = codecs.find((candidate) => candidate.id === config.linkCodec);
   if (!codec) {
     throw new Error(
@@ -335,11 +359,23 @@ export function encodingCodec(
   if (codec.decodeOnly) {
     throw new Error(
       `Configured linkCodec "${config.linkCodec}" is decode-only — its links can still be opened, ` +
-        'but nothing new is minted with it. Set linkCodec to "shl".',
+        "but nothing new is minted with it.",
     );
   }
 
-  return codec;
+  if (codec.encode === undefined) {
+    /*
+     * The SHL codec's case. Hosting an SHL needs a manifest server, and this deployment's is its
+     * own BFF: a requester's invitation is minted by `POST /api/invitations`, not from the page.
+     * Saying so plainly beats a null-reference a layer down.
+     */
+    throw new Error(
+      `Configured linkCodec "${config.linkCodec}" cannot create links in this build: its payload ` +
+        "has to be hosted, and hosting belongs to this app's server rather than to the browser.",
+    );
+  }
+
+  return codec as EncodingCodec;
 }
 
 /**

@@ -21,7 +21,6 @@ import { readFileSync } from "node:fs";
 import { QRMedicalHistoryCurrentProblems } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRMedicalHistoryCurrentProblems";
 import { QRRegularMedications } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRRegularMedications";
 import { QRSepsisRisk } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRSepsisRisk";
-import { JOSE_CONTENT_TYPE, inMemoryBlobStore } from "../src/fhir/blobStore";
 import {
   SHL_REQUEST_TAG,
   asPublishedTask,
@@ -34,7 +33,6 @@ import {
 import { flattenAnswers } from "../src/lib/answerRows";
 import {
   FALLBACK_CONFIG,
-  canUseEncryptedReply,
   isAppConfig,
   type AppConfig,
 } from "../src/lib/config";
@@ -66,7 +64,6 @@ import {
   generateReplyKeyPair,
   looksLikeReplyJwe,
 } from "../src/link/replyCrypto";
-import { replySlotPlaceholder } from "../src/link/replySlot";
 import {
   REPLY_DESCRIPTOR_EXTENSION,
   buildReplyDescriptorExtension,
@@ -83,6 +80,7 @@ import {
   responseCanonical,
   taskCorrelationId,
 } from "../src/link/exchange";
+import { buildInvitationBundle } from "../src/link/invitationBundle";
 import {
   findRequestForTask,
   mergeSentRequests,
@@ -217,34 +215,27 @@ check(
   JSON.stringify(shippedConfig),
 );
 
-if (isAppConfig(shippedConfig)) {
-  // The forms server is a read-only catalogue; writing there is the bug this guards against.
-  check(
-    "config/writeTargetsAreNotTheFormsServer",
-    shippedConfig.responseServerUrl !== shippedConfig.formsServerUrl &&
-      shippedConfig.blobServerUrl !== shippedConfig.formsServerUrl,
-    `responses -> ${shippedConfig.responseServerUrl}, blobs -> ${shippedConfig.blobServerUrl}`,
-  );
-
-  // The shipped config is the demo: `npm install && npm run dev` has to complete the whole round trip
-  // with nothing else configured. Both write targets are required for that — without a blob host no
-  // link can be minted at all, and without an EHR reviewed answers have nowhere to land. This is the
-  // opposite requirement to FALLBACK_CONFIG below, and deliberately so: what ships in the repo is a
-  // chosen sandbox, whereas the fallback is a config that failed to load and must guess nothing.
-  check(
-    "config/shippedConfigCompletesTheLoop",
-    typeof shippedConfig.responseServerUrl === "string" &&
-      typeof shippedConfig.blobServerUrl === "string",
-    "a clone with no setup must be able to mint a link and save a reviewed response",
-  );
-}
-
-// The fallback used when config.json is missing or malformed must NOT name a write target: silently
-// writing to some server because config failed to load is worse than refusing.
+/*
+ * No assertion here names a data server, and that absence is the point. The configuration used to
+ * name three - a forms catalogue, a response server and a blob host - because the app had no
+ * launch context and had to be told where everything was. It has one now: the requester signs in
+ * and reads and writes that server through the BFF proxy, and the permitted servers are the
+ * deployment's issuer registry on the server side rather than a URL the browser could be pointed
+ * at (FR-004, FR-030).
+ */
 check(
-  "config/fallbackHasNoWriteTargets",
-  FALLBACK_CONFIG.responseServerUrl === null &&
-    FALLBACK_CONFIG.blobServerUrl === null,
+  "config/namesNoDataServer",
+  !JSON.stringify(shippedConfig).includes("responseServerUrl") &&
+    !JSON.stringify(shippedConfig).includes("blobServerUrl") &&
+    !JSON.stringify(shippedConfig).includes("formsServerUrl"),
+  JSON.stringify(shippedConfig),
+);
+check(
+  "config/fallbackNamesNoDataServer",
+  !JSON.stringify(FALLBACK_CONFIG).includes("ServerUrl") ||
+    Object.keys(FALLBACK_CONFIG).filter((key) => key.endsWith("ServerUrl"))
+      .length === 1,
+  "only the terminology server is left, and it holds no patient data",
 );
 
 // ---------------------------------------------------------------------------
@@ -304,12 +295,40 @@ try {
 check("jwe/tamperRejected", tamperRejected);
 
 // ---------------------------------------------------------------------------
-// SHL codec against an in-memory blob store — no network, no hosting.
+// SHL codec against an in-memory host — no network, no hosting tier.
+//
+// This app no longer mints SMART Health Links from the browser: a requester's invitation is
+// minted, published and hosted by the BFF (`POST /api/invitations`), and the third-party blob
+// store the codec used to write through was deleted with the rest of anonymous mode. So the
+// host below is a stand-in for whoever *else* hosted a link that arrives here - which is the
+// only direction this codec still travels.
 // ---------------------------------------------------------------------------
 
 console.log("\nSMART Health Links\n");
 
-const store = inMemoryBlobStore();
+const blobs = new Map<string, Uint8Array>();
+let hosted = 0;
+const store = {
+  /**
+   * Host bytes under a fresh URL.
+   * @param bytes the payload to host
+   * @returns the URL the fetch shim below resolves
+   */
+  put(bytes: Uint8Array): string {
+    hosted += 1;
+    const url = `https://host.test/Binary/${hosted}`;
+    blobs.set(url, bytes);
+    return url;
+  },
+  /**
+   * Read hosted bytes back.
+   * @param url the hosting URL
+   * @returns the bytes, or undefined when nothing is hosted there
+   */
+  get(url: string): Uint8Array | undefined {
+    return blobs.get(url);
+  },
+};
 
 // The codec fetches its payload by URL; serve the in-memory store through a fetch shim.
 const realFetch = globalThis.fetch;
@@ -335,10 +354,25 @@ const shlBundle = bundleResponse({
   questionnaire: "http://example.org/Questionnaire/test",
 });
 
-const shlLink = await shlCodec.encode(
-  { bundle: shlBundle, label: "Medical History" },
-  { baseUrl: BASE_URL, blobStore: store },
+/*
+ * A `U`-flag link somebody else minted: one encrypted file, fetched with a plain `GET`. That is
+ * the shape the fallback return channel produces, so reading it has to keep working even though
+ * this app can no longer write it.
+ */
+const shlKey = generateKey();
+const shlBlobUrl = store.put(
+  encodeUtf8(await encryptJwe(encodeUtf8(JSON.stringify(shlBundle)), shlKey)),
 );
+const shlPayload = {
+  url: shlBlobUrl,
+  key: keyToBase64Url(shlKey),
+  flag: "U",
+  v: 1,
+  label: "Medical History",
+};
+const shlLink = `${BASE_URL}/view#shlink:/${toBase64Url(
+  encodeUtf8(JSON.stringify(shlPayload)),
+)}`;
 
 check(
   "shl/linkShape",
@@ -355,21 +389,7 @@ check(
   chooseErrorCorrectionLevel(shlLink) !== null,
   `level ${chooseErrorCorrectionLevel(shlLink)}`,
 );
-
-const shlPayload = JSON.parse(
-  decodeUtf8(
-    fromBase64Url(
-      shlLink.slice(shlLink.indexOf("shlink:/") + "shlink:/".length),
-    ),
-  ),
-);
-check("shl/flagIsU", shlPayload.flag === "U", JSON.stringify(shlPayload.flag));
-check("shl/keyIs43Chars", shlPayload.key?.length === 43);
-check(
-  "shl/hasUrl",
-  typeof shlPayload.url === "string" && shlPayload.url.length > 0,
-);
-check("shl/label", shlPayload.label === "Medical History");
+check("shl/keyIs43Chars", shlPayload.key.length === 43);
 
 const shlDecoded = await shlCodec.decode(shlLink);
 check(
@@ -379,7 +399,7 @@ check(
 );
 check("shl/labelSurvives", shlDecoded.label === "Medical History");
 
-// The hosted blob must be opaque: no plaintext answers recoverable from it.
+// The hosted payload must be opaque: no plaintext answers recoverable from it.
 const hostedBlob = decodeUtf8(store.get(shlPayload.url)!);
 check(
   "shl/hostedBlobIsOpaque",
@@ -396,15 +416,16 @@ check(
 );
 check("bespoke/rejectsShlink", !bespokeCodec.canDecode(shlLink));
 
-// Encoding without a blob store must fail with a useful message rather than a TypeError.
-let noStoreRejected = false;
-try {
-  await shlCodec.encode({ bundle: shlBundle }, { baseUrl: BASE_URL });
-} catch (error) {
-  noStoreRejected =
-    error instanceof Error && error.message.includes("BlobStore");
-}
-check("shl/requiresBlobStore", noStoreRejected);
+/*
+ * The codec cannot mint at all any more, and that has to be an explicit refusal rather than a
+ * `TypeError` a layer down: hosting an SHL means being a manifest server, and this deployment's
+ * manifest server is its own BFF.
+ */
+check(
+  "shl/hasNoEncoder",
+  shlCodec.encode === undefined,
+  "minting moved to POST /api/invitations",
+);
 
 // Expiry must be honoured.
 const expiredPayload = toBase64Url(
@@ -442,9 +463,8 @@ async function hostShl(
   key: Uint8Array,
   extra: Record<string, unknown> = {},
 ) {
-  const url = await store.put(
+  const url = store.put(
     encodeUtf8(await encryptJwe(encodeUtf8(JSON.stringify(content)), key)),
-    JOSE_CONTENT_TYPE,
   );
 
   return {
@@ -616,10 +636,7 @@ check(
 );
 
 // One unreadable file must cost its own content, not the whole link.
-const corruptUrl = await store.put(
-  encodeUtf8("not.a.valid.jwe.at-all"),
-  JOSE_CONTENT_TYPE,
-);
+const corruptUrl = store.put(encodeUtf8("not.a.valid.jwe.at-all"));
 manifestFiles = [
   { contentType: "application/fhir+json", location: corruptUrl },
   {
@@ -1052,17 +1069,16 @@ check(
 );
 
 check("reply/looksLikeReplyJwe:accepts", looksLikeReplyJwe(replyJwe));
+/*
+ * A slot this app did not mint may hold anything at all before it is answered - Platypus writes a
+ * sentinel, other hosts write nothing - so "answered" has to be decided structurally rather than
+ * by recognising a particular placeholder.
+ */
 check(
-  "reply/looksLikeReplyJwe:rejectsPending",
-  !looksLikeReplyJwe(replySlotPlaceholder()),
+  "reply/looksLikeReplyJwe:rejectsPlaceholder",
+  !looksLikeReplyJwe(`pending:${crypto.randomUUID()}`),
 );
-// A fixed placeholder makes every slot after the first a byte-identical create, which servers that
-// deduplicate reject (HAPI-2840). Uniqueness is what stops the second request ever minted failing.
-check(
-  "reply/slotPlaceholderIsUnique",
-  replySlotPlaceholder() !== replySlotPlaceholder(),
-  "identical placeholders collide on servers that deduplicate creates",
-);
+check("reply/looksLikeReplyJwe:rejectsEmpty", !looksLikeReplyJwe(""));
 
 // ---------------------------------------------------------------------------
 // Reply descriptor — build, parse, and tolerance of Platypus's own identifiers.
@@ -1858,41 +1874,21 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// The encrypted reply channel, deferred.
+// The encrypted reply channel, no longer minted.
 //
-// Off by default because the primary return path is a link the filler mints. These assert that
-// "off" means the invitation carries nothing at all, not that it carries an unused field.
+// This app stopped offering channel C on its own invitations (FR-029): answers come back through
+// the grant, or as a link the filler mints. The filler half stays, so somebody else's invitation
+// that declares a reply channel is still honoured - that is asserted above, in "reply descriptor".
+// What is asserted here is the other half: an invitation minted now carries nothing at all about
+// a reply slot, rather than carrying an unused field.
 
-console.log("\nencrypted reply deferred\n");
+console.log("\nencrypted reply no longer minted\n");
 
-check(
-  "deferred/flagDefaultsOff",
-  FALLBACK_CONFIG.enableEncryptedReply === false,
-);
-check(
-  "deferred/needsBlobServer",
-  canUseEncryptedReply({ ...FALLBACK_CONFIG, enableEncryptedReply: true }) ===
-    false,
-  "the fallback names no blob server, so the flag alone can never mint a slot",
-);
-check(
-  "deferred/enabledWithBlobServer",
-  canUseEncryptedReply({
-    ...FALLBACK_CONFIG,
-    enableEncryptedReply: true,
-    blobServerUrl: "https://blobs.test/fhir",
-  }) === true,
-  "the deferral must be reversible by config alone",
-);
-
-const noChannelRequest = buildRequestBundle(
-  {
-    resourceType: "Questionnaire",
-    status: "active",
-    url: "http://example.org/Questionnaire/plain",
-  },
-  { requestId: "urn:uuid:no-channel", subjectDisplay: "Jane Citizen" },
-);
+const noChannelRequest = buildInvitationBundle({
+  resourceType: "Questionnaire",
+  status: "active",
+  url: "http://example.org/Questionnaire/plain",
+});
 
 check(
   "deferred/requestCarriesNoDescriptor",
@@ -1901,27 +1897,23 @@ check(
 check(
   "deferred/requestTaskHasNoExtensions",
   noChannelRequest.task.extension === undefined,
+  "the only extension an invitation carries is the published Task's URL",
 );
 check(
   "deferred/bundleLeaksNoReplyUrl",
   !JSON.stringify(noChannelRequest.bundle).includes("shl-reply-descriptor") &&
     !JSON.stringify(noChannelRequest.bundle).includes("replyUrl"),
-  "with the channel off the invitation is just the form",
-);
-check(
-  "deferred/shippedConfigIsBoolean",
-  typeof (shippedConfig as Record<string, unknown>).enableEncryptedReply ===
-    "boolean",
-  String((shippedConfig as Record<string, unknown>).enableEncryptedReply),
+  "with the channel gone the invitation is just the form",
 );
 
 // ---------------------------------------------------------------------------
-// `sfhl:/` is decode-only: links in the wild keep opening, nothing new is minted.
+// Neither codec mints any more, and each declines for its own reason: `sfhl:/` was retired, and
+// `shlink:/` needs a host that is now the BFF. Both still open links in the wild.
 
-console.log("\ndecode-only codec\n");
+console.log("\ncodec selection\n");
 
 check("bespoke/markedDecodeOnly", bespokeCodec.decodeOnly === true);
-check("shl/notDecodeOnly", shlCodec.decodeOnly !== true);
+check("shl/notMarkedDecodeOnly", shlCodec.decodeOnly !== true);
 
 let bespokeEncodingRefused = "";
 try {
@@ -1938,9 +1930,18 @@ check(
     bespokeEncodingRefused.includes("linkCodec"),
   bespokeEncodingRefused,
 );
+
+let shlEncodingRefused = "";
+try {
+  encodingCodec(FALLBACK_CONFIG, [bespokeCodec, shlCodec]);
+} catch (error) {
+  shlEncodingRefused = error instanceof Error ? error.message : "";
+}
 check(
-  "shl/stillSelectableForEncoding",
-  encodingCodec(FALLBACK_CONFIG, [bespokeCodec, shlCodec]).id === "shl",
+  "shl/refusedForEncodingWithAReason",
+  shlEncodingRefused.includes("hosted") &&
+    shlEncodingRefused.includes("linkCodec"),
+  shlEncodingRefused,
 );
 check(
   "bespoke/staleConfigStillValidates",

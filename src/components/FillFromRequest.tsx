@@ -84,7 +84,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
   }
 
   const correlationId = taskCorrelationId(task);
-  const canHost = canCreateHealthLinks();
+  const canHost = canCreateHealthLinks(config);
   const requester = task.requester?.display;
   const addressedTo = task.for?.display;
 

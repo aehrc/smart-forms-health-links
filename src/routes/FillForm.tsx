@@ -23,7 +23,7 @@ export default function FillForm() {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  const canHost = canCreateHealthLinks();
+  const canHost = canCreateHealthLinks(config);
 
   const {
     data: questionnaire,

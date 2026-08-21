@@ -30,9 +30,11 @@ import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { fhirProxyRoutes } from "./api/fhirProxy";
+import { invitationRoutes } from "./api/invitations";
 import { sessionRoutes } from "./api/session";
 import { loadServerConfig } from "./config";
 import { openDatabase } from "./db";
+import { manifestRoutes } from "./shl/manifest";
 import { publicJwks } from "./smart/backendServices";
 import { launchRoutes } from "./smart/launch";
 
@@ -220,8 +222,6 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   //
   // Later phases add:
   //
-  //   - Phase 4 (US2): `server/api/invitations.ts` - POST /api/invitations
-  //                    `server/shl/manifest.ts`    - POST /shl/:id
   //   - Phase 5 (US3): `server/api/relaySend.ts`   - POST /api/relay-send, only if Aidbox CORS
   //                                                  cannot be configured
   //
@@ -232,6 +232,8 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   fastify.register(launchRoutes);
   fastify.register(sessionRoutes);
   fastify.register(fhirProxyRoutes);
+  fastify.register(invitationRoutes);
+  fastify.register(manifestRoutes);
 
   /**
    * SPA rewrite. A browser navigation that matches no built file and no reserved prefix gets

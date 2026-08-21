@@ -48,11 +48,16 @@ export const SERVER_TASK_URL_EXTENSION = `${STRUCTURE_DEFINITION_BASE}/invitatio
 /**
  * Platypus shipped this contract first, under its own identifiers. Read those too.
  *
- * Read tolerantly, write narrowly: a Platypus invitation opens here unchanged, but we only ever emit
- * the vendor-neutral URLs above, so a third party never has to adopt one vendor's namespace to
- * participate.
+ * Reading is tolerant of both namespaces. Writing is not symmetrical, and the asymmetry is
+ * deliberate rather than an oversight: the reply descriptor is emitted under the vendor-neutral
+ * URL above, but `invitation-server-task-url` is emitted under Platypus's, because
+ * `contracts/shl-wire.md` fixes that identifier as the interoperability boundary. A Platypus
+ * build must consume this app's invitations unchanged, and it looks for its own URL.
  */
 const PLATYPUS_BASE = "https://platypushealth.app/StructureDefinition";
+
+/** The `invitation-server-task-url` identifier this app emits. See {@link PLATYPUS_BASE}. */
+export const PLATYPUS_SERVER_TASK_URL_EXTENSION = `${PLATYPUS_BASE}/invitation-server-task-url`;
 
 const REPLY_DESCRIPTOR_URLS = new Set([
   REPLY_DESCRIPTOR_EXTENSION,
@@ -60,7 +65,7 @@ const REPLY_DESCRIPTOR_URLS = new Set([
 ]);
 const SERVER_TASK_URL_URLS = new Set([
   SERVER_TASK_URL_EXTENSION,
-  `${PLATYPUS_BASE}/invitation-server-task-url`,
+  PLATYPUS_SERVER_TASK_URL_EXTENSION,
 ]);
 
 /**
@@ -98,13 +103,18 @@ function subExtensions(extension: Extension | undefined): Extension[] {
   return extension?.extension ?? [];
 }
 
-/** First matching sub-extension value, accepting either `valueUrl` or `valueString`. */
+/**
+ * First matching sub-extension value, accepting either `valueUrl` or `valueString`.
+ */
 function stringValue(parts: Extension[], url: string): string | undefined {
   const found = parts.find((part) => part.url === url);
   const value = found?.valueUrl ?? found?.valueString;
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/**
+ *
+ */
 export function buildReplyDescriptorExtension(
   descriptor: ReplyDescriptor,
 ): Extension {
@@ -200,7 +210,9 @@ function resolveReplyMethod(
   return replyToken === undefined ? "PUT" : "relay-grant";
 }
 
-/** Whether the descriptor's slot has passed its stated expiry. */
+/**
+ * Whether the descriptor's slot has passed its stated expiry.
+ */
 export function isReplyDescriptorExpired(
   descriptor: ReplyDescriptor,
   now = Date.now(),
@@ -210,8 +222,17 @@ export function isReplyDescriptorExpired(
   );
 }
 
+/**
+ * Build the extension naming the Task published on the requester's own server.
+ *
+ * Emitted under {@link PLATYPUS_SERVER_TASK_URL_EXTENSION} rather than the vendor-neutral URL,
+ * because `contracts/shl-wire.md` fixes that identifier as the interoperability boundary.
+ * Reading remains tolerant of both.
+ * @param taskUrl absolute URL of the published Task
+ * @returns the extension
+ */
 export function buildServerTaskUrlExtension(taskUrl: string): Extension {
-  return { url: SERVER_TASK_URL_EXTENSION, valueUrl: taskUrl };
+  return { url: PLATYPUS_SERVER_TASK_URL_EXTENSION, valueUrl: taskUrl };
 }
 
 /**
@@ -238,6 +259,9 @@ export interface ReturnChannels {
   serverTaskUrl?: string;
 }
 
+/**
+ *
+ */
 export function parseReturnChannels(task: Task | undefined): ReturnChannels {
   const reply = parseReplyDescriptor(task);
   const serverTaskUrl = parseServerTaskUrl(task);

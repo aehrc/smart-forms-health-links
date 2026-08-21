@@ -9,142 +9,238 @@ import {
   encodingCodec,
   ensureQuestionnaireCanonical,
 } from "./codec";
-import {
-  buildReplyBundle,
-  buildRequestBundle,
-  buildResponseBundle,
-} from "./exchange";
+import { buildReplyBundle, buildResponseBundle } from "./exchange";
+import { JOSE_CONTENT_TYPE } from "./jwe";
 import { LINK_CODECS } from "./registry";
-import { encryptReplyJwe, type ReplyPrivateJwk } from "./replyCrypto";
+import { encryptReplyJwe } from "./replyCrypto";
 import {
   isReplyDescriptorExpired,
   type ReplyDescriptor,
 } from "./replyDescriptor";
-import { putReply } from "./replySlot";
 
 import type { AppConfig } from "@/lib/config";
 import type { Questionnaire, Task } from "fhir/r4";
 
-import { type BlobStore } from "@/fhir/blobStore";
 import { resolveExpiry, resolveLinkBaseUrl } from "@/lib/config";
+import { sessionEndedError } from "@/lib/session";
 
 /**
- * Link creation — the boundary where the renderer's global form state and the app's config meet the
- * codecs. This is the only part of the link layer that depends on `@aehrc/smart-forms-renderer`.
+ * Link creation, from the browser's side.
  *
- * TODO(phase-4): T031 replaces the two functions below and reworks minting onto
- * `POST /api/invitations`, which hosts the encrypted payload on the BFF (FR-013) instead of on a
- * third-party blob server. The `blobServerUrl` and `blobStore` configuration keys that used to
- * answer "where does the payload live" were deleted with the rest of anonymous mode in T022, so
- * until T031 lands there is nowhere for the browser to host one and minting is unavailable. T032
- * then deletes `src/fhir/blobStore.ts`, `src/link/replySlot.ts` and `src/link/collectReply.ts`
- * outright, along with the reply-slot half of this module.
+ * Minting an invitation is no longer something this code does; it is something it *asks for*.
+ * The component that mints is the component that hosts (FR-013), and that is the BFF: it holds
+ * the session's authority to publish the request Task, it hosts the encrypted payload, and it
+ * mints a fresh grant on every manifest fetch. So {@link createRequestLink} is one `POST` to
+ * `/api/invitations` and some presentation of the answer.
+ *
+ * What went with that move is worth stating, because both were real features:
+ *
+ *  - **Channel B**, where an invitation declared a `sdc-questionnaire-endpoint` and invited a
+ *    filler to write to it anonymously, is replaced by the grant. A filler now writes with a
+ *    token that expires, scoped to two operations, rather than to an open endpoint.
+ *  - **Channel C**, the encrypted reply slot, is no longer minted. Its requester half - creating
+ *    a slot, holding the private key in one browser, polling - is gone with it. The *filler*
+ *    half stays: {@link sendEncryptedReply} still honours a reply channel declared by somebody
+ *    else's invitation, because refusing to would strand a Platypus user's answers (FR-029).
+ * @author John Grimes
  */
 
+/** Where the BFF mints invitations. */
+export const INVITATIONS_ENDPOINT = "/api/invitations";
+
 /**
- * Whether this app can mint SMART Health Links.
+ * Whether this build can mint a link from the browser.
  *
- * TODO(phase-4): T031. Always false until minting moves to `POST /api/invitations`; the surfaces
- * that ask show an explanation rather than a mint button that could not work.
+ * Asked by the *filler* surfaces, which return answers by minting their own link for the
+ * requester to scan (FR-028). The requester's own invitations do not go through this: they are
+ * minted by the BFF, which needs no codec in the page.
+ *
+ * It answers false in this build, and the reason is worth being plain about rather than hiding
+ * behind a disabled button. The only codec configured for minting is the SHL one, whose payload
+ * has to be hosted somewhere, and the third-party blob host it used to be parked on was removed
+ * with the rest of anonymous mode. Restoring the filler's return leg is T044/T045.
+ * @param config the app configuration, naming the codec to mint with
+ * @returns true when a link can be created here
+ * @example
+ * {canCreateHealthLinks(config) ? <Button …/> : <Alert …/>}
  */
-export function canCreateHealthLinks(): boolean {
-  return false;
+export function canCreateHealthLinks(config: AppConfig): boolean {
+  try {
+    encodingCodec(config, LINK_CODECS);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/**
- * Where a SMART Health Link's encrypted payload gets hosted.
- *
- * TODO(phase-4): T031 replaces this with the BFF's own hosting. Throws in the meantime: there is
- * no configured blob server any more, and inventing one would put transactional data on a server
- * nobody chose.
- */
-export function resolveBlobStore(): BlobStore {
-  throw new Error(
-    "Minting a SMART Health Link is not available in this build: hosting for the encrypted " +
-      "payload moves to this app's own server, which is not implemented yet.",
-  );
-}
-
+/** Details of the request being made, beyond which form it is for. */
 export interface CreateRequestOptions {
-  /** Who the form is for, e.g. `Patient/123`. */
+  /** Who the form is for, e.g. `Patient/pt-1`. */
   subjectReference?: string;
-  /** Who the form is for, in words — the part a filler can actually read. */
+  /** Who the form is for, in words - the part a filler can actually read. */
   subjectDisplay?: string;
   /** Overrides the expiry derived from `linkLifetimeDays`. */
   expiresAt?: number;
 }
 
+/** What the BFF answers a mint with, plus the viewer URL built from it. */
 export interface CreatedRequest {
+  /** Viewer URL carrying the link in its fragment: what goes into the QR code. */
   link: string;
-  task: Task;
-  /** When the link and its reply slot stop being usable, as Epoch seconds. */
-  expiresAt?: number;
-  /**
-   * Channel C, when a slot was minted: where the reply will appear, and the key to open it.
-   *
-   * The private key exists nowhere else. It has to be persisted with the outstanding request or a
-   * reply arriving later cannot be read by anyone, including us — see `src/lib/requestStore.ts`.
-   */
-  reply?: { url: string; privateJwk: ReplyPrivateJwk };
-  /**
-   * The published Task on the EHR, when one was written.
-   *
-   * Present for tracking alone as well as for channel B — {@link CreatedRequest.serverReturnOffered}
-   * distinguishes them, because only the latter was named in the invitation.
-   */
-  serverTaskUrl?: string;
-  /** Whether the invitation invites the filler to write to `serverTaskUrl`'s server directly. */
-  serverReturnOffered: boolean;
+  /** The bare `shlink:/…`, for anyone who wants the link itself. */
+  shlink: string;
+  /** Where the link's manifest is served from. */
+  manifestUrl: string;
+  /** When the link stops being openable, in epoch seconds. */
+  expiresAt: number;
+  /** Absolute URL of the request Task published on the launched server. */
+  taskUrl: string;
+  /** The durable `urn:uuid:` identifier correlating this request with its answers. */
+  requestIdentifier: string;
+}
+
+/** The mint response, before the viewer URL is built onto it. */
+interface MintResponse {
+  shlink: string;
+  manifestUrl: string;
+  expiresAt: number;
+  taskUrl: string;
+  requestIdentifier: string;
 }
 
 /**
- * Build a "please fill this in" link.
+ * Whether a parsed body is a mint response.
+ * @param value the parsed body
+ * @returns true when every field is present and of the right type
+ */
+function isMintResponse(value: unknown): value is MintResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.shlink === "string" &&
+    typeof candidate.manifestUrl === "string" &&
+    typeof candidate.expiresAt === "number" &&
+    typeof candidate.taskUrl === "string" &&
+    typeof candidate.requestIdentifier === "string"
+  );
+}
+
+/**
+ * The patient id inside a subject reference.
  *
- * The Questionnaire is embedded whole so the filler needs no forms-server access, which is what
- * pushes this onto the hosted-SHL path — hundreds of kilobytes cannot ride inside a QR code.
+ * The picker hands back `Patient/pt-1`; the mint API takes the id alone, because it builds the
+ * reference itself against the launched server.
+ * @param subjectReference a reference, or undefined
+ * @returns the id, or undefined when no subject was named
+ */
+function patientIdOf(subjectReference?: string): string | undefined {
+  const trimmed = subjectReference?.trim();
+  if (trimmed === undefined || trimmed === "") {
+    return undefined;
+  }
+  return trimmed.split("/").findLast(Boolean);
+}
+
+/**
+ * Describe a failed mint in terms a requester can act on.
+ * @param status the HTTP status the BFF answered with
+ * @param body the parsed error body, when there was one
+ * @returns the message to show
+ */
+function mintFailureMessage(status: number, body: unknown): string {
+  const error =
+    typeof body === "object" && body !== null && "error" in body
+      ? String((body as Record<string, unknown>).error)
+      : undefined;
+  switch (error) {
+    case "task-publish-failed": {
+      return (
+        "The request could not be recorded on the server you are signed in to, so no link was " +
+        "created. Nothing has been sent, and nothing is hosted."
+      );
+    }
+    case "questionnaire-unreadable": {
+      return "This form could not be read from the server you are signed in to, so no link was created.";
+    }
+    case "questionnaire-not-invitable": {
+      return (
+        "This form has no canonical URL, so an invitation to it could not say which form to " +
+        "fill in. Nothing was created."
+      );
+    }
+    default: {
+      return `The link could not be created (${status}).`;
+    }
+  }
+}
+
+/**
+ * Ask the BFF to mint a "please fill this in" link.
  *
- * TODO(phase-4): T031. Channel B (`sdc-questionnaire-endpoint` declaration) and channel C (the
- * encrypted reply slot) are gone with the configuration keys that enabled them, and Task
- * publishing moves server-side where it can use the session's authority (FR-010). What is left
- * here builds the invitation Bundle and asks the codec to seal it, which is the half T031 keeps -
- * it will call `POST /api/invitations` instead of hosting the payload from the browser, so
- * {@link resolveBlobStore} throws until then and this function cannot currently complete.
+ * The Questionnaire is read, the request Task is published and the encrypted payload is hosted
+ * on the server, under the session's authority. What comes back is a `shlink:/` that resolves to
+ * a two-file manifest: the invitation, and a grant minted fresh at every fetch.
+ * @param questionnaireId id of the Questionnaire on the launched server
+ * @param config the app configuration, for the link origin, sender name and lifetime
+ * @param options who the form is for, and any expiry override
+ * @returns the minted link and what was created alongside it
+ * @throws {Error} when the mint is refused; marked as session-ended when the session has gone,
+ *   so the surface offers a re-launch rather than an error
+ * @example
+ * const created = await createRequestLink("q-715", config, {
+ *   subjectReference: "Patient/pt-1",
+ *   subjectDisplay: "Jane Citizen",
+ * });
  */
 export async function createRequestLink(
-  questionnaire: Questionnaire,
+  questionnaireId: string,
   config: AppConfig,
   options: CreateRequestOptions = {},
 ): Promise<CreatedRequest> {
-  const blobStore = resolveBlobStore();
+  const patientId = patientIdOf(options.subjectReference);
+  const subjectDisplay = options.subjectDisplay?.trim();
   const expiresAt = options.expiresAt ?? resolveExpiry(config);
-  /*
-   * The business identifier shared by the embedded Task and the copy published to the launched
-   * server. It is the only correlation key that survives the round trip: `urn:uuid` references
-   * are relative to a Bundle that no longer exists by the time answers come back, and the two
-   * copies of the Task have different server ids.
-   */
-  const requestId = crypto.randomUUID();
 
-  const { bundle, task } = buildRequestBundle(questionnaire, {
-    requestId,
-    subjectReference: options.subjectReference,
-    subjectDisplay: options.subjectDisplay,
-    requesterDisplay: config.senderName ?? undefined,
+  const response = await fetch(INVITATIONS_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      questionnaireId,
+      ...(patientId === undefined ? {} : { patientId }),
+      ...(subjectDisplay === undefined || subjectDisplay === ""
+        ? {}
+        : { patientDisplay: subjectDisplay }),
+      ...(config.senderName === null ? {} : { senderName: config.senderName }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+    }),
   });
 
-  const codec = encodingCodec(config, LINK_CODECS);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
 
-  const link = await codec.encode(
-    { bundle, label: defaultLabel(questionnaire) },
-    { baseUrl: resolveLinkBaseUrl(config), blobStore, expiresAt },
-  );
+  if (response.status === 401) {
+    throw sessionEndedError(
+      "The session has ended, so nothing was created. Sign in again to send this request.",
+    );
+  }
+  if (!response.ok || !isMintResponse(body)) {
+    throw new Error(mintFailureMessage(response.status, body));
+  }
 
-  return {
-    link,
-    task,
-    ...(expiresAt === undefined ? {} : { expiresAt }),
-    serverReturnOffered: false,
-  };
+  /*
+   * The QR carries a viewer URL rather than the bare `shlink:/`, which is the form the SHL
+   * specification itself uses: a scanner that knows nothing about the scheme still opens
+   * something, and the fragment never leaves the device.
+   */
+  const base = resolveLinkBaseUrl(config).replace(/\/+$/, "");
+
+  return { ...body, link: `${base}/view#${body.shlink}` };
 }
 
 /**
@@ -156,6 +252,11 @@ export async function createRequestLink(
  *
  * `requestTask` is the Task that arrived with the request; passing it through is what lets the
  * requester match these answers to what it asked for.
+ * @param questionnaire the form the answers belong to
+ * @param config the app configuration, for the link origin and codec
+ * @param requestTask the Task that arrived with the request, when there was one
+ * @returns the link
+ * @throws {Error} when no registered codec can mint a link in this build
  */
 export async function createResponseLink(
   questionnaire: Questionnaire,
@@ -170,24 +271,57 @@ export async function createResponseLink(
 
   return codec.encode(
     { bundle, label: defaultLabel(questionnaire) },
-    {
-      baseUrl: resolveLinkBaseUrl(config),
-      blobStore: resolveBlobStore(),
-    },
+    { baseUrl: resolveLinkBaseUrl(config) },
   );
+}
+
+/**
+ * Deliver an encrypted reply to a slot somebody else minted.
+ *
+ * A blind overwrite, by design: the slot's whole purpose is to hold the latest reply, and a
+ * filler correcting and resending should replace rather than accumulate. The requester
+ * correlates by *which slot* the reply arrived in, so nothing depends on the slot's history.
+ * @param replyUrl the absolute slot URL from the invitation's descriptor
+ * @param jwe the encrypted reply
+ * @returns nothing; resolves once the slot has accepted the ciphertext
+ * @throws {Error} when the slot refused the write
+ */
+async function putReply(replyUrl: string, jwe: string): Promise<void> {
+  const response = await fetch(replyUrl, {
+    method: "PUT",
+    headers: { "Content-Type": JOSE_CONTENT_TYPE },
+    body: encodeUtf8(jwe) as BodyInit,
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Could not deliver the reply to ${replyUrl} (${response.status} ${response.statusText}). ` +
+        "The answers have not been sent.",
+    );
+  }
 }
 
 /**
  * Send the answers back through the request's encrypted reply channel.
  *
- * The filler's half of channel C, and the reason this app is a reference implementation on both sides
- * rather than only the requesting one. Everything happens on this device: the reply Bundle is built,
- * labelled patient-asserted, encrypted to the requester's public key, and only the ciphertext is
- * uploaded. The slot host — quite possibly a server nobody involved trusts — never sees plaintext.
+ * The filler's half of channel C, kept after this app stopped minting such channels of its own.
+ * An invitation from another producer - Platypus, or an older build of this app - may still
+ * declare one, and refusing to honour it would strand the answers of someone who did nothing
+ * wrong (FR-029).
+ *
+ * Everything happens on this device: the reply Bundle is built, labelled patient-asserted,
+ * encrypted to the requester's public key, and only the ciphertext is uploaded. The slot host -
+ * quite possibly a server nobody involved trusts - never sees plaintext.
  *
  * What this can and cannot confirm is worth being precise about, because the UI has to say it: a
  * successful return means the ciphertext reached the slot. It does **not** mean the requester has
  * collected it, and there is nothing to poll that would say otherwise.
+ * @param questionnaire the form that was answered
+ * @param descriptor the reply channel the invitation declared
+ * @param requestTask the Task that arrived with the request, when there was one
+ * @returns nothing; resolves once the ciphertext has reached the slot
+ * @throws {Error} when the channel uses a delivery method this app does not implement, when it
+ *   has expired, or when the slot refused the write
  */
 export async function sendEncryptedReply(
   questionnaire: Questionnaire,

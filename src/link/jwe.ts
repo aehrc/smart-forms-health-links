@@ -20,6 +20,9 @@ import { fromBase64Url, toBase64Url } from "./binary";
 
 const PROTECTED_HEADER = { alg: "dir", enc: "A256GCM" } as const;
 
+/** Media type for a JWE compact serialisation (RFC 7515 §9.2.1). */
+export const JOSE_CONTENT_TYPE = "application/jose";
+
 /** AES-256 key length. */
 export const KEY_BYTES = 32;
 
@@ -38,10 +41,16 @@ export function generateKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(KEY_BYTES));
 }
 
+/**
+ *
+ */
 export function keyToBase64Url(key: Uint8Array): string {
   return toBase64Url(key);
 }
 
+/**
+ *
+ */
 export function keyFromBase64Url(value: string): Uint8Array {
   const key = fromBase64Url(value);
   if (key.length !== KEY_BYTES) {
@@ -66,21 +75,50 @@ async function importKey(
   ]);
 }
 
-function encodeProtectedHeader(): string {
+/**
+ * Encode the protected header, which doubles as the GCM additional authenticated data.
+ * @param contentType value for the `cty` member, omitted when undefined
+ * @returns the base64url-encoded header
+ */
+function encodeProtectedHeader(contentType?: string): string {
   // Encoded once and used verbatim as the AAD, so the exact bytes must match on both sides.
-  return toBase64Url(
-    new TextEncoder().encode(JSON.stringify(PROTECTED_HEADER)),
-  );
+  const header =
+    contentType === undefined
+      ? PROTECTED_HEADER
+      : { ...PROTECTED_HEADER, cty: contentType };
+  return toBase64Url(new TextEncoder().encode(JSON.stringify(header)));
 }
 
-/** Encrypt to JWE compact serialisation. */
+/** How a payload is sealed. */
+export interface EncryptJweOptions {
+  /**
+   * Content type of the plaintext, written to the header's `cty` member.
+   *
+   * SMART Health Links carry more than one kind of file in a manifest - an invitation Bundle and
+   * an API access grant, in this app - and `cty` is how a reader tells them apart before
+   * decrypting. Omitted for payloads whose type is already established by where they were found.
+   */
+  readonly contentType?: string;
+}
+
+/**
+ * Encrypt to JWE compact serialisation.
+ * @param plaintext the bytes to seal
+ * @param key the 256-bit content encryption key
+ * @param options the content type to declare, if any
+ * @returns the compact serialisation
+ * @throws {Error} when the key is not 32 bytes
+ * @example
+ * await encryptJwe(encodeUtf8(json), key, { contentType: "application/fhir+json" });
+ */
 export async function encryptJwe(
   plaintext: Uint8Array,
   key: Uint8Array,
+  options: EncryptJweOptions = {},
 ): Promise<string> {
   const cryptoKey = await importKey(key, "encrypt");
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-  const protectedHeader = encodeProtectedHeader();
+  const protectedHeader = encodeProtectedHeader(options.contentType);
   const additionalData = new TextEncoder().encode(protectedHeader);
 
   const sealed = new Uint8Array(

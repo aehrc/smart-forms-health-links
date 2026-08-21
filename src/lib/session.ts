@@ -150,6 +150,24 @@ export function isSessionEnded(value: unknown): value is SessionEndedError {
 }
 
 /**
+ * Raise an error that means "the session has gone", not "that failed".
+ *
+ * The marker, not the message, is what surfaces branch on: {@link requesterGate} turns a marked
+ * error into a re-launch prompt rather than a red box, so every route that acts with the
+ * session's authority - reading through the proxy, minting an invitation - has to raise the same
+ * kind of error for the same cause.
+ * @param message what to say if the error is displayed rather than acted on
+ * @returns the marked error, for the caller to throw
+ * @example
+ * throw sessionEndedError("The session has ended, so nothing was minted.");
+ */
+export function sessionEndedError(message: string): SessionEndedError {
+  return Object.assign(new Error(message), {
+    [SESSION_ENDED]: true as const,
+  });
+}
+
+/**
  * Decide what a response from `/api/fhir/*` means.
  *
  * Only the BFF's own `401` bodies mean the session is gone. The proxy passes upstream responses
@@ -344,10 +362,8 @@ export async function fetchProxiedFhir<T>(
       return body as T;
     }
     case "session-ended": {
-      // The marker, not the message, is what surfaces branch on - see `requesterGate`.
-      throw Object.assign(
-        new Error("The session has ended, so this could not be read."),
-        { [SESSION_ENDED]: true as const },
+      throw sessionEndedError(
+        "The session has ended, so this could not be read.",
       );
     }
     case "failed": {
