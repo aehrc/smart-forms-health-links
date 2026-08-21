@@ -31,13 +31,13 @@
  * No new dependency: WebCrypto does P-256 ECDH and SHA-256, so Concat-KDF is the only thing that has
  * to be written out by hand.
  */
-import { fromBase64Url, toBase64Url } from './binary';
+import { fromBase64Url, toBase64Url } from "./binary";
 
 /** The only curve this supports, and the one the reply descriptor specifies. */
-const CURVE = 'P-256';
+const CURVE = "P-256";
 
-const ALG = 'ECDH-ES';
-const ENC = 'A256GCM';
+const ALG = "ECDH-ES";
+const ENC = "A256GCM";
 
 /** A256GCM content encryption key length, in bits — also Concat-KDF's `keydatalen`. */
 const CEK_BITS = 256;
@@ -50,8 +50,8 @@ const IV_BYTES = 12;
 
 /** Public half of a reply key: a P-256 JWK, as carried in the reply descriptor. */
 export interface ReplyPublicJwk {
-  kty: 'EC';
-  crv: 'P-256';
+  kty: "EC";
+  crv: "P-256";
   x: string;
   y: string;
 }
@@ -68,18 +68,18 @@ export interface ReplyKeyPair {
 
 /** Narrow an untrusted value to a usable P-256 public JWK. */
 export function isReplyPublicJwk(value: unknown): value is ReplyPublicJwk {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return false;
   }
 
   const candidate = value as Record<string, unknown>;
   return (
-    candidate.kty === 'EC' &&
+    candidate.kty === "EC" &&
     candidate.crv === CURVE &&
-    typeof candidate.x === 'string' &&
-    candidate.x !== '' &&
-    typeof candidate.y === 'string' &&
-    candidate.y !== ''
+    typeof candidate.x === "string" &&
+    candidate.x !== "" &&
+    typeof candidate.y === "string" &&
+    candidate.y !== ""
   );
 }
 
@@ -89,7 +89,7 @@ export function isReplyPrivateJwk(value: unknown): value is ReplyPrivateJwk {
   }
 
   const d = (value as { d?: unknown }).d;
-  return typeof d === 'string' && d !== '';
+  return typeof d === "string" && d !== "";
 }
 
 /**
@@ -99,42 +99,52 @@ export function isReplyPrivateJwk(value: unknown): value is ReplyPrivateJwk {
  * a reply arriving days later could not be opened. See `src/lib/requestStore.ts`.
  */
 export async function generateReplyKeyPair(): Promise<ReplyKeyPair> {
-  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: CURVE }, true, [
-    'deriveBits'
-  ]);
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: CURVE },
+    true,
+    ["deriveBits"],
+  );
 
-  const privateJwk = (await crypto.subtle.exportKey('jwk', pair.privateKey)) as JsonWebKey;
-  const publicJwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
+  const privateJwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  const publicJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
 
   if (!isReplyPrivateJwk(privateJwk) || !isReplyPublicJwk(publicJwk)) {
-    throw new Error('WebCrypto produced an EC keypair this app does not recognise.');
+    throw new Error(
+      "WebCrypto produced an EC keypair this app does not recognise.",
+    );
   }
 
   // Drop everything WebCrypto adds beyond the curve points — `key_ops`, `ext`, `alg` — so the JWK
   // that goes into a descriptor and into storage is exactly the five fields the wire format defines.
   return {
-    publicJwk: { kty: 'EC', crv: CURVE, x: publicJwk.x, y: publicJwk.y },
-    privateJwk: { kty: 'EC', crv: CURVE, x: privateJwk.x, y: privateJwk.y, d: privateJwk.d }
+    publicJwk: { kty: "EC", crv: CURVE, x: publicJwk.x, y: publicJwk.y },
+    privateJwk: {
+      kty: "EC",
+      crv: CURVE,
+      x: privateJwk.x,
+      y: privateJwk.y,
+      d: privateJwk.d,
+    },
   };
 }
 
 function importPublic(jwk: ReplyPublicJwk): Promise<CryptoKey> {
   return crypto.subtle.importKey(
-    'jwk',
-    { kty: 'EC', crv: CURVE, x: jwk.x, y: jwk.y },
-    { name: 'ECDH', namedCurve: CURVE },
+    "jwk",
+    { kty: "EC", crv: CURVE, x: jwk.x, y: jwk.y },
+    { name: "ECDH", namedCurve: CURVE },
     false,
-    []
+    [],
   );
 }
 
 function importPrivate(jwk: ReplyPrivateJwk): Promise<CryptoKey> {
   return crypto.subtle.importKey(
-    'jwk',
-    { kty: 'EC', crv: CURVE, x: jwk.x, y: jwk.y, d: jwk.d },
-    { name: 'ECDH', namedCurve: CURVE },
+    "jwk",
+    { kty: "EC", crv: CURVE, x: jwk.x, y: jwk.y, d: jwk.d },
+    { name: "ECDH", namedCurve: CURVE },
     false,
-    ['deriveBits']
+    ["deriveBits"],
   );
 }
 
@@ -177,27 +187,37 @@ async function concatKdf(sharedSecret: Uint8Array): Promise<Uint8Array> {
     lengthPrefixed(new TextEncoder().encode(ENC)),
     lengthPrefixed(new Uint8Array(0)),
     lengthPrefixed(new Uint8Array(0)),
-    uint32(CEK_BITS)
+    uint32(CEK_BITS),
   );
 
   const digest = await crypto.subtle.digest(
-    'SHA-256',
-    concat(uint32(1), sharedSecret, otherInfo) as BufferSource
+    "SHA-256",
+    concat(uint32(1), sharedSecret, otherInfo) as BufferSource,
   );
 
   return new Uint8Array(digest);
 }
 
 /** Agree on the content encryption key. Identical on both sides — that is the point of ECDH. */
-async function deriveCek(privateKey: CryptoKey, publicKey: CryptoKey): Promise<CryptoKey> {
+async function deriveCek(
+  privateKey: CryptoKey,
+  publicKey: CryptoKey,
+): Promise<CryptoKey> {
   const shared = new Uint8Array(
-    await crypto.subtle.deriveBits({ name: 'ECDH', public: publicKey }, privateKey, CEK_BITS)
+    await crypto.subtle.deriveBits(
+      { name: "ECDH", public: publicKey },
+      privateKey,
+      CEK_BITS,
+    ),
   );
 
-  return crypto.subtle.importKey('raw', (await concatKdf(shared)) as BufferSource, 'AES-GCM', false, [
-    'encrypt',
-    'decrypt'
-  ]);
+  return crypto.subtle.importKey(
+    "raw",
+    (await concatKdf(shared)) as BufferSource,
+    "AES-GCM",
+    false,
+    ["encrypt", "decrypt"],
+  );
 }
 
 interface ReplyHeader {
@@ -218,7 +238,7 @@ interface ReplyHeader {
  */
 export async function encryptReplyJwe(
   plaintext: Uint8Array,
-  recipientPublicJwk: ReplyPublicJwk
+  recipientPublicJwk: ReplyPublicJwk,
 ): Promise<string> {
   const recipient = await importPublic(recipientPublicJwk);
   // Ephemeral, per message: a fresh `epk` is what makes each reply's CEK unique.
@@ -227,27 +247,37 @@ export async function encryptReplyJwe(
   const cek = await deriveCek(ephemeralPrivate, recipient);
 
   const header = { alg: ALG, enc: ENC, epk: ephemeral.publicJwk };
-  const protectedHeader = toBase64Url(new TextEncoder().encode(JSON.stringify(header)));
+  const protectedHeader = toBase64Url(
+    new TextEncoder().encode(JSON.stringify(header)),
+  );
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
 
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
       {
-        name: 'AES-GCM',
+        name: "AES-GCM",
         iv: iv as BufferSource,
-        additionalData: new TextEncoder().encode(protectedHeader) as BufferSource,
-        tagLength: TAG_BYTES * 8
+        additionalData: new TextEncoder().encode(
+          protectedHeader,
+        ) as BufferSource,
+        tagLength: TAG_BYTES * 8,
       },
       cek,
-      plaintext as BufferSource
-    )
+      plaintext as BufferSource,
+    ),
   );
 
   // WebCrypto appends the tag; JWE wants it in its own segment.
   const ciphertext = sealed.subarray(0, sealed.length - TAG_BYTES);
   const tag = sealed.subarray(sealed.length - TAG_BYTES);
 
-  return [protectedHeader, '', toBase64Url(iv), toBase64Url(ciphertext), toBase64Url(tag)].join('.');
+  return [
+    protectedHeader,
+    "",
+    toBase64Url(iv),
+    toBase64Url(ciphertext),
+    toBase64Url(tag),
+  ].join(".");
 }
 
 /**
@@ -258,12 +288,12 @@ export async function encryptReplyJwe(
  */
 export async function decryptReplyJwe(
   compact: string,
-  privateJwk: ReplyPrivateJwk
+  privateJwk: ReplyPrivateJwk,
 ): Promise<Uint8Array> {
-  const segments = compact.trim().split('.');
+  const segments = compact.trim().split(".");
   if (segments.length !== 5) {
     throw new Error(
-      `Not a JWE compact serialisation: expected 5 dot-separated segments, got ${segments.length}.`
+      `Not a JWE compact serialisation: expected 5 dot-separated segments, got ${segments.length}.`,
     );
   }
 
@@ -271,29 +301,35 @@ export async function decryptReplyJwe(
 
   let header: ReplyHeader;
   try {
-    header = JSON.parse(new TextDecoder().decode(fromBase64Url(protectedHeader)));
-  } catch (cause) {
-    throw new Error('Reply JWE protected header is not valid base64url JSON.', { cause });
+    header = JSON.parse(
+      new TextDecoder().decode(fromBase64Url(protectedHeader)),
+    );
+  } catch (error) {
+    throw new Error("Reply JWE protected header is not valid base64url JSON.", {
+      cause: error,
+    });
   }
 
   if (header.alg !== ALG || header.enc !== ENC) {
     throw new Error(
       `Unsupported reply JWE algorithms (alg=${header.alg}, enc=${header.enc}). ` +
-        `The reply channel requires alg=${ALG} and enc=${ENC}.`
+        `The reply channel requires alg=${ALG} and enc=${ENC}.`,
     );
   }
 
-  if (encryptedKey !== '') {
+  if (encryptedKey !== "") {
     throw new Error(
-      'Reply JWE encrypted key segment must be empty — ECDH-ES here is Direct Key Agreement, so ' +
-        'the agreed key is the content encryption key and there is nothing to wrap.'
+      "Reply JWE encrypted key segment must be empty — ECDH-ES here is Direct Key Agreement, so " +
+        "the agreed key is the content encryption key and there is nothing to wrap.",
     );
   }
 
   if (header.zip) {
     // Legal JOSE, but this channel does not use it; fail loudly rather than hand back deflate bytes
     // the caller would try to JSON.parse. Same stance as `jwe.ts`.
-    throw new Error(`Compressed reply payloads (zip=${header.zip}) are not supported.`);
+    throw new Error(
+      `Compressed reply payloads (zip=${header.zip}) are not supported.`,
+    );
   }
 
   if (header.apu !== undefined || header.apv !== undefined) {
@@ -303,16 +339,19 @@ export async function decryptReplyJwe(
      * sends whoever debugs it looking in the wrong place.
      */
     throw new Error(
-      'This reply JWE sets apu/apv. The reply channel specifies neither, and ignoring them would ' +
-        'derive a different key.'
+      "This reply JWE sets apu/apv. The reply channel specifies neither, and ignoring them would " +
+        "derive a different key.",
     );
   }
 
   if (!isReplyPublicJwk(header.epk)) {
-    throw new Error('Reply JWE header is missing a usable P-256 `epk`.');
+    throw new Error("Reply JWE header is missing a usable P-256 `epk`.");
   }
 
-  const cek = await deriveCek(await importPrivate(privateJwk), await importPublic(header.epk));
+  const cek = await deriveCek(
+    await importPrivate(privateJwk),
+    await importPublic(header.epk),
+  );
 
   // Re-join ciphertext and tag the way WebCrypto expects them.
   const ciphertextBytes = fromBase64Url(ciphertext);
@@ -322,21 +361,23 @@ export async function decryptReplyJwe(
   try {
     const plaintext = await crypto.subtle.decrypt(
       {
-        name: 'AES-GCM',
+        name: "AES-GCM",
         iv: fromBase64Url(iv) as BufferSource,
-        additionalData: new TextEncoder().encode(protectedHeader) as BufferSource,
-        tagLength: TAG_BYTES * 8
+        additionalData: new TextEncoder().encode(
+          protectedHeader,
+        ) as BufferSource,
+        tagLength: TAG_BYTES * 8,
       },
       cek,
-      sealed as BufferSource
+      sealed as BufferSource,
     );
 
     return new Uint8Array(plaintext);
-  } catch (cause) {
+  } catch (error) {
     throw new Error(
-      'Could not decrypt the reply. The key does not match this request, or the content has been ' +
-        'altered.',
-      { cause }
+      "Could not decrypt the reply. The key does not match this request, or the content has been " +
+        "altered.",
+      { cause: error },
     );
   }
 }
@@ -348,6 +389,6 @@ export async function decryptReplyJwe(
  * returns its own idea of "empty" should still read as pending rather than as a corrupt reply.
  */
 export function looksLikeReplyJwe(body: string): boolean {
-  const segments = body.trim().split('.');
-  return segments.length === 5 && segments[0] !== '' && segments[3] !== '';
+  const segments = body.trim().split(".");
+  return segments.length === 5 && segments[0] !== "" && segments[3] !== "";
 }

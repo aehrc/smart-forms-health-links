@@ -1,0 +1,14 @@
+{
+  "//": "Threshold is a percentage ceiling, not a target. The existing tree sits at ~1.0% (nine small clones, mostly repeated FHIR search-parameter and table-cell shapes), so 2 leaves a little headroom while still failing on a real copy-paste regression. Lower it as those clones are removed.",
+  "threshold": 2,
+  "reporters": ["console"],
+  "path": ["src", "server", "ops", "scripts", "e2e"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx"
+  ],
+  "absolute": true
+}

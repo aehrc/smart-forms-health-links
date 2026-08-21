@@ -1,6 +1,7 @@
-import { JOSE_CONTENT_TYPE, type BlobStore } from '@/fhir/blobStore';
-import { encodeUtf8 } from './binary';
-import { looksLikeReplyJwe } from './replyCrypto';
+import { encodeUtf8 } from "./binary";
+import { looksLikeReplyJwe } from "./replyCrypto";
+
+import { JOSE_CONTENT_TYPE, type BlobStore } from "@/fhir/blobStore";
 
 /**
  * The reply slot: somewhere a filler can park one encrypted reply for the requester to collect.
@@ -30,7 +31,7 @@ import { looksLikeReplyJwe } from './replyCrypto';
  */
 
 /** Marks the content of a slot that has not been answered yet. */
-export const REPLY_SLOT_PENDING_PREFIX = 'pending';
+export const REPLY_SLOT_PENDING_PREFIX = "pending";
 
 /**
  * Body written into a newly minted slot.
@@ -51,9 +52,7 @@ export function replySlotPlaceholder(): string {
 }
 
 export type ReplyPoll =
-  | { status: 'pending' }
-  | { status: 'ready'; jwe: string }
-  | { status: 'gone' };
+  { status: "pending" } | { status: "ready"; jwe: string } | { status: "gone" };
 
 /**
  * Mint an empty reply slot and return its URL.
@@ -76,15 +75,15 @@ export async function createReplySlot(blobStore: BlobStore): Promise<string> {
  */
 export async function putReply(replyUrl: string, jwe: string): Promise<void> {
   const response = await fetch(replyUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': JOSE_CONTENT_TYPE },
-    body: encodeUtf8(jwe) as BodyInit
+    method: "PUT",
+    headers: { "Content-Type": JOSE_CONTENT_TYPE },
+    body: encodeUtf8(jwe) as BodyInit,
   });
 
   if (!response.ok) {
     throw new Error(
       `Could not deliver the reply to ${replyUrl} (${response.status} ${response.statusText}). ` +
-        'The answers have not been sent.'
+        "The answers have not been sent.",
     );
   }
 }
@@ -99,19 +98,24 @@ export async function putReply(replyUrl: string, jwe: string): Promise<void> {
  * expired is a normal end state for a request nobody answered, and the caller should say so plainly
  * instead of showing a failed fetch.
  */
-export async function pollReply(replyUrl: string, signal?: AbortSignal): Promise<ReplyPoll> {
+export async function pollReply(
+  replyUrl: string,
+  signal?: AbortSignal,
+): Promise<ReplyPoll> {
   const response = await fetch(replyUrl, { signal });
 
   if (response.status === 404 || response.status === 410) {
-    return { status: 'gone' };
+    return { status: "gone" };
   }
 
   if (!response.ok) {
     throw new Error(
-      `Could not check for a reply (${response.status} ${response.statusText}).`
+      `Could not check for a reply (${response.status} ${response.statusText}).`,
     );
   }
 
   const body = (await response.text()).trim();
-  return looksLikeReplyJwe(body) ? { status: 'ready', jwe: body } : { status: 'pending' };
+  return looksLikeReplyJwe(body)
+    ? { status: "ready", jwe: body }
+    : { status: "pending" };
 }

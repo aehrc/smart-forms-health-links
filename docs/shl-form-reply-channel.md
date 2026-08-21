@@ -18,7 +18,7 @@ invitation may offer either, both, or neither.
 > this app accepts as an inbound response link is specified in
 > [`response-links.md`](response-links.md).
 >
-> The *inbound* side is unaffected. This app still parses reply descriptors tolerantly — including
+> The _inbound_ side is unaffected. This app still parses reply descriptors tolerantly — including
 > Platypus's own extension URLs and its `replyPostToken` field name — and still delivers answers
 > through a channel an invitation asks for. Refusing to honour someone else's return channel would
 > strand their answers, not protect anyone. Nothing specified below has changed, and a filler that
@@ -36,21 +36,21 @@ one-directional. Neither the SHL spec nor the HL7
 defines a submission, upload or writeback channel, and neither mentions questionnaires or requests
 for data at all.
 
-That is workable if the filler is a browser: it can publish its *own* link and let the requester scan
+That is workable if the filler is a browser: it can publish its _own_ link and let the requester scan
 it, which needs no new contract. It does not work for a native app, which has no viewer to hand back
 and no way to get a QR code onto the requester's screen. Something in the invitation has to say where
 answers may go.
 
 Two channels, because they fail in different places.
 
-| | Channel B — server write | Channel C — encrypted reply |
-|---|---|---|
-| Transport | `POST` to a FHIR endpoint | ciphertext into a reply slot |
-| Filler needs | reachability of the requester's server | any HTTPS host that accepts a `PUT` |
-| Requester needs | a writable endpoint | nothing beyond what SHL already needs |
-| Reviewed before it lands? | **no** | yes |
-| Host sees plaintext? | yes — it is the record | no |
-| New extension? | one, to name the Task | one |
+|                           | Channel B — server write               | Channel C — encrypted reply           |
+| ------------------------- | -------------------------------------- | ------------------------------------- |
+| Transport                 | `POST` to a FHIR endpoint              | ciphertext into a reply slot          |
+| Filler needs              | reachability of the requester's server | any HTTPS host that accepts a `PUT`   |
+| Requester needs           | a writable endpoint                    | nothing beyond what SHL already needs |
+| Reviewed before it lands? | **no**                                 | yes                                   |
+| Host sees plaintext?      | yes — it is the record                 | no                                    |
+| New extension?            | one, to name the Task                  | one                                   |
 
 Channel C is the one to implement if you implement only one. It is the only channel that works
 without the filler reaching the requester's infrastructure, and the only one that leaves the
@@ -67,8 +67,14 @@ plaintext is a `collection` Bundle:
   "resourceType": "Bundle",
   "type": "collection",
   "entry": [
-    { "fullUrl": "urn:uuid:…", "resource": { "resourceType": "Questionnaire", "…": "…" } },
-    { "fullUrl": "urn:uuid:…", "resource": { "resourceType": "Task", "…": "…" } }
+    {
+      "fullUrl": "urn:uuid:…",
+      "resource": { "resourceType": "Questionnaire", "…": "…" }
+    },
+    {
+      "fullUrl": "urn:uuid:…",
+      "resource": { "resourceType": "Task", "…": "…" }
+    }
   ]
 }
 ```
@@ -82,7 +88,9 @@ The `Questionnaire` travels whole, so the form opens and fills with no access to
   "resourceType": "Task",
   "status": "requested",
   "intent": "order",
-  "identifier": [{ "system": "urn:ietf:rfc:3986", "value": "urn:uuid:3fb1cde7-…" }],
+  "identifier": [
+    { "system": "urn:ietf:rfc:3986", "value": "urn:uuid:3fb1cde7-…" }
+  ],
   "authoredOn": "2026-08-04T02:15:00.000Z",
   "description": "Complete \"GP Chronic Condition Management Plan\"",
   "requester": { "display": "Parkview Medical Centre" },
@@ -98,7 +106,7 @@ The `Questionnaire` travels whole, so the form opens and fills with no access to
       "valueCanonical": "http://www.health.gov.au/assessments/GPChronicConditionManagementPlan|0.1.0"
     }
   ],
-  "extension": [ "…see below…" ]
+  "extension": ["…see below…"]
 }
 ```
 
@@ -108,7 +116,7 @@ reasonably undo:
 - **`focus.reference` is the Questionnaire's canonical, not the `urn:uuid` of its Bundle entry.**
   A urn:uuid is arguably better FHIR for a bundled resource, but it stops meaning anything the moment
   the Bundle is taken apart, and a filler holding only the Task then cannot say which form it has.
-  `focus.type` is `Questionnaire` and must be set *together with* the canonical: readers exist that
+  `focus.type` is `Questionnaire` and must be set _together with_ the canonical: readers exist that
   short-circuit on `focus.type === 'Questionnaire'` and stop consulting `input`, so a `type` alongside
   a urn:uuid reference is worse than neither.
 - **`input[].valueCanonical` repeats the canonical.** `focus` is dropped on the return leg, where the
@@ -129,21 +137,27 @@ reasonably undo:
 {
   "url": "http://smartforms.csiro.au/StructureDefinition/shl-reply-descriptor",
   "extension": [
-    { "url": "replyUrl", "valueUrl": "https://hapi.fhir.org/baseR4/Binary/137287373" },
+    {
+      "url": "replyUrl",
+      "valueUrl": "https://hapi.fhir.org/baseR4/Binary/137287373"
+    },
     { "url": "replyMethod", "valueCode": "PUT" },
-    { "url": "publicJwk", "valueString": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"…\",\"y\":\"…\"}" },
+    {
+      "url": "publicJwk",
+      "valueString": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"…\",\"y\":\"…\"}"
+    },
     { "url": "expiresAt", "valueInteger": 1786000000 }
   ]
 }
 ```
 
-| Field | Card. | Meaning |
-|---|---|---|
-| `replyUrl` | 1..1 | Absolute `https` URL of the reply slot. Accept `valueUrl` or `valueString`. |
-| `replyMethod` | 0..1 | How to deliver. `PUT` is specified here. Absent means `PUT`, unless a token is present (see below). |
-| `publicJwk` | 1..1 | Stringified P-256 public JWK. Replies are encrypted to this. |
-| `expiresAt` | 0..1 | Unix seconds. Mirrors the link's own `exp`. |
-| `replyToken` | 0..1 | Capability to *write* the slot, for hosts that gate writes. Never the capability to read one. |
+| Field         | Card. | Meaning                                                                                             |
+| ------------- | ----- | --------------------------------------------------------------------------------------------------- |
+| `replyUrl`    | 1..1  | Absolute `https` URL of the reply slot. Accept `valueUrl` or `valueString`.                         |
+| `replyMethod` | 0..1  | How to deliver. `PUT` is specified here. Absent means `PUT`, unless a token is present (see below). |
+| `publicJwk`   | 1..1  | Stringified P-256 public JWK. Replies are encrypted to this.                                        |
+| `expiresAt`   | 0..1  | Unix seconds. Mirrors the link's own `exp`.                                                         |
+| `replyToken`  | 0..1  | Capability to _write_ the slot, for hosts that gate writes. Never the capability to read one.       |
 
 **The descriptor appears only inside the encrypted payload — never in the `shlink:` string.**
 Inspecting a link without its key must reveal no slot, no token and no key.
@@ -167,7 +181,7 @@ Content-Type: application/jose
 ```
 
 An unconditional overwrite. The slot holds the latest reply, so a filler correcting and resending
-replaces rather than accumulates, and the requester correlates by *which slot* the reply arrived in
+replaces rather than accumulates, and the requester correlates by _which slot_ the reply arrived in
 rather than by anything in the reply itself.
 
 A slot that has not been answered holds something that is not a JWE. The requester decides
@@ -181,19 +195,23 @@ are free to represent "empty" however they like.
 ### The reply JWE
 
 ECDH-ES in Direct Key Agreement mode + A256GCM — RFC 7518 §4.6. Compact serialisation, five
-segments, encrypted-key segment **empty** (the agreed key *is* the content encryption key):
+segments, encrypted-key segment **empty** (the agreed key _is_ the content encryption key):
 
 ```
 BASE64URL(protected header) . <empty> . BASE64URL(iv) . BASE64URL(ciphertext) . BASE64URL(tag)
 ```
 
 ```json
-{ "alg": "ECDH-ES", "enc": "A256GCM", "epk": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" } }
+{
+  "alg": "ECDH-ES",
+  "enc": "A256GCM",
+  "epk": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+}
 ```
 
 - `epk` is a **fresh ephemeral keypair per reply**. Its public half goes in the header; its private
   half is discarded.
-- AAD is the ASCII bytes of the *encoded* protected header segment.
+- AAD is the ASCII bytes of the _encoded_ protected header segment.
 - `apu` and `apv` are absent, and Concat-KDF hashes them as zero-length.
 - CEK = Concat-KDF (NIST SP 800-56A §5.8.1, single SHA-256 round, counter = 1):
 
@@ -225,7 +243,10 @@ it.
         "resourceType": "QuestionnaireResponse",
         "status": "completed",
         "questionnaire": "http://www.health.gov.au/assessments/GPChronicConditionManagementPlan|0.1.0",
-        "subject": { "reference": "Patient/local-key", "display": "Jane Citizen" },
+        "subject": {
+          "reference": "Patient/local-key",
+          "display": "Jane Citizen"
+        },
         "meta": {
           "security": [
             {
@@ -235,7 +256,7 @@ it.
             }
           ]
         },
-        "item": [ "…" ]
+        "item": ["…"]
       }
     },
     {
@@ -260,7 +281,10 @@ it.
         ]
       }
     },
-    { "fullUrl": "urn:uuid:e5f6…", "resource": { "resourceType": "Task", "status": "completed", "…": "…" } }
+    {
+      "fullUrl": "urn:uuid:e5f6…",
+      "resource": { "resourceType": "Task", "status": "completed", "…": "…" }
+    }
   ]
 }
 ```
@@ -294,18 +318,22 @@ Two halves. On the embedded `Questionnaire`, SDC's standard
 [`sdc-questionnaire-endpoint`](http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint):
 
 ```json
-{ "url": "http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint",
-  "valueUri": "https://ehr.example.org/fhir" }
+{
+  "url": "http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint",
+  "valueUri": "https://ehr.example.org/fhir"
+}
 ```
 
-*"the base URL for the server(s) to which questionnaire response … should be submitted. If multiple
-repetitions are present, the completed form should be sent to all listed endpoints."*
+_"the base URL for the server(s) to which questionnaire response … should be submitted. If multiple
+repetitions are present, the completed form should be sent to all listed endpoints."_
 
 And on the `Task`, its own absolute URL on that server, so the filler can advance it:
 
 ```json
-{ "url": "http://smartforms.csiro.au/StructureDefinition/invitation-server-task-url",
-  "valueUrl": "https://ehr.example.org/fhir/Task/456" }
+{
+  "url": "http://smartforms.csiro.au/StructureDefinition/invitation-server-task-url",
+  "valueUrl": "https://ehr.example.org/fhir/Task/456"
+}
 ```
 
 The filler `POST`s the `QuestionnaireResponse` to the declared base and may `PUT` the Task to
@@ -336,7 +364,7 @@ filler would hand the write capability to anyone who can read a Task. Both copie
 ## Notes for implementers
 
 - **Do not add query parameters to a `U`-flag payload `GET`.** The SHL spec defines `recipient` as a
-  field in the *manifest request body*; there is no equivalent for direct retrieval. Appending it to
+  field in the _manifest request body_; there is no equivalent for direct retrieval. Appending it to
   the file URL breaks FHIR `Binary` hosting outright:
 
   ```
@@ -348,6 +376,7 @@ filler would hand the write capability to anyone who can read a Task. Both copie
 
   That rules out the most obvious file host in FHIR for no benefit, since `recipient` is not relied on
   for trust.
+
 - **Preserve `meta.security` when writing a received response.** Stripping `meta` wholesale to discard
   a foreign server's `versionId`/`lastUpdated`/`source` is correct in intent and takes the `PATAST`
   label with it. Strip those three fields, not the element.
@@ -368,18 +397,18 @@ filler would hand the write capability to anyone who can read a Task. Both copie
 `Task` extension, ECDH-ES to a practice key, `PATAST` plus `Provenance` on the reply — are adopted here
 essentially unchanged. What differs is packaging:
 
-| | Platypus | Here |
-|---|---|---|
+|                | Platypus                                          | Here                                              |
+| -------------- | ------------------------------------------------- | ------------------------------------------------- |
 | Extension base | `https://platypushealth.app/StructureDefinition/` | `http://smartforms.csiro.au/StructureDefinition/` |
-| Delivery | relay: register install → grant → signed `POST` | `PUT` to any host |
-| `replyMethod` | absent | explicit, so the descriptor is host-neutral |
-| Write token | `replyPostToken` | `replyToken` |
+| Delivery       | relay: register install → grant → signed `POST`   | `PUT` to any host                                 |
+| `replyMethod`  | absent                                            | explicit, so the descriptor is host-neutral       |
+| Write token    | `replyPostToken`                                  | `replyToken`                                      |
 
 Our implementation **reads** the Platypus URLs and the `replyPostToken` name as aliases, and treats an
 untyped descriptor carrying a token as a relay rather than something to `PUT` at blindly. Read
 tolerantly, write narrowly: no third party should have to adopt one vendor's namespace to participate.
 
 The generalisation worth pursuing beyond this document is that a reply descriptor is functionally
-*"where do answers go"* for an untrusted, account-less channel — the same question
+_"where do answers go"_ for an untrusted, account-less channel — the same question
 `sdc-questionnaire-endpoint` already answers for trusted ones. Aligning the two, in SDC or the SHL IG,
 would retire this extension, which would be the best outcome available.

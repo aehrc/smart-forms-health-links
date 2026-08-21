@@ -1,5 +1,6 @@
-import type { Extension, Task } from 'fhir/r4';
-import { isReplyPublicJwk, type ReplyPublicJwk } from './replyCrypto';
+import { isReplyPublicJwk, type ReplyPublicJwk } from "./replyCrypto";
+
+import type { Extension, Task } from "fhir/r4";
 
 /**
  * How a filler sends answers back — the two return channels, as `Task` extensions.
@@ -38,7 +39,8 @@ import { isReplyPublicJwk, type ReplyPublicJwk } from './replyCrypto';
  */
 
 /** Where these extensions are defined. See `docs/shl-form-reply-channel.md`. */
-const STRUCTURE_DEFINITION_BASE = 'http://smartforms.csiro.au/StructureDefinition';
+const STRUCTURE_DEFINITION_BASE =
+  "http://smartforms.csiro.au/StructureDefinition";
 
 export const REPLY_DESCRIPTOR_EXTENSION = `${STRUCTURE_DEFINITION_BASE}/shl-reply-descriptor`;
 export const SERVER_TASK_URL_EXTENSION = `${STRUCTURE_DEFINITION_BASE}/invitation-server-task-url`;
@@ -50,13 +52,16 @@ export const SERVER_TASK_URL_EXTENSION = `${STRUCTURE_DEFINITION_BASE}/invitatio
  * the vendor-neutral URLs above, so a third party never has to adopt one vendor's namespace to
  * participate.
  */
-const PLATYPUS_BASE = 'https://platypushealth.app/StructureDefinition';
+const PLATYPUS_BASE = "https://platypushealth.app/StructureDefinition";
 
-const REPLY_DESCRIPTOR_URLS = [REPLY_DESCRIPTOR_EXTENSION, `${PLATYPUS_BASE}/shl-reply-descriptor`];
-const SERVER_TASK_URL_URLS = [
+const REPLY_DESCRIPTOR_URLS = new Set([
+  REPLY_DESCRIPTOR_EXTENSION,
+  `${PLATYPUS_BASE}/shl-reply-descriptor`,
+]);
+const SERVER_TASK_URL_URLS = new Set([
   SERVER_TASK_URL_EXTENSION,
-  `${PLATYPUS_BASE}/invitation-server-task-url`
-];
+  `${PLATYPUS_BASE}/invitation-server-task-url`,
+]);
 
 /**
  * How the filler delivers the ciphertext.
@@ -69,7 +74,7 @@ const SERVER_TASK_URL_URLS = [
  * post to that. This app can *recognise* such a slot but cannot send through one, and says so rather
  * than failing at the upload.
  */
-export type ReplyMethod = 'PUT' | 'relay-grant';
+export type ReplyMethod = "PUT" | "relay-grant";
 
 export interface ReplyDescriptor {
   /** Absolute URL of the reply slot. */
@@ -97,24 +102,26 @@ function subExtensions(extension: Extension | undefined): Extension[] {
 function stringValue(parts: Extension[], url: string): string | undefined {
   const found = parts.find((part) => part.url === url);
   const value = found?.valueUrl ?? found?.valueString;
-  return typeof value === 'string' && value !== '' ? value : undefined;
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-export function buildReplyDescriptorExtension(descriptor: ReplyDescriptor): Extension {
+export function buildReplyDescriptorExtension(
+  descriptor: ReplyDescriptor,
+): Extension {
   const parts: Extension[] = [
-    { url: 'replyUrl', valueUrl: descriptor.replyUrl },
-    { url: 'replyMethod', valueCode: descriptor.replyMethod },
+    { url: "replyUrl", valueUrl: descriptor.replyUrl },
+    { url: "replyMethod", valueCode: descriptor.replyMethod },
     // Stringified rather than modelled as sub-extensions: a JWK is defined by JOSE, and splitting it
     // across FHIR elements would invent a second encoding of it that both sides had to agree on.
-    { url: 'publicJwk', valueString: JSON.stringify(descriptor.publicJwk) }
+    { url: "publicJwk", valueString: JSON.stringify(descriptor.publicJwk) },
   ];
 
   if (descriptor.expiresAt !== undefined) {
-    parts.push({ url: 'expiresAt', valueInteger: descriptor.expiresAt });
+    parts.push({ url: "expiresAt", valueInteger: descriptor.expiresAt });
   }
 
   if (descriptor.replyToken !== undefined) {
-    parts.push({ url: 'replyToken', valueString: descriptor.replyToken });
+    parts.push({ url: "replyToken", valueString: descriptor.replyToken });
   }
 
   return { url: REPLY_DESCRIPTOR_EXTENSION, extension: parts };
@@ -128,19 +135,22 @@ export function buildReplyDescriptorExtension(descriptor: ReplyDescriptor): Exte
  * degraded experience; a filler that cannot open the form at all because one extension was wrong is a
  * broken one.
  */
-export function parseReplyDescriptor(task: Task | undefined): ReplyDescriptor | undefined {
+export function parseReplyDescriptor(
+  task: Task | undefined,
+): ReplyDescriptor | undefined {
   const extension = task?.extension?.find((candidate) =>
-    REPLY_DESCRIPTOR_URLS.includes(candidate.url)
+    REPLY_DESCRIPTOR_URLS.has(candidate.url),
   );
   const parts = subExtensions(extension);
   if (parts.length === 0) {
     return undefined;
   }
 
-  const replyUrl = stringValue(parts, 'replyUrl');
+  const replyUrl = stringValue(parts, "replyUrl");
   // `replyPostToken` is Platypus's name for the same capability.
-  const replyToken = stringValue(parts, 'replyToken') ?? stringValue(parts, 'replyPostToken');
-  const rawJwk = stringValue(parts, 'publicJwk');
+  const replyToken =
+    stringValue(parts, "replyToken") ?? stringValue(parts, "replyPostToken");
+  const rawJwk = stringValue(parts, "publicJwk");
   if (!replyUrl || !rawJwk) {
     return undefined;
   }
@@ -156,15 +166,19 @@ export function parseReplyDescriptor(task: Task | undefined): ReplyDescriptor | 
     return undefined;
   }
 
-  const declaredMethod = parts.find((part) => part.url === 'replyMethod')?.valueCode;
-  const expiresAt = parts.find((part) => part.url === 'expiresAt')?.valueInteger;
+  const declaredMethod = parts.find(
+    (part) => part.url === "replyMethod",
+  )?.valueCode;
+  const expiresAt = parts.find(
+    (part) => part.url === "expiresAt",
+  )?.valueInteger;
 
   return {
     replyUrl,
     replyMethod: resolveReplyMethod(declaredMethod, replyToken),
-    publicJwk: { kty: 'EC', crv: 'P-256', x: publicJwk.x, y: publicJwk.y },
-    ...(typeof expiresAt === 'number' ? { expiresAt } : {}),
-    ...(replyToken !== undefined ? { replyToken } : {})
+    publicJwk: { kty: "EC", crv: "P-256", x: publicJwk.x, y: publicJwk.y },
+    ...(typeof expiresAt === "number" ? { expiresAt } : {}),
+    ...(replyToken === undefined ? {} : { replyToken }),
   };
 }
 
@@ -175,17 +189,25 @@ export function parseReplyDescriptor(task: Task | undefined): ReplyDescriptor | 
  * token — so an untyped descriptor *with* a token is a relay, and one without is a plain write. We
  * always emit `replyMethod` explicitly, so this guess only ever applies to someone else's descriptor.
  */
-function resolveReplyMethod(declared: string | undefined, replyToken?: string): ReplyMethod {
-  if (declared === 'PUT' || declared === 'relay-grant') {
+function resolveReplyMethod(
+  declared: string | undefined,
+  replyToken?: string,
+): ReplyMethod {
+  if (declared === "PUT" || declared === "relay-grant") {
     return declared;
   }
 
-  return replyToken === undefined ? 'PUT' : 'relay-grant';
+  return replyToken === undefined ? "PUT" : "relay-grant";
 }
 
 /** Whether the descriptor's slot has passed its stated expiry. */
-export function isReplyDescriptorExpired(descriptor: ReplyDescriptor, now = Date.now()): boolean {
-  return descriptor.expiresAt !== undefined && descriptor.expiresAt * 1000 < now;
+export function isReplyDescriptorExpired(
+  descriptor: ReplyDescriptor,
+  now = Date.now(),
+): boolean {
+  return (
+    descriptor.expiresAt !== undefined && descriptor.expiresAt * 1000 < now
+  );
 }
 
 export function buildServerTaskUrlExtension(taskUrl: string): Extension {
@@ -199,9 +221,13 @@ export function buildServerTaskUrlExtension(taskUrl: string): Extension {
  * the filler happens to be using, which is nothing to do with the requester's server.
  */
 export function parseServerTaskUrl(task: Task | undefined): string | undefined {
-  const extension = task?.extension?.find((candidate) => SERVER_TASK_URL_URLS.includes(candidate.url));
+  const extension = task?.extension?.find((candidate) =>
+    SERVER_TASK_URL_URLS.has(candidate.url),
+  );
   const value = extension?.valueUrl ?? extension?.valueString;
-  return typeof value === 'string' && /^https?:\/\//i.test(value) ? value : undefined;
+  return typeof value === "string" && /^https?:\/\//i.test(value)
+    ? value
+    : undefined;
 }
 
 /** The return channels a request offers, for UI that has to explain what is and is not possible. */
@@ -218,6 +244,6 @@ export function parseReturnChannels(task: Task | undefined): ReturnChannels {
 
   return {
     ...(reply ? { reply } : {}),
-    ...(serverTaskUrl ? { serverTaskUrl } : {})
+    ...(serverTaskUrl ? { serverTaskUrl } : {}),
   };
 }

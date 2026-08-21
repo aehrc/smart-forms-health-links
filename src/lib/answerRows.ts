@@ -1,4 +1,4 @@
-import type { QuestionnaireResponse } from 'fhir/r4';
+import type { QuestionnaireResponse } from "fhir/r4";
 
 /**
  * Flatten a QuestionnaireResponse's answer tree into displayable rows.
@@ -22,7 +22,9 @@ export interface AnswerRow {
   depth: number;
 }
 
-type Answer = NonNullable<NonNullable<QuestionnaireResponse['item']>[number]['answer']>[number];
+type Answer = NonNullable<
+  NonNullable<QuestionnaireResponse["item"]>[number]["answer"]
+>[number];
 
 /**
  * Reduce one answer to a printable string.
@@ -38,26 +40,34 @@ type Answer = NonNullable<NonNullable<QuestionnaireResponse['item']>[number]['an
  */
 function answerValue(answer: Answer): string {
   if (answer.valueCoding) {
-    return answer.valueCoding.display ?? answer.valueCoding.code ?? '';
+    return answer.valueCoding.display ?? answer.valueCoding.code ?? "";
   }
 
-  const key = Object.keys(answer).find((candidate) => candidate.startsWith('value'));
-  const value = key === undefined ? undefined : (answer as Record<string, unknown>)[key];
+  const key = Object.keys(answer).find((candidate) =>
+    candidate.startsWith("value"),
+  );
+  const value =
+    key === undefined ? undefined : (answer as Record<string, unknown>)[key];
 
-  return typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '');
+  return typeof value === "object" && value !== null
+    ? JSON.stringify(value)
+    : String(value ?? "");
 }
 
 export function flattenAnswers(response: QuestionnaireResponse): AnswerRow[] {
   const rows: AnswerRow[] = [];
 
-  function walk(items: NonNullable<QuestionnaireResponse['item']>, depth: number) {
+  function walk(
+    items: NonNullable<QuestionnaireResponse["item"]>,
+    depth: number,
+  ) {
     for (const item of items) {
       for (const answer of item.answer ?? []) {
         rows.push({
           linkId: item.linkId,
           text: item.text,
           value: answerValue(answer),
-          depth
+          depth,
         });
 
         if (answer.item) {

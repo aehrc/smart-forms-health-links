@@ -1,5 +1,12 @@
-import type { Meta, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
-import { buildRequestBundle } from '@/link/exchange';
+import type {
+  Meta,
+  Provenance,
+  Questionnaire,
+  QuestionnaireResponse,
+  Task,
+} from "fhir/r4";
+
+import { buildRequestBundle } from "@/link/exchange";
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -26,16 +33,18 @@ import { buildRequestBundle } from '@/link/exchange';
  * is new ground rather than a reimplementation.
  */
 export const SDC_QUESTIONNAIRE_ENDPOINT =
-  'http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint';
+  "http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint";
 
-const FHIR_JSON = 'application/fhir+json';
+const FHIR_JSON = "application/fhir+json";
 
 /** Endpoints declared by the Questionnaire itself, if any. */
-export function declaredEndpoints(questionnaire: Questionnaire | undefined): string[] {
+export function declaredEndpoints(
+  questionnaire: Questionnaire | undefined,
+): string[] {
   return (questionnaire?.extension ?? [])
     .filter((extension) => extension.url === SDC_QUESTIONNAIRE_ENDPOINT)
     .map((extension) => extension.valueUri)
-    .filter((url): url is string => typeof url === 'string' && url !== '');
+    .filter((url): url is string => typeof url === "string" && url !== "");
 }
 
 export interface ResolveDestinationsOptions {
@@ -54,7 +63,9 @@ export interface ResolveDestinationsOptions {
  * instead. Defaulting here would quietly push patient data into a shared reference library, so an
  * unset destination is an error the user sees rather than a guess.
  */
-export function resolveDestinations(options: ResolveDestinationsOptions): string[] {
+export function resolveDestinations(
+  options: ResolveDestinationsOptions,
+): string[] {
   const declared = declaredEndpoints(options.questionnaire);
   if (declared.length > 0) {
     return declared;
@@ -64,9 +75,9 @@ export function resolveDestinations(options: ResolveDestinationsOptions): string
 }
 
 export const NO_DESTINATION_MESSAGE =
-  'No destination is configured for completed responses. Set `responseServerUrl` in config.json, ' +
-  'or give the Questionnaire an sdc-questionnaire-endpoint extension. It deliberately does not ' +
-  'default to the forms server, which is a read-only catalogue.';
+  "No destination is configured for completed responses. Set `responseServerUrl` in config.json, " +
+  "or give the Questionnaire an sdc-questionnaire-endpoint extension. It deliberately does not " +
+  "default to the forms server, which is a read-only catalogue.";
 
 export interface SubmitResult {
   serverUrl: string;
@@ -80,7 +91,7 @@ export interface SubmitResult {
 }
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, '');
+  return url.replace(/\/+$/, "");
 }
 
 /**
@@ -103,13 +114,20 @@ function asNewResource<T extends { id?: string; meta?: Meta }>(resource: T): T {
     return rest as T;
   }
 
-  const { versionId: _versionId, lastUpdated: _lastUpdated, source: _source, ...keptMeta } = meta;
+  const {
+    versionId: _versionId,
+    lastUpdated: _lastUpdated,
+    source: _source,
+    ...keptMeta
+  } = meta;
 
-  return (Object.keys(keptMeta).length > 0 ? { ...rest, meta: keptMeta } : rest) as T;
+  return (
+    Object.keys(keptMeta).length > 0 ? { ...rest, meta: keptMeta } : rest
+  ) as T;
 }
 
 interface OperationOutcome {
-  resourceType: 'OperationOutcome';
+  resourceType: "OperationOutcome";
   issue?: { severity?: string; code?: string; diagnostics?: string }[];
 }
 
@@ -121,7 +139,7 @@ interface OperationOutcome {
  * nothing.
  */
 async function describeFailure(response: Response): Promise<string> {
-  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
 
   try {
     const body = (await response.json()) as OperationOutcome;
@@ -130,7 +148,7 @@ async function describeFailure(response: Response): Promise<string> {
       .filter((text): text is string => !!text);
 
     if (diagnostics.length > 0) {
-      return `${status}: ${diagnostics.join('; ')}`;
+      return `${status}: ${diagnostics.join("; ")}`;
     }
   } catch {
     // Not every error response carries an OperationOutcome.
@@ -141,22 +159,28 @@ async function describeFailure(response: Response): Promise<string> {
 
 async function createResource(
   serverUrl: string,
-  resource: QuestionnaireResponse | Task | Provenance
+  resource: QuestionnaireResponse | Task | Provenance,
 ): Promise<string> {
-  const response = await fetch(`${trimTrailingSlash(serverUrl)}/${resource.resourceType}`, {
-    method: 'POST',
-    headers: { 'Content-Type': FHIR_JSON, Accept: FHIR_JSON },
-    body: JSON.stringify(resource)
-  });
+  const response = await fetch(
+    `${trimTrailingSlash(serverUrl)}/${resource.resourceType}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": FHIR_JSON, Accept: FHIR_JSON },
+      body: JSON.stringify(resource),
+    },
+  );
 
   if (!response.ok) {
     throw new Error(
-      `Could not save the ${resource.resourceType} — ${await describeFailure(response)}`
+      `Could not save the ${resource.resourceType} — ${await describeFailure(response)}`,
     );
   }
 
-  const created = (await response.json()) as { id?: string; resourceType?: string };
-  if (created.resourceType === 'OperationOutcome' || !created.id) {
+  const created = (await response.json()) as {
+    id?: string;
+    resourceType?: string;
+  };
+  if (created.resourceType === "OperationOutcome" || !created.id) {
     throw new Error(`The server rejected the ${resource.resourceType}.`);
   }
 
@@ -185,7 +209,9 @@ export interface SubmitOptions {
  * re-submitting the response to fix it would duplicate it. They are reported rather than swallowed so
  * the gap is visible.
  */
-export async function submitResponse(options: SubmitOptions): Promise<SubmitResult[]> {
+export async function submitResponse(
+  options: SubmitOptions,
+): Promise<SubmitResult[]> {
   const destinations = resolveDestinations(options);
 
   if (destinations.length === 0) {
@@ -195,7 +221,10 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
   return Promise.all(
     destinations.map(async (serverUrl): Promise<SubmitResult> => {
       try {
-        const responseId = await createResource(serverUrl, asNewResource(options.response));
+        const responseId = await createResource(
+          serverUrl,
+          asNewResource(options.response),
+        );
         const responseReference = `QuestionnaireResponse/${responseId}`;
 
         let taskId: string | undefined;
@@ -205,14 +234,17 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
               ...options.task,
               output: [
                 {
-                  type: { text: 'questionnaire-response' },
-                  valueReference: { reference: responseReference }
-                }
-              ]
+                  type: { text: "questionnaire-response" },
+                  valueReference: { reference: responseReference },
+                },
+              ],
             });
             taskId = await createResource(serverUrl, task);
-          } catch (cause) {
-            console.warn(`Saved the response but could not save its Task to ${serverUrl}`, cause);
+          } catch (error) {
+            console.warn(
+              `Saved the response but could not save its Task to ${serverUrl}`,
+              error,
+            );
           }
         }
 
@@ -223,25 +255,25 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
               ...options.provenance,
               // Targeted the response's `urn:uuid` inside the Bundle; that entry is gone, so point it
               // at what was actually created.
-              target: [{ reference: responseReference }]
+              target: [{ reference: responseReference }],
             });
             provenanceId = await createResource(serverUrl, provenance);
-          } catch (cause) {
+          } catch (error) {
             console.warn(
               `Saved the response but could not save its Provenance to ${serverUrl}`,
-              cause
+              error,
             );
           }
         }
 
         return { serverUrl, responseId, taskId, provenanceId };
-      } catch (cause) {
+      } catch (error) {
         return {
           serverUrl,
-          error: cause instanceof Error ? cause.message : String(cause)
+          error: error instanceof Error ? error.message : String(error),
         };
       }
-    })
+    }),
   );
 }
 
@@ -256,16 +288,25 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
  * `true` on any non-404: a server that does not enforce integrity, or that refuses the probe, is not
  * evidence of a missing subject, and blocking the write on that would be worse than attempting it.
  */
-export async function referenceResolves(serverUrl: string, reference: string): Promise<boolean> {
-  if (/^https?:\/\//i.test(reference) || !/^[A-Za-z]+\/[^/]+$/.test(reference)) {
+export async function referenceResolves(
+  serverUrl: string,
+  reference: string,
+): Promise<boolean> {
+  if (
+    /^https?:\/\//i.test(reference) ||
+    !/^[A-Za-z]+\/[^/]+$/.test(reference)
+  ) {
     // Absolute or contained/logical references are not ours to resolve against this server.
     return true;
   }
 
   try {
-    const response = await fetch(`${trimTrailingSlash(serverUrl)}/${reference}`, {
-      headers: { Accept: FHIR_JSON }
-    });
+    const response = await fetch(
+      `${trimTrailingSlash(serverUrl)}/${reference}`,
+      {
+        headers: { Accept: FHIR_JSON },
+      },
+    );
     return response.status !== 404;
   } catch {
     return true;
@@ -284,7 +325,7 @@ export async function referenceResolves(serverUrl: string, reference: string): P
  */
 export function declareResponseEndpoint(
   questionnaire: Questionnaire,
-  endpoint: string
+  endpoint: string,
 ): Questionnaire {
   if (declaredEndpoints(questionnaire).includes(endpoint)) {
     return questionnaire;
@@ -294,8 +335,8 @@ export function declareResponseEndpoint(
     ...questionnaire,
     extension: [
       ...(questionnaire.extension ?? []),
-      { url: SDC_QUESTIONNAIRE_ENDPOINT, valueUri: endpoint }
-    ]
+      { url: SDC_QUESTIONNAIRE_ENDPOINT, valueUri: endpoint },
+    ],
   };
 }
 
@@ -306,9 +347,9 @@ export function declareResponseEndpoint(
  * returns exactly our requests and nothing else on a server we share with other tools.
  */
 export const SHL_REQUEST_TAG = {
-  system: 'http://smartforms.csiro.au/CodeSystem/shl-request',
-  code: 'shl-form-request',
-  display: 'Form request sent as a SMART Health Link'
+  system: "http://smartforms.csiro.au/CodeSystem/shl-request",
+  code: "shl-form-request",
+  display: "Form request sent as a SMART Health Link",
 } as const;
 
 /**
@@ -340,12 +381,16 @@ export const SHL_REQUEST_TAG = {
 export async function publishRequestTask(
   serverUrl: string,
   questionnaire: Questionnaire,
-  options: { subjectReference?: string; subjectDisplay?: string; requestId?: string } = {}
+  options: {
+    subjectReference?: string;
+    subjectDisplay?: string;
+    requestId?: string;
+  } = {},
 ): Promise<string> {
   const { task } = buildRequestBundle(questionnaire, {
     subjectReference: options.subjectReference,
     subjectDisplay: options.subjectDisplay,
-    requestId: options.requestId
+    requestId: options.requestId,
   });
 
   const id = await createResource(serverUrl, asPublishedTask(task));
@@ -358,6 +403,9 @@ export function asPublishedTask(task: Task): Task {
 
   return {
     ...rest,
-    meta: { ...task.meta, tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }] }
+    meta: {
+      ...task.meta,
+      tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }],
+    },
   };
 }

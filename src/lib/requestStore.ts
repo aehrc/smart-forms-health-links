@@ -1,5 +1,6 @@
-import type { ReplyPrivateJwk } from '@/link/replyCrypto';
-import { isReplyPrivateJwk } from '@/link/replyCrypto';
+import type { ReplyPrivateJwk } from "@/link/replyCrypto";
+
+import { isReplyPrivateJwk } from "@/link/replyCrypto";
 
 /**
  * Outstanding requests, and the keys needed to open their replies.
@@ -22,7 +23,7 @@ import { isReplyPrivateJwk } from '@/link/replyCrypto';
  * {@link exportRequests}) or hold the keys somewhere designed for keys.
  */
 
-const STORAGE_KEY = 'smart-forms-health-links.requests.v1';
+const STORAGE_KEY = "smart-forms-health-links.requests.v1";
 
 export interface StoredReplyChannel {
   /** Where the encrypted reply will appear. */
@@ -72,23 +73,26 @@ export interface OutstandingRequest {
 }
 
 function isOutstandingRequest(value: unknown): value is OutstandingRequest {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return false;
   }
 
   const candidate = value as Record<string, unknown>;
   if (
-    typeof candidate.id !== 'string' ||
-    typeof candidate.label !== 'string' ||
-    typeof candidate.createdAt !== 'string' ||
-    typeof candidate.link !== 'string'
+    typeof candidate.id !== "string" ||
+    typeof candidate.label !== "string" ||
+    typeof candidate.createdAt !== "string" ||
+    typeof candidate.link !== "string"
   ) {
     return false;
   }
 
   if (candidate.reply !== undefined) {
     const reply = candidate.reply as Record<string, unknown>;
-    if (typeof reply?.url !== 'string' || !isReplyPrivateJwk(reply?.privateJwk)) {
+    if (
+      typeof reply?.url !== "string" ||
+      !isReplyPrivateJwk(reply?.privateJwk)
+    ) {
       return false;
     }
   }
@@ -135,26 +139,31 @@ export function listRequests(): OutstandingRequest[] {
 function write(requests: OutstandingRequest[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(requests));
-  } catch (cause) {
+  } catch (error) {
     /*
      * Loud, because the consequence is not obvious: if this write fails the request has still been sent
      * and the QR may already be on someone's screen, but the key to read its reply is now gone.
      */
     throw new Error(
-      'Could not save this request to browser storage, so the key needed to read its reply would be ' +
-        'lost. Storage may be full or blocked.',
-      { cause }
+      "Could not save this request to browser storage, so the key needed to read its reply would be " +
+        "lost. Storage may be full or blocked.",
+      { cause: error },
     );
   }
 }
 
 /** Add or replace a request, keyed by correlation id. */
 export function saveRequest(request: OutstandingRequest): void {
-  const others = listRequests().filter((candidate) => candidate.id !== request.id);
+  const others = listRequests().filter(
+    (candidate) => candidate.id !== request.id,
+  );
   write([request, ...others]);
 }
 
-export function updateRequest(id: string, changes: Partial<OutstandingRequest>): void {
+export function updateRequest(
+  id: string,
+  changes: Partial<OutstandingRequest>,
+): void {
   const requests = listRequests();
   const index = requests.findIndex((candidate) => candidate.id === id);
   if (index === -1) {
@@ -179,7 +188,10 @@ export function deleteRequest(id: string): void {
   write(listRequests().filter((candidate) => candidate.id !== id));
 }
 
-export function isExpired(request: OutstandingRequest, now = Date.now()): boolean {
+export function isExpired(
+  request: OutstandingRequest,
+  now = Date.now(),
+): boolean {
   return request.expiresAt !== undefined && request.expiresAt * 1000 < now;
 }
 
@@ -210,13 +222,13 @@ export function importRequests(json: string): ImportOutcome {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
-  } catch (cause) {
-    throw new Error('That file is not valid JSON.', { cause });
+  } catch (error) {
+    throw new Error("That file is not valid JSON.", { cause: error });
   }
 
   const candidates = (parsed as { requests?: unknown })?.requests ?? parsed;
   if (!Array.isArray(candidates)) {
-    throw new Error('That file does not contain a list of requests.');
+    throw new TypeError("That file does not contain a list of requests.");
   }
 
   const valid = candidates.filter(isOutstandingRequest);

@@ -1,5 +1,6 @@
-import type { QuestionnaireResponse } from 'fhir/r4';
-import { flattenAnswers } from '@/lib/answerRows';
+import type { QuestionnaireResponse } from "fhir/r4";
+
+import { flattenAnswers } from "@/lib/answerRows";
 
 /**
  * The answer tree, flattened into a table, for when no Questionnaire can be resolved.
@@ -12,7 +13,11 @@ export default function RawAnswers(props: { response: QuestionnaireResponse }) {
   const rows = flattenAnswers(props.response);
 
   if (rows.length === 0) {
-    return <p className="text-sm text-slate-500">This response records no answers.</p>;
+    return (
+      <p className="text-sm text-slate-500">
+        This response records no answers.
+      </p>
+    );
   }
 
   return (
@@ -26,11 +31,21 @@ export default function RawAnswers(props: { response: QuestionnaireResponse }) {
         </thead>
         <tbody>
           {rows.map((row, index) => (
-            <tr key={`${row.linkId}-${index}`} className="border-t border-slate-100">
-              <td className="px-3 py-1.5" style={{ paddingLeft: `${0.75 + row.depth * 1}rem` }}>
-                {row.text ?? <span className="font-mono text-slate-500">{row.linkId}</span>}
+            <tr
+              key={`${row.linkId}-${index}`}
+              className="border-t border-slate-100"
+            >
+              <td
+                className="px-3 py-1.5"
+                style={{ paddingLeft: `${0.75 + row.depth * 1}rem` }}
+              >
+                {row.text ?? (
+                  <span className="font-mono text-slate-500">{row.linkId}</span>
+                )}
               </td>
-              <td className="px-3 py-1.5 font-medium text-slate-900">{row.value}</td>
+              <td className="px-3 py-1.5 font-medium text-slate-900">
+                {row.value}
+              </td>
             </tr>
           ))}
         </tbody>

@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 /*
  * The shell is Tailwind; the form itself is rendered by @aehrc/smart-forms-renderer, which is

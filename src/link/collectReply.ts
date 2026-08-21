@@ -1,11 +1,17 @@
-import type { Questionnaire } from 'fhir/r4';
-import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
-import type { OutstandingRequest } from '@/lib/requestStore';
-import { decodeUtf8 } from './binary';
-import { bundleFromJson } from './codec';
-import { parseResponseBundle, responseCanonical, type ResponsePayload } from './exchange';
-import { decryptReplyJwe } from './replyCrypto';
-import { pollReply } from './replySlot';
+import { decodeUtf8 } from "./binary";
+import { bundleFromJson } from "./codec";
+import {
+  parseResponseBundle,
+  responseCanonical,
+  type ResponsePayload,
+} from "./exchange";
+import { decryptReplyJwe } from "./replyCrypto";
+import { pollReply } from "./replySlot";
+
+import type { OutstandingRequest } from "@/lib/requestStore";
+import type { Questionnaire } from "fhir/r4";
+
+import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
 
 /**
  * The requester's half of channel C: collect an encrypted reply and turn it into something reviewable.
@@ -16,10 +22,10 @@ import { pollReply } from './replySlot';
  */
 
 export type CollectOutcome =
-  | { status: 'pending' }
+  | { status: "pending" }
   /** The slot is gone: deleted, or expired and swept. A request nobody answered ends here. */
-  | { status: 'gone' }
-  | { status: 'ready'; payload: ResponsePayload; questionnaire: Questionnaire };
+  | { status: "gone" }
+  | { status: "ready"; payload: ResponsePayload; questionnaire: Questionnaire };
 
 /**
  * Decrypt a reply and pull the answers out of it.
@@ -27,13 +33,21 @@ export type CollectOutcome =
  * Separate from the fetch so the crypto can be exercised without a slot, and so a reply captured by
  * other means can still be opened.
  */
-export async function decodeReply(jwe: string, request: OutstandingRequest): Promise<ResponsePayload> {
+export async function decodeReply(
+  jwe: string,
+  request: OutstandingRequest,
+): Promise<ResponsePayload> {
   if (!request.reply) {
-    throw new Error('This request has no reply key stored, so its reply cannot be decrypted.');
+    throw new Error(
+      "This request has no reply key stored, so its reply cannot be decrypted.",
+    );
   }
 
   return parseResponseBundle(
-    bundleFromJson(decodeUtf8(await decryptReplyJwe(jwe, request.reply.privateJwk)), 'reply')
+    bundleFromJson(
+      decodeUtf8(await decryptReplyJwe(jwe, request.reply.privateJwk)),
+      "reply",
+    ),
   );
 }
 
@@ -47,29 +61,36 @@ export async function decodeReply(jwe: string, request: OutstandingRequest): Pro
 export async function collectReply(
   request: OutstandingRequest,
   formsServerUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<CollectOutcome> {
   if (!request.reply) {
-    return { status: 'gone' };
+    return { status: "gone" };
   }
 
   const poll = await pollReply(request.reply.url, signal);
-  if (poll.status !== 'ready') {
+  if (poll.status !== "ready") {
     return { status: poll.status };
   }
 
   const payload = await decodeReply(poll.jwe, request);
 
-  const canonical = responseCanonical(payload.response, request.questionnaireCanonical);
+  const canonical = responseCanonical(
+    payload.response,
+    request.questionnaireCanonical,
+  );
   if (!canonical) {
     throw new Error(
-      'The reply does not say which questionnaire it answers, so the form cannot be resolved.'
+      "The reply does not say which questionnaire it answers, so the form cannot be resolved.",
     );
   }
 
   return {
-    status: 'ready',
+    status: "ready",
     payload,
-    questionnaire: await fetchQuestionnaireByCanonical(formsServerUrl, canonical, signal)
+    questionnaire: await fetchQuestionnaireByCanonical(
+      formsServerUrl,
+      canonical,
+      signal,
+    ),
   };
 }

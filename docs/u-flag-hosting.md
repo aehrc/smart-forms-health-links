@@ -1,6 +1,6 @@
 # ⚠️ Known defect: the links we mint are unreachable to conformant receivers
 
-**Status:** open, unfixed. Worked around *in the receiver*, not here.
+**Status:** open, unfixed. Worked around _in the receiver_, not here.
 **Discovered:** 2026-08-05, testing interop with [Platypus Health](https://github.com/aehrc/platypus).
 **Severity:** every `U`-flag link this app mints is unopenable by any third-party SHL app that
 follows the specification. Our own viewer is unaffected, which is exactly why this went unnoticed.
@@ -29,7 +29,7 @@ The [SHL specification](https://docs.smarthealthit.org/smart-health-links/spec/)
 > the application SHALL retrieve a SHLink's sole encrypted file by issuing a request to the `url`
 > with: Method: `GET`, Query parameters `recipient`: Required.
 
-So a conformant receiver *must* send it. `fhirBinaryBlobStore` parks the JWE on a HAPI FHIR
+So a conformant receiver _must_ send it. `fhirBinaryBlobStore` parks the JWE on a HAPI FHIR
 `Binary`, and HAPI rejects unrecognised query parameters on a read rather than ignoring them. The
 two requirements are simply incompatible: **a FHIR `Binary` endpoint cannot host a conformant
 `U`-flag payload.**
@@ -62,7 +62,7 @@ tomorrow an S3 bucket or a real SHL manifest server"). The work is to take that 
 
 2. **Correct the misleading comment** on `fhirBinaryBlobStore` in the same file. Whether we keep
    that store at all is a judgement call: it is genuinely useful for local development against a
-   sandbox FHIR server, but it must say that what it produces is *not* a conformant `U`-flag host.
+   sandbox FHIR server, but it must say that what it produces is _not_ a conformant `U`-flag host.
 
 3. **Config.** `blobStore` is a single-member union (`src/lib/config.ts:58`) validated by an equality
    check (`src/lib/config.ts:184`); both need the new variant, and the new store needs its own base
@@ -81,7 +81,7 @@ tomorrow an S3 bucket or a real SHL manifest server"). The work is to take that 
 
 6. **A `U`-flag interop check in `npm run check:e2e`.** The gap here was never a missing unit test,
    it was that nothing ever issued the request a spec-conformant receiver issues. A check that
-   fetches a freshly minted link's `url` *with* `recipient` appended would have caught it on day one.
+   fetches a freshly minted link's `url` _with_ `recipient` appended would have caught it on day one.
 
 7. **Update the README.** The "Two transports, one interface" section describes `U`-flag hosting as
    needing "only a file host"; that is true but underspecified, since a FHIR `Binary` looks like a

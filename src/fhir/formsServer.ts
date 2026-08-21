@@ -1,12 +1,14 @@
-import type { Bundle, Questionnaire } from 'fhir/r4';
+import type { Bundle, Questionnaire } from "fhir/r4";
 
-const FHIR_JSON = 'application/fhir+json';
+const FHIR_JSON = "application/fhir+json";
 
 async function fetchFhir<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { headers: { Accept: FHIR_JSON }, signal });
 
   if (!response.ok) {
-    throw new Error(`FHIR request failed (${response.status} ${response.statusText}): ${url}`);
+    throw new Error(
+      `FHIR request failed (${response.status} ${response.statusText}): ${url}`,
+    );
   }
 
   return (await response.json()) as T;
@@ -23,8 +25,14 @@ function bundleResources<T>(bundle: Bundle | undefined): T[] {
  * sub-questionnaires and assembly roots that have none, and feeding those to the renderer produces
  * a blank form rather than an error — so filter them out at the source.
  */
-export function isRenderableQuestionnaire(questionnaire: Questionnaire | undefined): boolean {
-  return !!questionnaire && Array.isArray(questionnaire.item) && questionnaire.item.length > 0;
+export function isRenderableQuestionnaire(
+  questionnaire: Questionnaire | undefined,
+): boolean {
+  return (
+    !!questionnaire &&
+    Array.isArray(questionnaire.item) &&
+    questionnaire.item.length > 0
+  );
 }
 
 /**
@@ -37,29 +45,31 @@ export async function searchQuestionnaires(
   formsServerUrl: string,
   searchText: string,
   count = 100,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Questionnaire[]> {
-  const params = new URLSearchParams({ _count: String(count), _sort: '-date' });
-  if (searchText.trim() !== '') {
-    params.set('title:contains', searchText.trim());
+  const params = new URLSearchParams({ _count: String(count), _sort: "-date" });
+  if (searchText.trim() !== "") {
+    params.set("title:contains", searchText.trim());
   }
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(formsServerUrl)}/Questionnaire?${params.toString()}`,
-    signal
+    signal,
   );
 
-  return bundleResources<Questionnaire>(bundle).filter(isRenderableQuestionnaire);
+  return bundleResources<Questionnaire>(bundle).filter(
+    isRenderableQuestionnaire,
+  );
 }
 
 export async function fetchQuestionnaireById(
   formsServerUrl: string,
   id: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Questionnaire> {
   return fetchFhir<Questionnaire>(
     `${trimTrailingSlash(formsServerUrl)}/Questionnaire/${encodeURIComponent(id)}`,
-    signal
+    signal,
   );
 }
 
@@ -73,37 +83,44 @@ export async function fetchQuestionnaireById(
 export async function fetchQuestionnaireByCanonical(
   formsServerUrl: string,
   canonical: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Questionnaire> {
   const [url, version] = splitCanonical(canonical);
 
-  const params = new URLSearchParams({ url, _count: '1' });
+  const params = new URLSearchParams({ url, _count: "1" });
   if (version) {
-    params.set('version', version);
+    params.set("version", version);
   }
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(formsServerUrl)}/Questionnaire?${params.toString()}`,
-    signal
+    signal,
   );
 
   const [questionnaire] = bundleResources<Questionnaire>(bundle);
   if (!questionnaire) {
-    throw new Error(`No Questionnaire found on ${formsServerUrl} for canonical: ${canonical}`);
+    throw new Error(
+      `No Questionnaire found on ${formsServerUrl} for canonical: ${canonical}`,
+    );
   }
 
   return questionnaire;
 }
 
-export function splitCanonical(canonical: string): [url: string, version: string | undefined] {
-  const separatorIndex = canonical.lastIndexOf('|');
+export function splitCanonical(
+  canonical: string,
+): [url: string, version: string | undefined] {
+  const separatorIndex = canonical.lastIndexOf("|");
   if (separatorIndex === -1) {
     return [canonical, undefined];
   }
 
-  return [canonical.slice(0, separatorIndex), canonical.slice(separatorIndex + 1)];
+  return [
+    canonical.slice(0, separatorIndex),
+    canonical.slice(separatorIndex + 1),
+  ];
 }
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, '');
+  return url.replace(/\/+$/, "");
 }

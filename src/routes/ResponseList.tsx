@@ -1,16 +1,34 @@
-import { useState } from 'react';
-import { Link as RouterLink, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, X } from 'lucide-react';
-import type { QuestionnaireResponse } from 'fhir/r4';
-import { useConfig } from '@/lib/ConfigContext';
-import { fetchPatient, patientDisplay, searchQuestionnaireResponses } from '@/fhir/ehrServer';
-import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
-import FormRenderer from '@/components/FormRenderer';
-import RawAnswers from '@/components/RawAnswers';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useQuery } from "@tanstack/react-query";
+import {
+  ArrowLeft,
+  ClipboardList,
+  Loader2,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import { useState } from "react";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
+
+import type { QuestionnaireResponse } from "fhir/r4";
+
+import FormRenderer from "@/components/FormRenderer";
+import RawAnswers from "@/components/RawAnswers";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  fetchPatient,
+  patientDisplay,
+  searchQuestionnaireResponses,
+} from "@/fhir/ehrServer";
+import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
+import { useConfig } from "@/lib/ConfigContext";
 
 /**
  * QuestionnaireResponses already stored on the EHR.
@@ -25,19 +43,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 /** Whether a response carries the patient-asserted security label. */
 function isPatientAsserted(response: QuestionnaireResponse): boolean {
-  return (response.meta?.security ?? []).some((coding) => coding.code === 'PATAST');
+  return (response.meta?.security ?? []).some(
+    (coding) => coding.code === "PATAST",
+  );
 }
 
 function responseTitle(response: QuestionnaireResponse): string {
   const canonical = response.questionnaire;
   if (!canonical) {
-    return 'Response to an unnamed form';
+    return "Response to an unnamed form";
   }
 
   // The last meaningful path segment is a better label than the whole canonical, which is often long
   // and identical across many rows.
-  const [url] = canonical.split('|');
-  return url.split('/').filter(Boolean).pop() ?? canonical;
+  const [url] = canonical.split("|");
+  return url.split("/").findLast(Boolean) ?? canonical;
 }
 
 export default function ResponseList() {
@@ -45,24 +65,29 @@ export default function ResponseList() {
   const [params, setParams] = useSearchParams();
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
 
-  const subject = params.get('subject') ?? undefined;
+  const subject = params.get("subject") ?? undefined;
   const ehrServerUrl = config.responseServerUrl;
 
   const {
     data: page,
     isPending,
-    error
+    error,
   } = useQuery({
-    queryKey: ['ehr-responses', ehrServerUrl, subject],
-    queryFn: ({ signal }) => searchQuestionnaireResponses(ehrServerUrl!, { subject }, signal),
-    enabled: ehrServerUrl !== null
+    queryKey: ["ehr-responses", ehrServerUrl, subject],
+    queryFn: ({ signal }) =>
+      searchQuestionnaireResponses(ehrServerUrl!, { subject }, signal),
+    enabled: ehrServerUrl !== null,
   });
 
   // Only to name the filter chip; the list itself is already filtered server-side.
   const { data: filterPatient } = useQuery({
-    queryKey: ['ehr-patient', ehrServerUrl, subject],
-    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subject!.split('/')[1], signal),
-    enabled: ehrServerUrl !== null && subject !== undefined && subject.startsWith('Patient/')
+    queryKey: ["ehr-patient", ehrServerUrl, subject],
+    queryFn: ({ signal }) =>
+      fetchPatient(ehrServerUrl!, subject!.split("/", 2)[1], signal),
+    enabled:
+      ehrServerUrl !== null &&
+      subject !== undefined &&
+      subject.startsWith("Patient/"),
   });
 
   if (!ehrServerUrl) {
@@ -70,10 +95,11 @@ export default function ResponseList() {
       <div className="space-y-4">
         <BackLink />
         <Alert tone="warning" title="No EHR server is configured">
-          Set <span className="font-mono text-xs">responseServerUrl</span> in{' '}
-          <span className="font-mono text-xs">config.json</span>. That is the server holding patients and
-          their responses — deliberately not the forms server, which is a read-only catalogue of
-          questionnaire definitions.
+          Set <span className="font-mono text-xs">responseServerUrl</span> in{" "}
+          <span className="font-mono text-xs">config.json</span>. That is the
+          server holding patients and their responses — deliberately not the
+          forms server, which is a read-only catalogue of questionnaire
+          definitions.
         </Alert>
       </div>
     );
@@ -84,11 +110,13 @@ export default function ResponseList() {
       <BackLink />
 
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Responses on the server</h1>
+        <h1 className="text-xl font-semibold text-slate-900">
+          Responses on the server
+        </h1>
         <p className="text-sm text-slate-500">
-          Completed QuestionnaireResponses held by{' '}
+          Completed QuestionnaireResponses held by{" "}
           <span className="font-mono text-xs">{ehrServerUrl}</span>
-          {page?.total !== undefined ? ` · ${page.total} in total` : null}
+          {page?.total === undefined ? null : ` · ${page.total} in total`}
         </p>
       </div>
 
@@ -99,15 +127,19 @@ export default function ResponseList() {
             <button
               type="button"
               onClick={() => {
-                params.delete('subject');
+                params.delete("subject");
                 setParams(params, { replace: true });
               }}
               aria-label="Clear patient filter"
-              className="rounded-full hover:bg-slate-200">
+              className="rounded-full hover:bg-slate-200"
+            >
               <X className="h-3 w-3" aria-hidden />
             </button>
           </span>
-          <RouterLink to="/patients" className="text-xs text-slate-600 underline">
+          <RouterLink
+            to="/patients"
+            className="text-xs text-slate-600 underline"
+          >
             Change patient
           </RouterLink>
         </div>
@@ -135,8 +167,8 @@ export default function ResponseList() {
       {page && page.resources.length === 0 ? (
         <Alert title="Nothing stored yet">
           {subject
-            ? 'This patient has no responses on this server.'
-            : 'This server holds no QuestionnaireResponses.'}
+            ? "This patient has no responses on this server."
+            : "This server holds no QuestionnaireResponses."}
         </Alert>
       ) : null}
 
@@ -145,15 +177,22 @@ export default function ResponseList() {
           <li key={response.id}>
             <Card className="transition-colors hover:border-slate-400">
               <CardContent className="flex flex-wrap items-start gap-3 p-4">
-                <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                <ClipboardList
+                  className="mt-0.5 h-4 w-4 shrink-0 text-slate-400"
+                  aria-hidden
+                />
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-slate-900">{responseTitle(response)}</p>
+                  <p className="font-medium text-slate-900">
+                    {responseTitle(response)}
+                  </p>
                   <p className="truncate font-mono text-xs text-slate-500">
-                    {response.questionnaire ?? 'no questionnaire canonical'}
+                    {response.questionnaire ?? "no questionnaire canonical"}
                   </p>
                   <p className="mt-0.5 text-xs text-slate-500">
                     QuestionnaireResponse/{response.id}
-                    {response.subject?.reference ? ` · ${response.subject.reference}` : null}
+                    {response.subject?.reference
+                      ? ` · ${response.subject.reference}`
+                      : null}
                     {response.authored
                       ? ` · ${new Date(response.authored).toLocaleString()}`
                       : response.meta?.lastUpdated
@@ -166,7 +205,8 @@ export default function ResponseList() {
                   {isPatientAsserted(response) ? (
                     <span
                       className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-900"
-                      title="Recorded by the patient rather than a clinician">
+                      title="Recorded by the patient rather than a clinician"
+                    >
                       <ShieldCheck className="h-3 w-3" aria-hidden />
                       Patient
                     </span>
@@ -174,7 +214,11 @@ export default function ResponseList() {
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
                     {response.status}
                   </span>
-                  <Button variant="outline" size="sm" onClick={() => setSelected(response)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelected(response)}
+                  >
                     View
                   </Button>
                 </div>
@@ -184,7 +228,9 @@ export default function ResponseList() {
         ))}
       </ul>
 
-      {selected ? <ResponseViewer response={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? (
+        <ResponseViewer response={selected} onClose={() => setSelected(null)} />
+      ) : null}
     </div>
   );
 }
@@ -201,7 +247,10 @@ export default function ResponseList() {
  * Either way there is no form to render, so this falls back to showing the raw answers rather than an
  * error: the data is there and worth seeing, even unlabelled.
  */
-function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () => void }) {
+function ResponseViewer(props: {
+  response: QuestionnaireResponse;
+  onClose: () => void;
+}) {
   const { response, onClose } = props;
   const config = useConfig();
 
@@ -210,12 +259,13 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
   const {
     data: questionnaire,
     isPending,
-    error
+    error,
   } = useQuery({
-    queryKey: ['questionnaire-by-canonical', config.formsServerUrl, canonical],
-    queryFn: ({ signal }) => fetchQuestionnaireByCanonical(config.formsServerUrl, canonical!, signal),
+    queryKey: ["questionnaire-by-canonical", config.formsServerUrl, canonical],
+    queryFn: ({ signal }) =>
+      fetchQuestionnaireByCanonical(config.formsServerUrl, canonical!, signal),
     enabled: canonical !== undefined,
-    retry: false
+    retry: false,
   });
 
   return (
@@ -223,13 +273,20 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
       <CardHeader>
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">{responseTitle(response)}</CardTitle>
+            <CardTitle className="text-base">
+              {responseTitle(response)}
+            </CardTitle>
             <CardDescription>
-              QuestionnaireResponse/{response.id} · read-only. Already stored on the server; there is
-              nothing to accept here.
+              QuestionnaireResponse/{response.id} · read-only. Already stored on
+              the server; there is nothing to accept here.
             </CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={onClose} className="ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            className="ml-auto"
+          >
             <X className="h-4 w-4" aria-hidden />
             Close
           </Button>
@@ -241,8 +298,8 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
           <Alert title="Patient-asserted answers">
             <span className="inline-flex items-center gap-1.5">
               <ShieldCheck className="h-3.5 w-3.5 text-slate-500" aria-hidden />
-              Labelled <span className="font-mono text-xs">PATAST</span> — recorded by the person
-              themselves rather than by a clinician.
+              Labelled <span className="font-mono text-xs">PATAST</span> —
+              recorded by the person themselves rather than by a clinician.
             </span>
           </Alert>
         ) : null}
@@ -256,20 +313,30 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
 
         {!canonical || error ? (
           <>
-            <Alert tone="warning" title="The form definition could not be resolved">
+            <Alert
+              tone="warning"
+              title="The form definition could not be resolved"
+            >
               {canonical ? (
                 <>
-                  This response cites{' '}
-                  <span className="font-mono text-xs break-all">{canonical}</span>, which{' '}
-                  <span className="font-mono text-xs">{config.formsServerUrl}</span> does not hold. That
-                  is common on a shared server — responses cite whatever canonical the app that wrote
-                  them used. The answers are shown as stored instead.
+                  This response cites{" "}
+                  <span className="font-mono text-xs break-all">
+                    {canonical}
+                  </span>
+                  , which{" "}
+                  <span className="font-mono text-xs">
+                    {config.formsServerUrl}
+                  </span>{" "}
+                  does not hold. That is common on a shared server — responses
+                  cite whatever canonical the app that wrote them used. The
+                  answers are shown as stored instead.
                 </>
               ) : (
                 <>
-                  This response has no <span className="font-mono text-xs">questionnaire</span>{' '}
-                  canonical, so there is no definition to render it against. The answers are shown as
-                  stored instead.
+                  This response has no{" "}
+                  <span className="font-mono text-xs">questionnaire</span>{" "}
+                  canonical, so there is no definition to render it against. The
+                  answers are shown as stored instead.
                 </>
               )}
             </Alert>
@@ -296,7 +363,8 @@ function BackLink() {
   return (
     <RouterLink
       to="/"
-      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+    >
       <ArrowLeft className="h-4 w-4" aria-hidden />
       All forms
     </RouterLink>

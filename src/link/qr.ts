@@ -1,13 +1,11 @@
-import QRCode from 'qrcode';
+import QRCode from "qrcode";
+
 import {
   chooseErrorCorrectionLevel,
   linkByteLength,
   MAX_QR_BYTES,
-  type ErrorCorrectionLevel
-} from './qrCapacity';
-
-export { MAX_QR_BYTES, chooseErrorCorrectionLevel, linkByteLength };
-export type { ErrorCorrectionLevel };
+  type ErrorCorrectionLevel,
+} from "./qrCapacity";
 
 export interface QrResult {
   dataUrl: string;
@@ -29,15 +27,22 @@ export async function renderQr(link: string): Promise<QrResult> {
   if (level === null) {
     throw new Error(
       `This response is too large for a QR code (${byteLength} bytes, maximum ${MAX_QR_BYTES}). ` +
-        'The link itself still works — copy it instead.'
+        "The link itself still works — copy it instead.",
     );
   }
 
   const dataUrl = await QRCode.toDataURL(link, {
     errorCorrectionLevel: level,
     margin: 2,
-    width: 320
+    width: 320,
   });
 
   return { dataUrl, level, byteLength };
 }
+
+export {
+  MAX_QR_BYTES,
+  chooseErrorCorrectionLevel,
+  linkByteLength,
+  type ErrorCorrectionLevel,
+} from "./qrCapacity";

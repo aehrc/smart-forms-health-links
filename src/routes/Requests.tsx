@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,10 +8,25 @@ import {
   Loader2,
   RefreshCw,
   Trash2,
-  Upload
-} from 'lucide-react';
-import { useConfig } from '@/lib/ConfigContext';
-import { canTrackRequests } from '@/lib/config';
+  Upload,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
+
+import ReviewResponse from "@/components/ReviewResponse";
+import ShareLinkPanel from "@/components/ShareLinkPanel";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { searchPublishedRequests } from "@/fhir/ehrServer";
+import { canTrackRequests } from "@/lib/config";
+import { useConfig } from "@/lib/ConfigContext";
 import {
   deleteRequest,
   exportRequests,
@@ -21,16 +34,14 @@ import {
   isExpired,
   listRequests,
   updateRequest,
-  type OutstandingRequest
-} from '@/lib/requestStore';
-import { mergeSentRequests, whyNotCollectable, type SentRequest } from '@/lib/sentRequests';
-import { searchPublishedRequests } from '@/fhir/ehrServer';
-import { collectReply, type CollectOutcome } from '@/link/collectReply';
-import ReviewResponse from '@/components/ReviewResponse';
-import ShareLinkPanel from '@/components/ShareLinkPanel';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+  type OutstandingRequest,
+} from "@/lib/requestStore";
+import {
+  mergeSentRequests,
+  whyNotCollectable,
+  type SentRequest,
+} from "@/lib/sentRequests";
+import { collectReply, type CollectOutcome } from "@/link/collectReply";
 
 /**
  * Requests this app has sent, and what has come back.
@@ -49,17 +60,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
  */
 
 type RowState =
-  | { kind: 'idle' }
-  | { kind: 'checking' }
-  | { kind: 'pending' }
-  | { kind: 'gone' }
-  | { kind: 'error'; message: string }
-  | { kind: 'ready'; outcome: Extract<CollectOutcome, { status: 'ready' }> };
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "pending" }
+  | { kind: "gone" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; outcome: Extract<CollectOutcome, { status: "ready" }> };
 
 export default function Requests() {
   const config = useConfig();
 
-  const [localRequests, setLocalRequests] = useState<OutstandingRequest[]>(() => listRequests());
+  const [localRequests, setLocalRequests] = useState<OutstandingRequest[]>(() =>
+    listRequests(),
+  );
   const [states, setStates] = useState<Record<string, RowState>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -68,13 +81,17 @@ export default function Requests() {
   const tracking = canTrackRequests(config);
 
   const { data: publishedPage, error: publishedError } = useQuery({
-    queryKey: ['published-requests', config.responseServerUrl],
-    queryFn: ({ signal }) => searchPublishedRequests(config.responseServerUrl!, 50, signal),
+    queryKey: ["published-requests", config.responseServerUrl],
+    queryFn: ({ signal }) =>
+      searchPublishedRequests(config.responseServerUrl!, 50, signal),
     enabled: tracking,
-    retry: false
+    retry: false,
   });
 
-  const requests = mergeSentRequests(localRequests, publishedPage?.resources ?? []);
+  const requests = mergeSentRequests(
+    localRequests,
+    publishedPage?.resources ?? [],
+  );
 
   const setState = useCallback((id: string, state: RowState) => {
     setStates((current) => ({ ...current, [id]: state }));
@@ -82,21 +99,23 @@ export default function Requests() {
 
   const check = useCallback(
     async (request: OutstandingRequest) => {
-      setState(request.id, { kind: 'checking' });
+      setState(request.id, { kind: "checking" });
       try {
         const outcome = await collectReply(request, config.formsServerUrl);
         setState(
           request.id,
-          outcome.status === 'ready' ? { kind: 'ready', outcome } : { kind: outcome.status }
+          outcome.status === "ready"
+            ? { kind: "ready", outcome }
+            : { kind: outcome.status },
         );
-      } catch (cause) {
+      } catch (error) {
         setState(request.id, {
-          kind: 'error',
-          message: cause instanceof Error ? cause.message : String(cause)
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
         });
       }
     },
-    [config.formsServerUrl, setState]
+    [config.formsServerUrl, setState],
   );
 
   /*
@@ -121,14 +140,14 @@ export default function Requests() {
       return;
     }
 
-    const answered = states[request.id]?.kind === 'ready';
-    const warning = !request.local.reply
-      ? `Forget "${request.label}"? Answers returned as a link can still be opened, but they will no longer be matched to this request.`
-      : answered
+    const answered = states[request.id]?.kind === "ready";
+    const warning = request.local.reply
+      ? answered
         ? `Forget "${request.label}"? A reply has already arrived, and discarding the key makes it permanently unreadable.`
-        : `Forget "${request.label}"? This discards the key that decrypts its reply, so any answer sent later cannot be read by anyone.`;
+        : `Forget "${request.label}"? This discards the key that decrypts its reply, so any answer sent later cannot be read by anyone.`
+      : `Forget "${request.label}"? Answers returned as a link can still be opened, but they will no longer be matched to this request.`;
 
-    if (!window.confirm(warning)) {
+    if (!globalThis.confirm(warning)) {
       return;
     }
 
@@ -137,11 +156,11 @@ export default function Requests() {
   }
 
   function handleExport() {
-    const blob = new Blob([exportRequests()], { type: 'application/json' });
+    const blob = new Blob([exportRequests()], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
+    const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = 'smart-forms-requests.json';
+    anchor.download = "smart-forms-requests.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -154,41 +173,56 @@ export default function Requests() {
       refreshLocal();
       setNotice(
         `Imported ${outcome.imported} request(s)` +
-          (outcome.skipped > 0 ? `, skipped ${outcome.skipped} unreadable record(s).` : '.')
+          (outcome.skipped > 0
+            ? `, skipped ${outcome.skipped} unreadable record(s).`
+            : "."),
       );
-    } catch (cause) {
-      setImportError(cause instanceof Error ? cause.message : String(cause));
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : String(error));
     }
   }
 
   const reviewing = requests
     .map((request) => ({ request, state: states[request.id] }))
-    .find((row): row is { request: SentRequest; state: Extract<RowState, { kind: 'ready' }> } =>
-      row.state?.kind === 'ready'
+    .find(
+      (
+        row,
+      ): row is {
+        request: SentRequest;
+        state: Extract<RowState, { kind: "ready" }>;
+      } => row.state?.kind === "ready",
     );
 
-  const serverOnlyCount = requests.filter((request) => request.origin === 'server-only').length;
+  const serverOnlyCount = requests.filter(
+    (request) => request.origin === "server-only",
+  ).length;
 
   return (
     <div className="space-y-4">
       <RouterLink
         to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+      >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         All forms
       </RouterLink>
 
       <div className="flex flex-wrap items-start gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">Sent requests</h1>
+          <h1 className="text-xl font-semibold text-slate-900">
+            Sent requests
+          </h1>
           <p className="text-sm text-slate-500">
             {tracking ? (
               <>
-                Published to <span className="font-mono text-xs">{config.responseServerUrl}</span>, plus
-                anything held only in this browser.
+                Published to{" "}
+                <span className="font-mono text-xs">
+                  {config.responseServerUrl}
+                </span>
+                , plus anything held only in this browser.
               </>
             ) : (
-              'Held in this browser only — request publishing is off.'
+              "Held in this browser only — request publishing is off."
             )}
           </p>
         </div>
@@ -198,11 +232,16 @@ export default function Requests() {
             variant="outline"
             size="sm"
             onClick={handleExport}
-            disabled={localRequests.length === 0}>
+            disabled={localRequests.length === 0}
+          >
             <Download className="h-4 w-4" aria-hidden />
             Export
           </Button>
-          <Button variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fileInput.current?.click()}
+          >
             <Upload className="h-4 w-4" aria-hidden />
             Import
           </Button>
@@ -216,7 +255,7 @@ export default function Requests() {
               if (file) {
                 void handleImport(file);
               }
-              event.target.value = '';
+              event.target.value = "";
             }}
           />
         </div>
@@ -224,35 +263,42 @@ export default function Requests() {
 
       {localRequests.some((request) => request.reply) ? (
         <Alert tone="warning" title="Reply keys never leave this browser">
-          A reply can only be read with the key generated when its request was made, and that key is
-          stored here and nowhere else — not in the link, not on any server.{' '}
-          <strong>Clearing site data destroys pending replies.</strong> An exported file decrypts every
-          reply it covers, so treat it exactly as sensitively as the answers themselves.
+          A reply can only be read with the key generated when its request was
+          made, and that key is stored here and nowhere else — not in the link,
+          not on any server.{" "}
+          <strong>Clearing site data destroys pending replies.</strong> An
+          exported file decrypts every reply it covers, so treat it exactly as
+          sensitively as the answers themselves.
         </Alert>
       ) : (
         <Alert title="Answers come back as a link">
-          These requests carry no reply slot, so there is nothing here to poll. When someone completes
-          one, they hand back their own SMART Health Link — open it from{' '}
+          These requests carry no reply slot, so there is nothing here to poll.
+          When someone completes one, they hand back their own SMART Health Link
+          — open it from{" "}
           <RouterLink to="/scan" className="underline">
             Scan
-          </RouterLink>{' '}
+          </RouterLink>{" "}
           and the row below will be matched to it automatically.
         </Alert>
       )}
 
       {publishedError ? (
         <Alert tone="warning" title="Could not list published requests">
-          {publishedError instanceof Error ? publishedError.message : String(publishedError)}
+          {publishedError instanceof Error
+            ? publishedError.message
+            : String(publishedError)}
           <p className="mt-1">
-            Requests held in this browser are still shown below; only the server-wide list is missing.
+            Requests held in this browser are still shown below; only the
+            server-wide list is missing.
           </p>
         </Alert>
       ) : null}
 
       {serverOnlyCount > 0 ? (
         <Alert title={`${serverOnlyCount} request(s) sent from elsewhere`}>
-          These were published by another browser, so their reply keys are there rather than here. Export
-          from that browser and import here to collect their answers.
+          These were published by another browser, so their reply keys are there
+          rather than here. Export from that browser and import here to collect
+          their answers.
         </Alert>
       ) : null}
 
@@ -265,7 +311,8 @@ export default function Requests() {
 
       {requests.length === 0 ? (
         <Alert title="Nothing sent yet">
-          Create a request from a form and it will appear here, with somewhere to collect the reply.
+          Create a request from a form and it will appear here, with somewhere
+          to collect the reply.
         </Alert>
       ) : null}
 
@@ -274,7 +321,7 @@ export default function Requests() {
           <RequestRow
             key={request.id}
             request={request}
-            state={states[request.id] ?? { kind: 'idle' }}
+            state={states[request.id] ?? { kind: "idle" }}
             onCheck={() => request.local && void check(request.local)}
             onDelete={() => handleDelete(request)}
           />
@@ -284,9 +331,12 @@ export default function Requests() {
       {reviewing ? (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Reply to “{reviewing.request.label}”</CardTitle>
+            <CardTitle className="text-base">
+              Reply to “{reviewing.request.label}”
+            </CardTitle>
             <CardDescription>
-              Decrypted in this browser. Nothing has been written yet — review the answers, then accept.
+              Decrypted in this browser. Nothing has been written yet — review
+              the answers, then accept.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -297,7 +347,9 @@ export default function Requests() {
               provenance={reviewing.state.outcome.payload.provenance}
               label={reviewing.request.label}
               onSaved={() => {
-                updateRequest(reviewing.request.id, { collectedAt: new Date().toISOString() });
+                updateRequest(reviewing.request.id, {
+                  collectedAt: new Date().toISOString(),
+                });
                 refreshLocal();
               }}
             />
@@ -317,7 +369,8 @@ interface RequestRowProps {
 
 function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
   const [showLink, setShowLink] = useState(false);
-  const expired = request.expiresAt !== undefined && request.expiresAt * 1000 < Date.now();
+  const expired =
+    request.expiresAt !== undefined && request.expiresAt * 1000 < Date.now();
   const blocker = whyNotCollectable(request);
 
   return (
@@ -327,10 +380,16 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
           <div className="min-w-0">
             <CardTitle className="text-base">{request.label}</CardTitle>
             <CardDescription>
-              {request.createdAt ? `Sent ${new Date(request.createdAt).toLocaleString()}` : 'Sent'}
-              {request.subjectDisplay ? ` · for ${request.subjectDisplay}` : null}
-              {request.requesterDisplay ? ` · by ${request.requesterDisplay}` : null}
-              {expired ? ' · expired' : null}
+              {request.createdAt
+                ? `Sent ${new Date(request.createdAt).toLocaleString()}`
+                : "Sent"}
+              {request.subjectDisplay
+                ? ` · for ${request.subjectDisplay}`
+                : null}
+              {request.requesterDisplay
+                ? ` · by ${request.requesterDisplay}`
+                : null}
+              {expired ? " · expired" : null}
             </CardDescription>
           </div>
 
@@ -348,8 +407,9 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
                 variant="outline"
                 size="sm"
                 onClick={onCheck}
-                disabled={state.kind === 'checking'}>
-                {state.kind === 'checking' ? (
+                disabled={state.kind === "checking"}
+              >
+                {state.kind === "checking" ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                 ) : (
                   <RefreshCw className="h-4 w-4" aria-hidden />
@@ -359,10 +419,19 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
             ) : null}
             {request.local ? (
               <>
-                <Button variant="outline" size="sm" onClick={() => setShowLink((shown) => !shown)}>
-                  {showLink ? 'Hide link' : 'Show link'}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowLink((shown) => !shown)}
+                >
+                  {showLink ? "Hide link" : "Show link"}
                 </Button>
-                <Button variant="outline" size="sm" onClick={onDelete} title="Forget this request">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onDelete}
+                  title="Forget this request"
+                >
                   <Trash2 className="h-4 w-4" aria-hidden />
                 </Button>
               </>
@@ -384,7 +453,9 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
           {request.serverTask?.id ? (
             <>
               <dt className="font-medium">Published Task</dt>
-              <dd className="font-mono break-all">Task/{request.serverTask.id}</dd>
+              <dd className="font-mono break-all">
+                Task/{request.serverTask.id}
+              </dd>
             </>
           ) : null}
         </dl>
@@ -392,22 +463,30 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
         {blocker ? <p className="text-xs text-slate-500">{blocker}</p> : null}
 
         {request.local?.serverReturnOffered ? (
-          <Alert tone="warning" title="This request also accepts a direct write">
-            The plain-FHIR return channel was enabled for it, so a filler can post answers straight to{' '}
-            <span className="font-mono text-xs break-all">{request.local.serverTaskUrl}</span>&rsquo;s
-            server without passing through review here. Check that server for responses too.
+          <Alert
+            tone="warning"
+            title="This request also accepts a direct write"
+          >
+            The plain-FHIR return channel was enabled for it, so a filler can
+            post answers straight to{" "}
+            <span className="font-mono text-xs break-all">
+              {request.local.serverTaskUrl}
+            </span>
+            &rsquo;s server without passing through review here. Check that
+            server for responses too.
           </Alert>
         ) : null}
 
-        {state.kind === 'error' ? (
+        {state.kind === "error" ? (
           <Alert tone="error" title="Could not collect the reply">
             {state.message}
           </Alert>
         ) : null}
 
-        {state.kind === 'gone' ? (
+        {state.kind === "gone" ? (
           <Alert tone="warning" title="The reply slot is no longer there">
-            It has been deleted or has expired. If the form still needs answering, send a new request.
+            It has been deleted or has expired. If the form still needs
+            answering, send a new request.
           </Alert>
         ) : null}
 
@@ -419,21 +498,22 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
   );
 }
 
-function OriginBadge({ origin }: { origin: SentRequest['origin'] }) {
-  if (origin === 'tracked') {
+function OriginBadge({ origin }: { origin: SentRequest["origin"] }) {
+  if (origin === "tracked") {
     return null;
   }
 
-  const label = origin === 'server-only' ? 'Another browser' : 'Not published';
+  const label = origin === "server-only" ? "Another browser" : "Not published";
   const title =
-    origin === 'server-only'
-      ? 'Published to the server by a different browser, which holds its reply key'
-      : 'Held only in this browser — no other browser can see it';
+    origin === "server-only"
+      ? "Published to the server by a different browser, which holds its reply key"
+      : "Held only in this browser — no other browser can see it";
 
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
-      title={title}>
+      title={title}
+    >
       <CloudOff className="h-3 w-3" aria-hidden />
       {label}
     </span>
@@ -451,41 +531,42 @@ function StatusBadge(props: {
   const { state, collectedAt, expired, collectable, hasReplySlot } = props;
 
   const label = collectedAt
-    ? 'Accepted'
-    : state.kind === 'ready'
-      ? 'Reply ready'
-      : state.kind === 'checking'
-        ? 'Checking…'
-        : state.kind === 'pending'
+    ? "Accepted"
+    : state.kind === "ready"
+      ? "Reply ready"
+      : state.kind === "checking"
+        ? "Checking…"
+        : state.kind === "pending"
           ? expired
-            ? 'No reply, expired'
-            : 'Awaiting reply'
-          : state.kind === 'gone'
-            ? 'Slot gone'
-            : state.kind === 'error'
-              ? 'Check failed'
+            ? "No reply, expired"
+            : "Awaiting reply"
+          : state.kind === "gone"
+            ? "Slot gone"
+            : state.kind === "error"
+              ? "Check failed"
               : collectable
-                ? 'Not checked'
+                ? "Not checked"
                 : hasReplySlot
-                  ? 'Not collectable here'
+                  ? "Not collectable here"
                   : expired
-                    ? 'Expired'
-                    : 'Awaiting answers';
+                    ? "Expired"
+                    : "Awaiting answers";
 
   const tone = collectedAt
-    ? 'bg-slate-100 text-slate-600'
-    : state.kind === 'ready'
-      ? 'bg-green-100 text-green-800'
-      : state.kind === 'error' || state.kind === 'gone'
-        ? 'bg-amber-100 text-amber-900'
-        : 'bg-slate-100 text-slate-600';
+    ? "bg-slate-100 text-slate-600"
+    : state.kind === "ready"
+      ? "bg-green-100 text-green-800"
+      : state.kind === "error" || state.kind === "gone"
+        ? "bg-amber-100 text-amber-900"
+        : "bg-slate-100 text-slate-600";
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
-      {state.kind === 'ready' ? (
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}
+    >
+      {state.kind === "ready" ? (
         <Inbox className="h-3 w-3" aria-hidden />
-      ) : state.kind === 'error' || state.kind === 'gone' ? (
+      ) : state.kind === "error" || state.kind === "gone" ? (
         <AlertTriangle className="h-3 w-3" aria-hidden />
       ) : null}
       {label}

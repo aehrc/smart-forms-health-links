@@ -8,13 +8,16 @@
  * Source: ISO/IEC 18004 capacity tables.
  */
 const CAPACITY_BY_LEVEL = [
-  { level: 'M', bytes: 2331 },
-  { level: 'L', bytes: 2953 }
+  { level: "M", bytes: 2331 },
+  { level: "L", bytes: 2953 },
 ] as const;
 
-export type ErrorCorrectionLevel = (typeof CAPACITY_BY_LEVEL)[number]['level'];
+export type ErrorCorrectionLevel = (typeof CAPACITY_BY_LEVEL)[number]["level"];
 
-export const MAX_QR_BYTES = CAPACITY_BY_LEVEL[CAPACITY_BY_LEVEL.length - 1].bytes;
+/** The most a QR code can hold at all: the capacity of the least redundant level in the table. */
+export const MAX_QR_BYTES = Math.max(
+  ...CAPACITY_BY_LEVEL.map((capacity) => capacity.bytes),
+);
 
 export function linkByteLength(link: string): number {
   return new TextEncoder().encode(link).length;
@@ -27,7 +30,11 @@ export function linkByteLength(link: string): number {
  * 'L' is the fallback that buys another 622 bytes before the link stops fitting entirely.
  * Returns null when even 'L' cannot hold it.
  */
-export function chooseErrorCorrectionLevel(link: string): ErrorCorrectionLevel | null {
+export function chooseErrorCorrectionLevel(
+  link: string,
+): ErrorCorrectionLevel | null {
   const byteLength = linkByteLength(link);
-  return CAPACITY_BY_LEVEL.find((entry) => byteLength <= entry.bytes)?.level ?? null;
+  return (
+    CAPACITY_BY_LEVEL.find((entry) => byteLength <= entry.bytes)?.level ?? null
+  );
 }

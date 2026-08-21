@@ -9,57 +9,19 @@
  * coupling between the two repos and it is dev-only — if the checkout is missing or moved, this
  * script fails to bundle but the app itself is unaffected.
  */
-import { readFileSync } from 'node:fs';
 import {
   createCipheriv,
   createDecipheriv,
   createECDH,
   createHash,
-  randomBytes
-} from 'node:crypto';
-import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
-import {
-  FALLBACK_CONFIG,
-  canUseEncryptedReply,
-  isAppConfig,
-  type AppConfig
-} from '../src/lib/config';
-import { bespokeCodec } from '../src/link/bespokeCodec';
-import { shlCodec } from '../src/link/shlCodec';
-import {
-  PasscodeRequiredError,
-  bundleResponse,
-  encodingCodec,
-  extractFragment,
-  responseFromBundle
-} from '../src/link/codec';
-import { chooseErrorCorrectionLevel } from '../src/link/qrCapacity';
-import { decodeUtf8, encodeUtf8, fromBase64Url, toBase64Url } from '../src/link/binary';
-import { decryptJwe, encryptJwe, generateKey, keyToBase64Url } from '../src/link/jwe';
-import {
-  decryptReplyJwe,
-  encryptReplyJwe,
-  generateReplyKeyPair,
-  looksLikeReplyJwe
-} from '../src/link/replyCrypto';
-import { replySlotPlaceholder } from '../src/link/replySlot';
-import {
-  REPLY_DESCRIPTOR_EXTENSION,
-  buildReplyDescriptorExtension,
-  buildServerTaskUrlExtension,
-  isReplyDescriptorExpired,
-  parseReplyDescriptor,
-  parseServerTaskUrl
-} from '../src/link/replyDescriptor';
-import {
-  buildReplyBundle,
-  buildRequestBundle,
-  isRequestBundle,
-  parseResponseBundle,
-  responseCanonical,
-  taskCorrelationId
-} from '../src/link/exchange';
-import { flattenAnswers } from '../src/lib/answerRows';
+  randomBytes,
+} from "node:crypto";
+import { readFileSync } from "node:fs";
+
+import { QRMedicalHistoryCurrentProblems } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRMedicalHistoryCurrentProblems";
+import { QRRegularMedications } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRRegularMedications";
+import { QRSepsisRisk } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRSepsisRisk";
+import { JOSE_CONTENT_TYPE, inMemoryBlobStore } from "../src/fhir/blobStore";
 import {
   SHL_REQUEST_TAG,
   asPublishedTask,
@@ -67,22 +29,83 @@ import {
   declaredEndpoints,
   referenceResolves,
   resolveDestinations,
-  submitResponse
-} from '../src/fhir/submit';
-import { findRequestForTask, mergeSentRequests, whyNotCollectable } from '../src/lib/sentRequests';
-import type { OutstandingRequest } from '../src/lib/requestStore';
-import { JOSE_CONTENT_TYPE, inMemoryBlobStore } from '../src/fhir/blobStore';
+  submitResponse,
+} from "../src/fhir/submit";
+import { flattenAnswers } from "../src/lib/answerRows";
+import {
+  FALLBACK_CONFIG,
+  canUseEncryptedReply,
+  isAppConfig,
+  type AppConfig,
+} from "../src/lib/config";
+import { bespokeCodec } from "../src/link/bespokeCodec";
+import {
+  PasscodeRequiredError,
+  bundleResponse,
+  encodingCodec,
+  extractFragment,
+  responseFromBundle,
+} from "../src/link/codec";
+import { shlCodec } from "../src/link/shlCodec";
+import { chooseErrorCorrectionLevel } from "../src/link/qrCapacity";
+import {
+  decodeUtf8,
+  encodeUtf8,
+  fromBase64Url,
+  toBase64Url,
+} from "../src/link/binary";
+import {
+  decryptJwe,
+  encryptJwe,
+  generateKey,
+  keyToBase64Url,
+} from "../src/link/jwe";
+import {
+  decryptReplyJwe,
+  encryptReplyJwe,
+  generateReplyKeyPair,
+  looksLikeReplyJwe,
+} from "../src/link/replyCrypto";
+import { replySlotPlaceholder } from "../src/link/replySlot";
+import {
+  REPLY_DESCRIPTOR_EXTENSION,
+  buildReplyDescriptorExtension,
+  buildServerTaskUrlExtension,
+  isReplyDescriptorExpired,
+  parseReplyDescriptor,
+  parseServerTaskUrl,
+} from "../src/link/replyDescriptor";
+import {
+  buildReplyBundle,
+  buildRequestBundle,
+  isRequestBundle,
+  parseResponseBundle,
+  responseCanonical,
+  taskCorrelationId,
+} from "../src/link/exchange";
+import {
+  findRequestForTask,
+  mergeSentRequests,
+  whyNotCollectable,
+} from "../src/lib/sentRequests";
 
-import { QRSepsisRisk } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRSepsisRisk';
-import { QRRegularMedications } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRRegularMedications';
-import { QRMedicalHistoryCurrentProblems } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRMedicalHistoryCurrentProblems';
+import type { OutstandingRequest } from "../src/lib/requestStore";
+import type {
+  Provenance,
+  Questionnaire,
+  QuestionnaireResponse,
+  Task,
+} from "fhir/r4";
 
-const BASE_URL = 'https://links.example.org';
+const BASE_URL = "https://links.example.org";
 
 const FIXTURES = [
-  { name: 'QRSepsisRisk', response: QRSepsisRisk },
-  { name: 'QRRegularMedications', response: QRRegularMedications },
-  { name: 'QRMedicalHistoryCurrentProblems', response: QRMedicalHistoryCurrentProblems }
+  { name: "QRSepsisRisk", response: QRSepsisRisk },
+  { name: "QRRegularMedications", response: QRRegularMedications },
+  {
+    name: "QRMedicalHistoryCurrentProblems",
+    response: QRMedicalHistoryCurrentProblems,
+  },
 ];
 
 let failures = 0;
@@ -92,26 +115,30 @@ let total = 0;
  * Report every assertion, pass or fail. A silently-skipped check is indistinguishable from a
  * passing one, so the count is part of the result.
  */
-function check(name: string, condition: boolean, detail = '') {
+function check(name: string, condition: boolean, detail = "") {
   total++;
   if (!condition) {
     failures++;
   }
-  console.log(`  ${condition ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(
+    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
 }
 
-console.log('link codec round-trip\n');
-console.log('fixture                            raw   link   QR level  round-trip');
+console.log("link codec round-trip\n");
+console.log(
+  "fixture                            raw   link   QR level  round-trip",
+);
 
 for (const { name, response } of FIXTURES) {
   // A link is only openable if the response names its Questionnaire.
   const withCanonical = response.questionnaire
     ? response
-    : { ...response, questionnaire: 'http://example.org/Questionnaire/test' };
+    : { ...response, questionnaire: "http://example.org/Questionnaire/test" };
 
   const link = await bespokeCodec.encode(
     { bundle: bundleResponse(withCanonical), label: name },
-    { baseUrl: BASE_URL }
+    { baseUrl: BASE_URL },
   );
 
   const decoded = await bespokeCodec.decode(link);
@@ -122,11 +149,12 @@ for (const { name, response } of FIXTURES) {
   const level = chooseErrorCorrectionLevel(link);
 
   const identical =
-    JSON.stringify(decodedResponse) === JSON.stringify(withCanonical) && decoded.label === name;
+    JSON.stringify(decodedResponse) === JSON.stringify(withCanonical) &&
+    decoded.label === name;
 
   console.log(
     `${name.padEnd(34)}${String(rawBytes).padStart(5)}${String(linkBytes).padStart(7)}` +
-      `${(level ?? 'TOO BIG').padStart(10)}  ${identical ? 'ok' : 'MISMATCH'}`
+      `${(level ?? "TOO BIG").padStart(10)}  ${identical ? "ok" : "MISMATCH"}`,
   );
 
   check(name, identical);
@@ -136,23 +164,30 @@ for (const { name, response } of FIXTURES) {
 
 // Codec discrimination: the bespoke codec must not claim SHL links, and vice versa.
 check(
-  'canDecode/shlink',
-  !bespokeCodec.canDecode('https://viewer.example.org#shlink:/eyJ1cmwiOiJ4In0')
+  "canDecode/shlink",
+  !bespokeCodec.canDecode("https://viewer.example.org#shlink:/eyJ1cmwiOiJ4In0"),
 );
-check('canDecode/garbage', !bespokeCodec.canDecode('https://example.org/nothing'));
-check('canDecode/bare', bespokeCodec.canDecode('sfhl:/abc'));
+check(
+  "canDecode/garbage",
+  !bespokeCodec.canDecode("https://example.org/nothing"),
+);
+check("canDecode/bare", bespokeCodec.canDecode("sfhl:/abc"));
 
 // Fragment extraction across the shapes a scanner can hand back.
-check('extract/url', extractFragment('https://a.org/view#sfhl:/xyz') === 'sfhl:/xyz', '');
-check('extract/hash', extractFragment('#sfhl:/xyz') === 'sfhl:/xyz', '');
-check('extract/bare', extractFragment('sfhl:/xyz') === 'sfhl:/xyz', '');
-check('extract/plainUrl', extractFragment('https://a.org/view') === '', '');
+check(
+  "extract/url",
+  extractFragment("https://a.org/view#sfhl:/xyz") === "sfhl:/xyz",
+  "",
+);
+check("extract/hash", extractFragment("#sfhl:/xyz") === "sfhl:/xyz", "");
+check("extract/bare", extractFragment("sfhl:/xyz") === "sfhl:/xyz", "");
+check("extract/plainUrl", extractFragment("https://a.org/view") === "", "");
 
 // Corrupt payloads must fail loudly rather than render a half-decoded form.
 for (const [label, bad] of [
-  ['truncated', 'sfhl:/AAAA'],
-  ['empty', 'sfhl:/'],
-  ['not-base64', 'sfhl:/!!!!']
+  ["truncated", "sfhl:/AAAA"],
+  ["empty", "sfhl:/"],
+  ["not-base64", "sfhl:/!!!!"],
 ] as const) {
   let threw = false;
   try {
@@ -168,23 +203,27 @@ for (const [label, bad] of [
 // fall back to FALLBACK_CONFIG behind a console warning.
 // ---------------------------------------------------------------------------
 
-console.log('\nconfig\n');
+console.log("\nconfig\n");
 
 // Resolved from cwd, not import.meta.url: this script is bundled into node_modules/.cache first, so
 // a module-relative path would look there. npm scripts run from the package root.
 const shippedConfig: unknown = JSON.parse(
-  readFileSync(`${process.cwd()}/public/config.json`, 'utf8')
+  readFileSync(`${process.cwd()}/public/config.json`, "utf8"),
 );
 
-check('config/isValid', isAppConfig(shippedConfig), JSON.stringify(shippedConfig));
+check(
+  "config/isValid",
+  isAppConfig(shippedConfig),
+  JSON.stringify(shippedConfig),
+);
 
 if (isAppConfig(shippedConfig)) {
   // The forms server is a read-only catalogue; writing there is the bug this guards against.
   check(
-    'config/writeTargetsAreNotTheFormsServer',
+    "config/writeTargetsAreNotTheFormsServer",
     shippedConfig.responseServerUrl !== shippedConfig.formsServerUrl &&
       shippedConfig.blobServerUrl !== shippedConfig.formsServerUrl,
-    `responses -> ${shippedConfig.responseServerUrl}, blobs -> ${shippedConfig.blobServerUrl}`
+    `responses -> ${shippedConfig.responseServerUrl}, blobs -> ${shippedConfig.blobServerUrl}`,
   );
 
   // The shipped config is the demo: `npm install && npm run dev` has to complete the whole round trip
@@ -193,41 +232,47 @@ if (isAppConfig(shippedConfig)) {
   // opposite requirement to FALLBACK_CONFIG below, and deliberately so: what ships in the repo is a
   // chosen sandbox, whereas the fallback is a config that failed to load and must guess nothing.
   check(
-    'config/shippedConfigCompletesTheLoop',
-    typeof shippedConfig.responseServerUrl === 'string' &&
-      typeof shippedConfig.blobServerUrl === 'string',
-    'a clone with no setup must be able to mint a link and save a reviewed response'
+    "config/shippedConfigCompletesTheLoop",
+    typeof shippedConfig.responseServerUrl === "string" &&
+      typeof shippedConfig.blobServerUrl === "string",
+    "a clone with no setup must be able to mint a link and save a reviewed response",
   );
 }
 
 // The fallback used when config.json is missing or malformed must NOT name a write target: silently
 // writing to some server because config failed to load is worse than refusing.
-check('config/fallbackHasNoWriteTargets', FALLBACK_CONFIG.responseServerUrl === null && FALLBACK_CONFIG.blobServerUrl === null);
+check(
+  "config/fallbackHasNoWriteTargets",
+  FALLBACK_CONFIG.responseServerUrl === null &&
+    FALLBACK_CONFIG.blobServerUrl === null,
+);
 
 // ---------------------------------------------------------------------------
 // JWE (alg=dir, enc=A256GCM) — the crypto layer SMART Health Links requires.
 // ---------------------------------------------------------------------------
 
-console.log('\nJWE\n');
+console.log("\nJWE\n");
 
 const jweKey = generateKey();
-check('jwe/keyLength', jweKey.length === 32, `${jweKey.length} bytes`);
-check('jwe/keyBase64UrlIs43Chars', keyToBase64Url(jweKey).length === 43);
+check("jwe/keyLength", jweKey.length === 32, `${jweKey.length} bytes`);
+check("jwe/keyBase64UrlIs43Chars", keyToBase64Url(jweKey).length === 43);
 
-const jwePlaintext = encodeUtf8(JSON.stringify({ hello: 'world', nested: [1, 2, 3] }));
+const jwePlaintext = encodeUtf8(
+  JSON.stringify({ hello: "world", nested: [1, 2, 3] }),
+);
 const compact = await encryptJwe(jwePlaintext, jweKey);
-const jweSegments = compact.split('.');
+const jweSegments = compact.split(".");
 
-check('jwe/fiveSegments', jweSegments.length === 5, `${jweSegments.length}`);
-check('jwe/encryptedKeySegmentEmpty', jweSegments[1] === '');
+check("jwe/fiveSegments", jweSegments.length === 5, `${jweSegments.length}`);
+check("jwe/encryptedKeySegmentEmpty", jweSegments[1] === "");
 check(
-  'jwe/protectedHeader',
+  "jwe/protectedHeader",
   decodeUtf8(fromBase64Url(jweSegments[0])) === '{"alg":"dir","enc":"A256GCM"}',
-  decodeUtf8(fromBase64Url(jweSegments[0]))
+  decodeUtf8(fromBase64Url(jweSegments[0])),
 );
 
 const jweDecrypted = await decryptJwe(compact, jweKey);
-check('jwe/roundTrip', decodeUtf8(jweDecrypted) === decodeUtf8(jwePlaintext));
+check("jwe/roundTrip", decodeUtf8(jweDecrypted) === decodeUtf8(jwePlaintext));
 
 // A wrong key must fail, not return garbage — this is the whole security property.
 let wrongKeyRejected = false;
@@ -236,7 +281,7 @@ try {
 } catch {
   wrongKeyRejected = true;
 }
-check('jwe/wrongKeyRejected', wrongKeyRejected);
+check("jwe/wrongKeyRejected", wrongKeyRejected);
 
 // Tampering with the ciphertext must fail GCM authentication.
 let tamperRejected = false;
@@ -244,26 +289,40 @@ try {
   const bytes = fromBase64Url(jweSegments[3]);
   bytes[0] ^= 0xff;
   await decryptJwe(
-    [jweSegments[0], '', jweSegments[2], toBase64Url(bytes), jweSegments[4]].join('.'),
-    jweKey
+    [
+      jweSegments[0],
+      "",
+      jweSegments[2],
+      toBase64Url(bytes),
+      jweSegments[4],
+    ].join("."),
+    jweKey,
   );
 } catch {
   tamperRejected = true;
 }
-check('jwe/tamperRejected', tamperRejected);
+check("jwe/tamperRejected", tamperRejected);
 
 // ---------------------------------------------------------------------------
 // SHL codec against an in-memory blob store — no network, no hosting.
 // ---------------------------------------------------------------------------
 
-console.log('\nSMART Health Links\n');
+console.log("\nSMART Health Links\n");
 
 const store = inMemoryBlobStore();
 
 // The codec fetches its payload by URL; serve the in-memory store through a fetch shim.
 const realFetch = globalThis.fetch;
-globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+globalThis.fetch = (async (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => {
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
   const stored = store.get(url);
   if (stored) {
     return new Response(stored, { status: 200 });
@@ -273,71 +332,98 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
 
 const shlBundle = bundleResponse({
   ...QRMedicalHistoryCurrentProblems,
-  questionnaire: 'http://example.org/Questionnaire/test'
+  questionnaire: "http://example.org/Questionnaire/test",
 });
 
 const shlLink = await shlCodec.encode(
-  { bundle: shlBundle, label: 'Medical History' },
-  { baseUrl: BASE_URL, blobStore: store }
+  { bundle: shlBundle, label: "Medical History" },
+  { baseUrl: BASE_URL, blobStore: store },
 );
 
-check('shl/linkShape', shlLink.startsWith(`${BASE_URL}/view#shlink:/`), shlLink.slice(0, 60));
-check('shl/linkIsTiny', Buffer.byteLength(shlLink) < 400, `${Buffer.byteLength(shlLink)} bytes`);
 check(
-  'shl/linkFitsQr',
+  "shl/linkShape",
+  shlLink.startsWith(`${BASE_URL}/view#shlink:/`),
+  shlLink.slice(0, 60),
+);
+check(
+  "shl/linkIsTiny",
+  Buffer.byteLength(shlLink) < 400,
+  `${Buffer.byteLength(shlLink)} bytes`,
+);
+check(
+  "shl/linkFitsQr",
   chooseErrorCorrectionLevel(shlLink) !== null,
-  `level ${chooseErrorCorrectionLevel(shlLink)}`
+  `level ${chooseErrorCorrectionLevel(shlLink)}`,
 );
 
 const shlPayload = JSON.parse(
-  decodeUtf8(fromBase64Url(shlLink.slice(shlLink.indexOf('shlink:/') + 'shlink:/'.length)))
+  decodeUtf8(
+    fromBase64Url(
+      shlLink.slice(shlLink.indexOf("shlink:/") + "shlink:/".length),
+    ),
+  ),
 );
-check('shl/flagIsU', shlPayload.flag === 'U', JSON.stringify(shlPayload.flag));
-check('shl/keyIs43Chars', shlPayload.key?.length === 43);
-check('shl/hasUrl', typeof shlPayload.url === 'string' && shlPayload.url.length > 0);
-check('shl/label', shlPayload.label === 'Medical History');
+check("shl/flagIsU", shlPayload.flag === "U", JSON.stringify(shlPayload.flag));
+check("shl/keyIs43Chars", shlPayload.key?.length === 43);
+check(
+  "shl/hasUrl",
+  typeof shlPayload.url === "string" && shlPayload.url.length > 0,
+);
+check("shl/label", shlPayload.label === "Medical History");
 
 const shlDecoded = await shlCodec.decode(shlLink);
 check(
-  'shl/roundTrip',
+  "shl/roundTrip",
   JSON.stringify(responseFromBundle(shlDecoded.bundle)) ===
-    JSON.stringify(responseFromBundle(shlBundle))
+    JSON.stringify(responseFromBundle(shlBundle)),
 );
-check('shl/labelSurvives', shlDecoded.label === 'Medical History');
+check("shl/labelSurvives", shlDecoded.label === "Medical History");
 
 // The hosted blob must be opaque: no plaintext answers recoverable from it.
 const hostedBlob = decodeUtf8(store.get(shlPayload.url)!);
 check(
-  'shl/hostedBlobIsOpaque',
-  !hostedBlob.includes('QuestionnaireResponse') && hostedBlob.split('.').length === 5,
-  `${hostedBlob.length} bytes of JWE`
+  "shl/hostedBlobIsOpaque",
+  !hostedBlob.includes("QuestionnaireResponse") &&
+    hostedBlob.split(".").length === 5,
+  `${hostedBlob.length} bytes of JWE`,
 );
 
 // Codec discrimination in both directions.
-check('shl/canDecodeShlink', shlCodec.canDecode(shlLink));
-check('shl/rejectsBespoke', !shlCodec.canDecode('https://a.org/view#sfhl:/abc'));
-check('bespoke/rejectsShlink', !bespokeCodec.canDecode(shlLink));
+check("shl/canDecodeShlink", shlCodec.canDecode(shlLink));
+check(
+  "shl/rejectsBespoke",
+  !shlCodec.canDecode("https://a.org/view#sfhl:/abc"),
+);
+check("bespoke/rejectsShlink", !bespokeCodec.canDecode(shlLink));
 
 // Encoding without a blob store must fail with a useful message rather than a TypeError.
 let noStoreRejected = false;
 try {
   await shlCodec.encode({ bundle: shlBundle }, { baseUrl: BASE_URL });
 } catch (error) {
-  noStoreRejected = error instanceof Error && error.message.includes('BlobStore');
+  noStoreRejected =
+    error instanceof Error && error.message.includes("BlobStore");
 }
-check('shl/requiresBlobStore', noStoreRejected);
+check("shl/requiresBlobStore", noStoreRejected);
 
 // Expiry must be honoured.
 const expiredPayload = toBase64Url(
-  encodeUtf8(JSON.stringify({ url: 'https://x.test/a', key: shlPayload.key, flag: 'U', exp: 1 }))
+  encodeUtf8(
+    JSON.stringify({
+      url: "https://x.test/a",
+      key: shlPayload.key,
+      flag: "U",
+      exp: 1,
+    }),
+  ),
 );
 let expiryRejected = false;
 try {
   await shlCodec.decode(`#shlink:/${expiredPayload}`);
 } catch (error) {
-  expiryRejected = error instanceof Error && error.message.includes('expired');
+  expiryRejected = error instanceof Error && error.message.includes("expired");
 }
-check('shl/expiredRejected', expiryRejected);
+check("shl/expiredRejected", expiryRejected);
 
 // ---------------------------------------------------------------------------
 // Reading a link this app did not write.
@@ -348,73 +434,116 @@ check('shl/expiredRejected', expiryRejected);
 // files where it writes one. Every assertion here describes a link that is entirely legal and that
 // the strict reader rejected or silently truncated.
 
-console.log('\nforeign response links\n');
+console.log("\nforeign response links\n");
 
 /** Host a JWE of `content` under `key` and mint the `shlink:` fragment that points at it. */
-async function hostShl(content: unknown, key: Uint8Array, extra: Record<string, unknown> = {}) {
+async function hostShl(
+  content: unknown,
+  key: Uint8Array,
+  extra: Record<string, unknown> = {},
+) {
   const url = await store.put(
     encodeUtf8(await encryptJwe(encodeUtf8(JSON.stringify(content)), key)),
-    JOSE_CONTENT_TYPE
+    JOSE_CONTENT_TYPE,
   );
 
   return {
     url,
     link: `#shlink:/${toBase64Url(
-      encodeUtf8(JSON.stringify({ url, key: keyToBase64Url(key), v: 1, ...extra }))
-    )}`
+      encodeUtf8(
+        JSON.stringify({ url, key: keyToBase64Url(key), v: 1, ...extra }),
+      ),
+    )}`,
   };
 }
 
 const foreignKey = generateKey();
 const foreignResponse: QuestionnaireResponse = {
-  resourceType: 'QuestionnaireResponse',
-  status: 'completed',
-  questionnaire: 'http://example.org/Questionnaire/test',
-  subject: { reference: 'Patient/vault-local-42' },
-  item: [{ linkId: 'q1', text: 'Any pain?', answer: [{ valueString: 'Occasionally' }] }]
+  resourceType: "QuestionnaireResponse",
+  status: "completed",
+  questionnaire: "http://example.org/Questionnaire/test",
+  subject: { reference: "Patient/vault-local-42" },
+  item: [
+    {
+      linkId: "q1",
+      text: "Any pain?",
+      answer: [{ valueString: "Occasionally" }],
+    },
+  ],
 };
 
 // A bare resource, not a Bundle — an entirely ordinary `application/fhir+json` payload.
-const bare = await hostShl(foreignResponse, foreignKey, { flag: 'U' });
+const bare = await hostShl(foreignResponse, foreignKey, { flag: "U" });
 const bareDecoded = await shlCodec.decode(bare.link);
 check(
-  'foreign/bareResourceNormalised',
-  parseResponseBundle(bareDecoded.bundle).response.item?.[0].answer?.[0].valueString ===
-    'Occasionally',
-  'a filler that parks a QuestionnaireResponse rather than a Bundle has done nothing wrong'
+  "foreign/bareResourceNormalised",
+  parseResponseBundle(bareDecoded.bundle).response.item?.[0].answer?.[0]
+    .valueString === "Occasionally",
+  "a filler that parks a QuestionnaireResponse rather than a Bundle has done nothing wrong",
 );
 check(
-  'foreign/bareResourceIsNotARequest',
+  "foreign/bareResourceIsNotARequest",
   !isRequestBundle(bareDecoded.bundle),
-  'must route to review, not to the form filler'
+  "must route to review, not to the form filler",
 );
 
 /*
  * Manifest mode. Serve a POST manifest alongside the blob shim already installed, so the same
  * in-memory store backs both `location` reads and the manifest itself.
  */
-let manifestFiles: { contentType: string; location?: string; embedded?: string }[] = [];
+let manifestFiles: {
+  contentType: string;
+  location?: string;
+  embedded?: string;
+}[] = [];
 let manifestPasscode: string | undefined;
 let manifestCalls = 0;
 let lastManifestBody: Record<string, unknown> = {};
-const MANIFEST_URL = 'https://manifest.test/shl/abc';
+const MANIFEST_URL = "https://manifest.test/shl/abc";
 
 const blobShim = globalThis.fetch;
-globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+globalThis.fetch = (async (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => {
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
   if (url === MANIFEST_URL) {
     manifestCalls++;
-    lastManifestBody = JSON.parse(String(init?.body ?? '{}'));
-    if (manifestPasscode !== undefined && lastManifestBody.passcode !== manifestPasscode) {
-      return new Response(JSON.stringify({ remainingAttempts: 2 }), { status: 401 });
+    lastManifestBody = JSON.parse(String(init?.body ?? "{}"));
+    if (
+      manifestPasscode !== undefined &&
+      lastManifestBody.passcode !== manifestPasscode
+    ) {
+      return Response.json(
+        { remainingAttempts: 2 },
+        {
+          status: 401,
+        },
+      );
     }
-    return new Response(JSON.stringify({ files: manifestFiles }), { status: 200 });
+    return Response.json(
+      { files: manifestFiles },
+      {
+        status: 200,
+      },
+    );
   }
   return blobShim(input as RequestInfo, init);
 }) as typeof fetch;
 
 const manifestLink = `#shlink:/${toBase64Url(
-  encodeUtf8(JSON.stringify({ url: MANIFEST_URL, key: keyToBase64Url(foreignKey), v: 1 }))
+  encodeUtf8(
+    JSON.stringify({
+      url: MANIFEST_URL,
+      key: keyToBase64Url(foreignKey),
+      v: 1,
+    }),
+  ),
 )}`;
 
 /** Encrypt `content` under the foreign key and host it, returning just the URL. */
@@ -422,146 +551,196 @@ const hostFile = async (content: unknown) =>
   (await hostShl(content, foreignKey)).url;
 
 const foreignProvenance: Provenance = {
-  resourceType: 'Provenance',
-  target: [{ reference: 'QuestionnaireResponse/local' }],
-  recorded: '2026-01-01T00:00:00Z',
-  agent: [{ who: { reference: 'Patient/vault-local-42' } }]
+  resourceType: "Provenance",
+  target: [{ reference: "QuestionnaireResponse/local" }],
+  recorded: "2026-01-01T00:00:00Z",
+  agent: [{ who: { reference: "Patient/vault-local-42" } }],
 };
 
 // The answers in one file, the attribution in another. That is one payload, not a choice.
 manifestFiles = [
-  { contentType: 'application/fhir+json', location: await hostFile(bundleResponse(foreignResponse)) },
-  { contentType: 'application/fhir+json', location: await hostFile(foreignProvenance) }
+  {
+    contentType: "application/fhir+json",
+    location: await hostFile(bundleResponse(foreignResponse)),
+  },
+  {
+    contentType: "application/fhir+json",
+    location: await hostFile(foreignProvenance),
+  },
 ];
 
 const mergedFiles = await shlCodec.decode(manifestLink);
 const mergedPayload = parseResponseBundle(mergedFiles.bundle);
 check(
-  'foreign/manifestMergesAllFhirFiles',
-  mergedPayload.response !== undefined && mergedPayload.provenance !== undefined,
-  'taking only the first file drops the PATAST attribution that makes a reply safe to store'
+  "foreign/manifestMergesAllFhirFiles",
+  mergedPayload.response !== undefined &&
+    mergedPayload.provenance !== undefined,
+  "taking only the first file drops the PATAST attribution that makes a reply safe to store",
 );
 
 // A file type this app cannot render must be reported, not silently dropped.
 manifestFiles = [
-  { contentType: 'application/fhir+json', location: await hostFile(bundleResponse(foreignResponse)) },
-  { contentType: 'application/smart-health-card', location: await hostFile({ vc: {} }) }
+  {
+    contentType: "application/fhir+json",
+    location: await hostFile(bundleResponse(foreignResponse)),
+  },
+  {
+    contentType: "application/smart-health-card",
+    location: await hostFile({ vc: {} }),
+  },
 ];
 const withCard = await shlCodec.decode(manifestLink);
 check(
-  'foreign/manifestIgnoresNonFhir',
-  parseResponseBundle(withCard.bundle).response !== undefined
+  "foreign/manifestIgnoresNonFhir",
+  parseResponseBundle(withCard.bundle).response !== undefined,
 );
 check(
-  'foreign/manifestWarnsAboutSkipped',
-  (withCard.warnings ?? []).some((warning) => warning.includes('smart-health-card')),
-  (withCard.warnings ?? []).join(' | ')
+  "foreign/manifestWarnsAboutSkipped",
+  (withCard.warnings ?? []).some((warning) =>
+    warning.includes("smart-health-card"),
+  ),
+  (withCard.warnings ?? []).join(" | "),
 );
 
 // `application/fhir+json; charset=utf-8` is the same content type.
 manifestFiles = [
   {
-    contentType: 'application/fhir+json; charset=utf-8',
-    location: await hostFile(bundleResponse(foreignResponse))
-  }
+    contentType: "application/fhir+json; charset=utf-8",
+    location: await hostFile(bundleResponse(foreignResponse)),
+  },
 ];
 check(
-  'foreign/manifestToleratesContentTypeParameters',
-  parseResponseBundle((await shlCodec.decode(manifestLink)).bundle).response !== undefined
+  "foreign/manifestToleratesContentTypeParameters",
+  parseResponseBundle((await shlCodec.decode(manifestLink)).bundle).response !==
+    undefined,
 );
 
 // One unreadable file must cost its own content, not the whole link.
-const corruptUrl = await store.put(encodeUtf8('not.a.valid.jwe.at-all'), JOSE_CONTENT_TYPE);
+const corruptUrl = await store.put(
+  encodeUtf8("not.a.valid.jwe.at-all"),
+  JOSE_CONTENT_TYPE,
+);
 manifestFiles = [
-  { contentType: 'application/fhir+json', location: corruptUrl },
-  { contentType: 'application/fhir+json', location: await hostFile(bundleResponse(foreignResponse)) }
+  { contentType: "application/fhir+json", location: corruptUrl },
+  {
+    contentType: "application/fhir+json",
+    location: await hostFile(bundleResponse(foreignResponse)),
+  },
 ];
 const partialRead = await shlCodec.decode(manifestLink);
 check(
-  'foreign/manifestSurvivesOneBadFile',
-  parseResponseBundle(partialRead.bundle).response !== undefined
+  "foreign/manifestSurvivesOneBadFile",
+  parseResponseBundle(partialRead.bundle).response !== undefined,
 );
 check(
-  'foreign/manifestWarnsAboutBadFile',
-  (partialRead.warnings ?? []).some((warning) => warning.includes('could not be read')),
-  (partialRead.warnings ?? []).join(' | ')
+  "foreign/manifestWarnsAboutBadFile",
+  (partialRead.warnings ?? []).some((warning) =>
+    warning.includes("could not be read"),
+  ),
+  (partialRead.warnings ?? []).join(" | "),
 );
 
 // …but a manifest where nothing decoded is a broken link, not an empty one.
-manifestFiles = [{ contentType: 'application/fhir+json', location: corruptUrl }];
+manifestFiles = [
+  { contentType: "application/fhir+json", location: corruptUrl },
+];
 let allBadRejected = false;
 try {
   await shlCodec.decode(manifestLink);
 } catch (error) {
-  allBadRejected = error instanceof Error && error.message.includes('Nothing in this link');
+  allBadRejected =
+    error instanceof Error && error.message.includes("Nothing in this link");
 }
 check(
-  'foreign/manifestAllBadThrows',
+  "foreign/manifestAllBadThrows",
   allBadRejected,
-  'reporting "no answers" for a link that failed to decrypt would be a lie'
+  'reporting "no answers" for a link that failed to decrypt would be a lie',
 );
 
 // A request delivered by manifest must still read as a request.
 const manifestRequest = buildRequestBundle(
-  { resourceType: 'Questionnaire', status: 'active', url: 'http://example.org/Questionnaire/test' },
-  { requestId: 'urn:uuid:manifest-request' }
+  {
+    resourceType: "Questionnaire",
+    status: "active",
+    url: "http://example.org/Questionnaire/test",
+  },
+  { requestId: "urn:uuid:manifest-request" },
 );
 manifestFiles = [
-  { contentType: 'application/fhir+json', location: await hostFile(manifestRequest.bundle) }
+  {
+    contentType: "application/fhir+json",
+    location: await hostFile(manifestRequest.bundle),
+  },
 ];
 check(
-  'foreign/manifestRequestStillRoutesAsRequest',
-  isRequestBundle((await shlCodec.decode(manifestLink)).bundle)
+  "foreign/manifestRequestStillRoutesAsRequest",
+  isRequestBundle((await shlCodec.decode(manifestLink)).bundle),
 );
 
 // An embedded file needs no second fetch.
 manifestFiles = [
   {
-    contentType: 'application/fhir+json',
+    contentType: "application/fhir+json",
     embedded: await encryptJwe(
       encodeUtf8(JSON.stringify(bundleResponse(foreignResponse))),
-      foreignKey
-    )
-  }
+      foreignKey,
+    ),
+  },
 ];
 check(
-  'foreign/manifestReadsEmbedded',
-  parseResponseBundle((await shlCodec.decode(manifestLink)).bundle).response !== undefined
+  "foreign/manifestReadsEmbedded",
+  parseResponseBundle((await shlCodec.decode(manifestLink)).bundle).response !==
+    undefined,
 );
 
 // ---------------------------------------------------------------------------
 // Passcodes.
 
-console.log('\npasscode-protected links\n');
+console.log("\npasscode-protected links\n");
 
-manifestPasscode = 'letmein';
+manifestPasscode = "letmein";
 manifestFiles = [
-  { contentType: 'application/fhir+json', location: await hostFile(bundleResponse(foreignResponse)) }
+  {
+    contentType: "application/fhir+json",
+    location: await hostFile(bundleResponse(foreignResponse)),
+  },
 ];
 
 let passcodeError: unknown;
 try {
-  await shlCodec.decode(manifestLink, { passcode: 'wrong' });
+  await shlCodec.decode(manifestLink, { passcode: "wrong" });
 } catch (error) {
   passcodeError = error;
 }
-check('passcode/manifest401ThrowsTyped', passcodeError instanceof PasscodeRequiredError);
 check(
-  'passcode/reportsRemainingAttempts',
-  (passcodeError as PasscodeRequiredError)?.remainingAttempts === 2
+  "passcode/manifest401ThrowsTyped",
+  passcodeError instanceof PasscodeRequiredError,
 );
-check('passcode/knowsItWasAttempted', (passcodeError as PasscodeRequiredError)?.wasAttempted === true);
+check(
+  "passcode/reportsRemainingAttempts",
+  (passcodeError as PasscodeRequiredError)?.remainingAttempts === 2,
+);
+check(
+  "passcode/knowsItWasAttempted",
+  (passcodeError as PasscodeRequiredError)?.wasAttempted === true,
+);
 
 check(
-  'passcode/correctPasscodeSucceeds',
-  parseResponseBundle((await shlCodec.decode(manifestLink, { passcode: 'letmein' })).bundle)
-    .response !== undefined
+  "passcode/correctPasscodeSucceeds",
+  parseResponseBundle(
+    (await shlCodec.decode(manifestLink, { passcode: "letmein" })).bundle,
+  ).response !== undefined,
 );
-check('passcode/reachesTheManifestBody', lastManifestBody.passcode === 'letmein');
 check(
-  'passcode/recipientOverridable',
-  ((await shlCodec.decode(manifestLink, { passcode: 'letmein', recipient: 'Someone Else' })) &&
-    lastManifestBody.recipient === 'Someone Else') === true
+  "passcode/reachesTheManifestBody",
+  lastManifestBody.passcode === "letmein",
+);
+check(
+  "passcode/recipientOverridable",
+  ((await shlCodec.decode(manifestLink, {
+    passcode: "letmein",
+    recipient: "Someone Else",
+  })) && lastManifestBody.recipient === "Someone Else") === true,
 );
 
 /*
@@ -571,8 +750,13 @@ check(
  */
 const pFlagLink = `#shlink:/${toBase64Url(
   encodeUtf8(
-    JSON.stringify({ url: MANIFEST_URL, key: keyToBase64Url(foreignKey), flag: 'P', v: 1 })
-  )
+    JSON.stringify({
+      url: MANIFEST_URL,
+      key: keyToBase64Url(foreignKey),
+      flag: "P",
+      v: 1,
+    }),
+  ),
 )}`;
 
 const callsBeforePreempt = manifestCalls;
@@ -582,20 +766,24 @@ try {
 } catch (error) {
   preempted = error;
 }
-check('passcode/pFlagPreemptsWithoutRequest', preempted instanceof PasscodeRequiredError);
 check(
-  'passcode/pFlagKnowsNothingWasTried',
-  (preempted as PasscodeRequiredError)?.wasAttempted === false
+  "passcode/pFlagPreemptsWithoutRequest",
+  preempted instanceof PasscodeRequiredError,
 );
 check(
-  'passcode/pFlagCostsNoAttempt',
+  "passcode/pFlagKnowsNothingWasTried",
+  (preempted as PasscodeRequiredError)?.wasAttempted === false,
+);
+check(
+  "passcode/pFlagCostsNoAttempt",
   manifestCalls === callsBeforePreempt,
-  'burning an attempt to learn what the payload already says would be inexcusable'
+  "burning an attempt to learn what the payload already says would be inexcusable",
 );
 check(
-  'passcode/pFlagOpensWhenSupplied',
-  parseResponseBundle((await shlCodec.decode(pFlagLink, { passcode: 'letmein' })).bundle)
-    .response !== undefined
+  "passcode/pFlagOpensWhenSupplied",
+  parseResponseBundle(
+    (await shlCodec.decode(pFlagLink, { passcode: "letmein" })).bundle,
+  ).response !== undefined,
 );
 
 manifestPasscode = undefined;
@@ -603,13 +791,14 @@ globalThis.fetch = realFetch;
 
 // The optional argument must not have disturbed the other codec's narrower signature.
 const bespokeWithOptions = await bespokeCodec.encode(
-  { bundle: bundleResponse(foreignResponse), label: 'unaffected' },
-  { baseUrl: BASE_URL }
+  { bundle: bundleResponse(foreignResponse), label: "unaffected" },
+  { baseUrl: BASE_URL },
 );
 check(
-  'passcode/bespokeSignatureUnaffected',
-  responseFromBundle((await bespokeCodec.decode(bespokeWithOptions, { passcode: 'x' })).bundle)
-    .status === 'completed'
+  "passcode/bespokeSignatureUnaffected",
+  responseFromBundle(
+    (await bespokeCodec.decode(bespokeWithOptions, { passcode: "x" })).bundle,
+  ).status === "completed",
 );
 
 // ---------------------------------------------------------------------------
@@ -623,10 +812,11 @@ check(
 // with.
 // ---------------------------------------------------------------------------
 
-console.log('\nreply crypto (ECDH-ES + A256GCM)\n');
+console.log("\nreply crypto (ECDH-ES + A256GCM)\n");
 
-const nodeB64u = (bytes: Buffer | Uint8Array) => Buffer.from(bytes).toString('base64url');
-const nodeFromB64u = (value: string) => Buffer.from(value, 'base64url');
+const nodeB64u = (bytes: Buffer | Uint8Array) =>
+  Buffer.from(bytes).toString("base64url");
+const nodeFromB64u = (value: string) => Buffer.from(value, "base64url");
 
 function nodeConcatKdf(z: Buffer): Buffer {
   const lengthPrefixed = (bytes: Buffer) => {
@@ -639,261 +829,385 @@ function nodeConcatKdf(z: Buffer): Buffer {
   const counter = Buffer.alloc(4);
   counter.writeUInt32BE(1);
 
-  return createHash('sha256')
+  return createHash("sha256")
     .update(
       Buffer.concat([
         counter,
         z,
         Buffer.concat([
-          lengthPrefixed(Buffer.from('A256GCM', 'ascii')),
+          lengthPrefixed(Buffer.from("A256GCM", "ascii")),
           lengthPrefixed(Buffer.alloc(0)),
           lengthPrefixed(Buffer.alloc(0)),
-          suppPubInfo
-        ])
-      ])
+          suppPubInfo,
+        ]),
+      ]),
     )
     .digest();
 }
 
 const jwkToPoint = (jwk: { x: string; y: string }) =>
-  Buffer.concat([Buffer.from([0x04]), nodeFromB64u(jwk.x), nodeFromB64u(jwk.y)]);
+  Buffer.concat([
+    Buffer.from([0x04]),
+    nodeFromB64u(jwk.x),
+    nodeFromB64u(jwk.y),
+  ]);
 
-function nodeEncryptReply(plaintext: string, recipient: { x: string; y: string }): string {
-  const ecdh = createECDH('prime256v1');
+function nodeEncryptReply(
+  plaintext: string,
+  recipient: { x: string; y: string },
+): string {
+  const ecdh = createECDH("prime256v1");
   ecdh.generateKeys();
   const point = ecdh.getPublicKey();
   const epk = {
-    kty: 'EC',
-    crv: 'P-256',
+    kty: "EC",
+    crv: "P-256",
     x: nodeB64u(point.subarray(1, 33)),
-    y: nodeB64u(point.subarray(33, 65))
+    y: nodeB64u(point.subarray(33, 65)),
   };
   const cek = nodeConcatKdf(ecdh.computeSecret(jwkToPoint(recipient)));
   const iv = randomBytes(12);
-  const header = nodeB64u(Buffer.from(JSON.stringify({ alg: 'ECDH-ES', enc: 'A256GCM', epk })));
-  const cipher = createCipheriv('aes-256-gcm', cek, iv);
-  cipher.setAAD(Buffer.from(header, 'ascii'));
-  const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
+  const header = nodeB64u(
+    Buffer.from(JSON.stringify({ alg: "ECDH-ES", enc: "A256GCM", epk })),
+  );
+  const cipher = createCipheriv("aes-256-gcm", cek, iv);
+  cipher.setAAD(Buffer.from(header, "ascii"));
+  const ciphertext = Buffer.concat([
+    cipher.update(Buffer.from(plaintext, "utf8")),
+    cipher.final(),
+  ]);
 
-  return [header, '', nodeB64u(iv), nodeB64u(ciphertext), nodeB64u(cipher.getAuthTag())].join('.');
+  return [
+    header,
+    "",
+    nodeB64u(iv),
+    nodeB64u(ciphertext),
+    nodeB64u(cipher.getAuthTag()),
+  ].join(".");
 }
 
 function nodeDecryptReply(jwe: string, privateJwk: { d: string }): string {
-  const [header, encryptedKey, iv, ciphertext, tag] = jwe.split('.');
-  if (encryptedKey !== '') {
-    throw new Error('expected an empty encrypted-key segment');
+  const [header, encryptedKey, iv, ciphertext, tag] = jwe.split(".");
+  if (encryptedKey !== "") {
+    throw new Error("expected an empty encrypted-key segment");
   }
 
-  const parsed = JSON.parse(nodeFromB64u(header).toString('utf8'));
-  const ecdh = createECDH('prime256v1');
+  const parsed = JSON.parse(nodeFromB64u(header).toString("utf8"));
+  const ecdh = createECDH("prime256v1");
   ecdh.setPrivateKey(nodeFromB64u(privateJwk.d));
   const cek = nodeConcatKdf(ecdh.computeSecret(jwkToPoint(parsed.epk)));
-  const decipher = createDecipheriv('aes-256-gcm', cek, nodeFromB64u(iv));
-  decipher.setAAD(Buffer.from(header, 'ascii'));
+  const decipher = createDecipheriv("aes-256-gcm", cek, nodeFromB64u(iv));
+  decipher.setAAD(Buffer.from(header, "ascii"));
   decipher.setAuthTag(nodeFromB64u(tag));
 
-  return Buffer.concat([decipher.update(nodeFromB64u(ciphertext)), decipher.final()]).toString('utf8');
+  return Buffer.concat([
+    decipher.update(nodeFromB64u(ciphertext)),
+    decipher.final(),
+  ]).toString("utf8");
 }
 
 const replyKeys = await generateReplyKeyPair();
-check('reply/publicJwkIsMinimal', Object.keys(replyKeys.publicJwk).sort().join(',') === 'crv,kty,x,y', Object.keys(replyKeys.publicJwk).join(','));
-check('reply/curveIsP256', replyKeys.publicJwk.crv === 'P-256');
+check(
+  "reply/publicJwkIsMinimal",
+  Object.keys(replyKeys.publicJwk).sort().join(",") === "crv,kty,x,y",
+  Object.keys(replyKeys.publicJwk).join(","),
+);
+check("reply/curveIsP256", replyKeys.publicJwk.crv === "P-256");
 
-const replyMessage = JSON.stringify({ resourceType: 'Bundle', type: 'collection', entry: [] });
-const replyJwe = await encryptReplyJwe(encodeUtf8(replyMessage), replyKeys.publicJwk);
-const replySegments = replyJwe.split('.');
+const replyMessage = JSON.stringify({
+  resourceType: "Bundle",
+  type: "collection",
+  entry: [],
+});
+const replyJwe = await encryptReplyJwe(
+  encodeUtf8(replyMessage),
+  replyKeys.publicJwk,
+);
+const replySegments = replyJwe.split(".");
 
-check('reply/fiveSegments', replySegments.length === 5, `${replySegments.length}`);
-check('reply/encryptedKeySegmentEmpty', replySegments[1] === '');
+check(
+  "reply/fiveSegments",
+  replySegments.length === 5,
+  `${replySegments.length}`,
+);
+check("reply/encryptedKeySegmentEmpty", replySegments[1] === "");
 
 const replyHeader = JSON.parse(decodeUtf8(fromBase64Url(replySegments[0])));
-check('reply/algIsEcdhEs', replyHeader.alg === 'ECDH-ES', String(replyHeader.alg));
-check('reply/encIsA256Gcm', replyHeader.enc === 'A256GCM', String(replyHeader.enc));
-check('reply/headerCarriesEphemeralKey', replyHeader.epk?.crv === 'P-256' && typeof replyHeader.epk?.x === 'string');
-check('reply/headerHasNoPrivateKey', replyHeader.epk?.d === undefined, 'an epk with `d` would publish the sender key');
-check('reply/noApuApv', replyHeader.apu === undefined && replyHeader.apv === undefined);
+check(
+  "reply/algIsEcdhEs",
+  replyHeader.alg === "ECDH-ES",
+  String(replyHeader.alg),
+);
+check(
+  "reply/encIsA256Gcm",
+  replyHeader.enc === "A256GCM",
+  String(replyHeader.enc),
+);
+check(
+  "reply/headerCarriesEphemeralKey",
+  replyHeader.epk?.crv === "P-256" && typeof replyHeader.epk?.x === "string",
+);
+check(
+  "reply/headerHasNoPrivateKey",
+  replyHeader.epk?.d === undefined,
+  "an epk with `d` would publish the sender key",
+);
+check(
+  "reply/noApuApv",
+  replyHeader.apu === undefined && replyHeader.apv === undefined,
+);
 
-check('reply/roundTrip', decodeUtf8(await decryptReplyJwe(replyJwe, replyKeys.privateJwk)) === replyMessage);
+check(
+  "reply/roundTrip",
+  decodeUtf8(await decryptReplyJwe(replyJwe, replyKeys.privateJwk)) ===
+    replyMessage,
+);
 
 // The interop assertions that actually matter.
-check('reply/interop:oursDecryptedByNode', nodeDecryptReply(replyJwe, replyKeys.privateJwk) === replyMessage);
 check(
-  'reply/interop:nodeDecryptedByOurs',
-  decodeUtf8(await decryptReplyJwe(nodeEncryptReply(replyMessage, replyKeys.publicJwk), replyKeys.privateJwk)) ===
-    replyMessage
+  "reply/interop:oursDecryptedByNode",
+  nodeDecryptReply(replyJwe, replyKeys.privateJwk) === replyMessage,
+);
+check(
+  "reply/interop:nodeDecryptedByOurs",
+  decodeUtf8(
+    await decryptReplyJwe(
+      nodeEncryptReply(replyMessage, replyKeys.publicJwk),
+      replyKeys.privateJwk,
+    ),
+  ) === replyMessage,
 );
 
 // A key generated the way Platypus generates its practice key must work with our implementation.
-const foreignEcdh = createECDH('prime256v1');
+const foreignEcdh = createECDH("prime256v1");
 foreignEcdh.generateKeys();
 const foreignPoint = foreignEcdh.getPublicKey();
 const foreignPublic = {
-  kty: 'EC' as const,
-  crv: 'P-256' as const,
+  kty: "EC" as const,
+  crv: "P-256" as const,
   x: nodeB64u(foreignPoint.subarray(1, 33)),
-  y: nodeB64u(foreignPoint.subarray(33, 65))
+  y: nodeB64u(foreignPoint.subarray(33, 65)),
 };
-const foreignPrivate = { ...foreignPublic, d: nodeB64u(foreignEcdh.getPrivateKey()) };
+const foreignPrivate = {
+  ...foreignPublic,
+  d: nodeB64u(foreignEcdh.getPrivateKey()),
+};
 check(
-  'reply/interop:foreignKeyPair',
+  "reply/interop:foreignKeyPair",
   decodeUtf8(
-    await decryptReplyJwe(await encryptReplyJwe(encodeUtf8(replyMessage), foreignPublic), foreignPrivate)
-  ) === replyMessage
+    await decryptReplyJwe(
+      await encryptReplyJwe(encodeUtf8(replyMessage), foreignPublic),
+      foreignPrivate,
+    ),
+  ) === replyMessage,
 );
 
-async function replyRejects(mutate: (segments: string[]) => string[] | Promise<string[]>, key = replyKeys.privateJwk) {
+async function replyRejects(
+  mutate: (segments: string[]) => string[] | Promise<string[]>,
+  key = replyKeys.privateJwk,
+) {
   try {
-    await decryptReplyJwe((await mutate([...replySegments])).join('.'), key);
+    await decryptReplyJwe((await mutate([...replySegments])).join("."), key);
     return false;
   } catch {
     return true;
   }
 }
 
-check('reply/wrongKeyRejected', await replyRejects((segments) => segments, (await generateReplyKeyPair()).privateJwk));
 check(
-  'reply/tamperedCiphertextRejected',
+  "reply/wrongKeyRejected",
+  await replyRejects(
+    (segments) => segments,
+    (await generateReplyKeyPair()).privateJwk,
+  ),
+);
+check(
+  "reply/tamperedCiphertextRejected",
   await replyRejects((segments) => {
     const bytes = fromBase64Url(segments[3]);
     bytes[0] ^= 0xff;
     segments[3] = toBase64Url(bytes);
     return segments;
-  })
+  }),
 );
 check(
-  'reply/tamperedEpkRejected',
+  "reply/tamperedEpkRejected",
   await replyRejects(async (segments) => {
     const header = JSON.parse(decodeUtf8(fromBase64Url(segments[0])));
     header.epk = (await generateReplyKeyPair()).publicJwk;
     segments[0] = toBase64Url(encodeUtf8(JSON.stringify(header)));
     return segments;
-  })
+  }),
 );
 // `dir` and `ECDH-ES` must not be interchangeable: accepting a `dir` header here would let anyone who
 // has the link's symmetric key read a reply.
 check(
-  'reply/rejectsDirAlg',
+  "reply/rejectsDirAlg",
   await replyRejects((segments) => {
-    segments[0] = toBase64Url(encodeUtf8(JSON.stringify({ alg: 'dir', enc: 'A256GCM' })));
+    segments[0] = toBase64Url(
+      encodeUtf8(JSON.stringify({ alg: "dir", enc: "A256GCM" })),
+    );
     return segments;
-  })
+  }),
 );
 
-check('reply/looksLikeReplyJwe:accepts', looksLikeReplyJwe(replyJwe));
-check('reply/looksLikeReplyJwe:rejectsPending', !looksLikeReplyJwe(replySlotPlaceholder()));
+check("reply/looksLikeReplyJwe:accepts", looksLikeReplyJwe(replyJwe));
+check(
+  "reply/looksLikeReplyJwe:rejectsPending",
+  !looksLikeReplyJwe(replySlotPlaceholder()),
+);
 // A fixed placeholder makes every slot after the first a byte-identical create, which servers that
 // deduplicate reject (HAPI-2840). Uniqueness is what stops the second request ever minted failing.
 check(
-  'reply/slotPlaceholderIsUnique',
+  "reply/slotPlaceholderIsUnique",
   replySlotPlaceholder() !== replySlotPlaceholder(),
-  'identical placeholders collide on servers that deduplicate creates'
+  "identical placeholders collide on servers that deduplicate creates",
 );
 
 // ---------------------------------------------------------------------------
 // Reply descriptor — build, parse, and tolerance of Platypus's own identifiers.
 // ---------------------------------------------------------------------------
 
-console.log('\nreply descriptor\n');
+console.log("\nreply descriptor\n");
 
 const descriptor = {
-  replyUrl: 'https://blobs.test/Binary/42',
-  replyMethod: 'PUT' as const,
+  replyUrl: "https://blobs.test/Binary/42",
+  replyMethod: "PUT" as const,
   publicJwk: replyKeys.publicJwk,
-  expiresAt: Math.floor(Date.now() / 1000) + 86400
+  expiresAt: Math.floor(Date.now() / 1000) + 86_400,
 };
 
 const descriptorTask: Task = {
-  resourceType: 'Task',
-  status: 'requested',
-  intent: 'order',
-  extension: [buildReplyDescriptorExtension(descriptor), buildServerTaskUrlExtension('https://ehr.test/fhir/Task/7')]
+  resourceType: "Task",
+  status: "requested",
+  intent: "order",
+  extension: [
+    buildReplyDescriptorExtension(descriptor),
+    buildServerTaskUrlExtension("https://ehr.test/fhir/Task/7"),
+  ],
 };
 
 const parsedDescriptor = parseReplyDescriptor(descriptorTask);
-check('descriptor/roundTripsUrl', parsedDescriptor?.replyUrl === descriptor.replyUrl);
-check('descriptor/roundTripsMethod', parsedDescriptor?.replyMethod === 'PUT');
 check(
-  'descriptor/roundTripsKey',
-  JSON.stringify(parsedDescriptor?.publicJwk) === JSON.stringify(replyKeys.publicJwk)
+  "descriptor/roundTripsUrl",
+  parsedDescriptor?.replyUrl === descriptor.replyUrl,
 );
-check('descriptor/roundTripsExpiry', parsedDescriptor?.expiresAt === descriptor.expiresAt);
-check('descriptor/serverTaskUrl', parseServerTaskUrl(descriptorTask) === 'https://ehr.test/fhir/Task/7');
+check("descriptor/roundTripsMethod", parsedDescriptor?.replyMethod === "PUT");
+check(
+  "descriptor/roundTripsKey",
+  JSON.stringify(parsedDescriptor?.publicJwk) ===
+    JSON.stringify(replyKeys.publicJwk),
+);
+check(
+  "descriptor/roundTripsExpiry",
+  parsedDescriptor?.expiresAt === descriptor.expiresAt,
+);
+check(
+  "descriptor/serverTaskUrl",
+  parseServerTaskUrl(descriptorTask) === "https://ehr.test/fhir/Task/7",
+);
 
 // The private key must never end up in a descriptor, however the caller was holding it.
 check(
-  'descriptor/carriesNoPrivateKey',
+  "descriptor/carriesNoPrivateKey",
   !JSON.stringify(descriptorTask).includes(replyKeys.privateJwk.d),
-  'a descriptor holding `d` would let anyone with the link read the reply'
+  "a descriptor holding `d` would let anyone with the link read the reply",
 );
 
 // A Platypus-minted descriptor: its extension URL, its `replyPostToken` field name, `valueString` for
 // the URL, and no `replyMethod` at all.
 const platypusTask: Task = {
-  resourceType: 'Task',
-  status: 'requested',
-  intent: 'order',
+  resourceType: "Task",
+  status: "requested",
+  intent: "order",
   extension: [
     {
-      url: 'https://platypushealth.app/StructureDefinition/shl-reply-descriptor',
+      url: "https://platypushealth.app/StructureDefinition/shl-reply-descriptor",
       extension: [
-        { url: 'replyUrl', valueString: 'https://relay.test/shl/reply-slots/abc' },
-        { url: 'replyPostToken', valueString: 'token-xyz' },
-        { url: 'publicJwk', valueString: JSON.stringify(replyKeys.publicJwk) },
-        { url: 'expiresAt', valueInteger: 1893456000 }
-      ]
+        {
+          url: "replyUrl",
+          valueString: "https://relay.test/shl/reply-slots/abc",
+        },
+        { url: "replyPostToken", valueString: "token-xyz" },
+        { url: "publicJwk", valueString: JSON.stringify(replyKeys.publicJwk) },
+        { url: "expiresAt", valueInteger: 1_893_456_000 },
+      ],
     },
     {
-      url: 'https://platypushealth.app/StructureDefinition/invitation-server-task-url',
-      valueString: 'https://practice.test/fhir/Task/99'
-    }
-  ]
+      url: "https://platypushealth.app/StructureDefinition/invitation-server-task-url",
+      valueString: "https://practice.test/fhir/Task/99",
+    },
+  ],
 };
 
 const parsedPlatypus = parseReplyDescriptor(platypusTask);
-check('descriptor/readsPlatypusExtensionUrl', parsedPlatypus !== undefined);
-check('descriptor/readsValueStringUrl', parsedPlatypus?.replyUrl === 'https://relay.test/shl/reply-slots/abc');
-check('descriptor/readsReplyPostTokenAlias', parsedPlatypus?.replyToken === 'token-xyz');
+check("descriptor/readsPlatypusExtensionUrl", parsedPlatypus !== undefined);
 check(
-  'descriptor/inferrsRelayWhenUntyped',
-  parsedPlatypus?.replyMethod === 'relay-grant',
-  'a tokened descriptor with no replyMethod is a relay, and must not be PUT at blindly'
+  "descriptor/readsValueStringUrl",
+  parsedPlatypus?.replyUrl === "https://relay.test/shl/reply-slots/abc",
 );
-check('descriptor/readsPlatypusServerTaskUrl', parseServerTaskUrl(platypusTask) === 'https://practice.test/fhir/Task/99');
+check(
+  "descriptor/readsReplyPostTokenAlias",
+  parsedPlatypus?.replyToken === "token-xyz",
+);
+check(
+  "descriptor/inferrsRelayWhenUntyped",
+  parsedPlatypus?.replyMethod === "relay-grant",
+  "a tokened descriptor with no replyMethod is a relay, and must not be PUT at blindly",
+);
+check(
+  "descriptor/readsPlatypusServerTaskUrl",
+  parseServerTaskUrl(platypusTask) === "https://practice.test/fhir/Task/99",
+);
 
 // Malformed descriptors degrade to "no reply channel" rather than breaking the receive flow.
 const partial: Task = {
-  resourceType: 'Task',
-  status: 'requested',
-  intent: 'order',
+  resourceType: "Task",
+  status: "requested",
+  intent: "order",
   extension: [
     {
       url: REPLY_DESCRIPTOR_EXTENSION,
-      extension: [{ url: 'replyUrl', valueUrl: 'https://blobs.test/Binary/1' }]
-    }
-  ]
+      extension: [{ url: "replyUrl", valueUrl: "https://blobs.test/Binary/1" }],
+    },
+  ],
 };
-check('descriptor/partialIsIgnored', parseReplyDescriptor(partial) === undefined, 'missing publicJwk');
-check('descriptor/absentIsUndefined', parseReplyDescriptor({ resourceType: 'Task', status: 'requested', intent: 'order' }) === undefined);
 check(
-  'descriptor/badJwkIsIgnored',
+  "descriptor/partialIsIgnored",
+  parseReplyDescriptor(partial) === undefined,
+  "missing publicJwk",
+);
+check(
+  "descriptor/absentIsUndefined",
   parseReplyDescriptor({
-    resourceType: 'Task',
-    status: 'requested',
-    intent: 'order',
+    resourceType: "Task",
+    status: "requested",
+    intent: "order",
+  }) === undefined,
+);
+check(
+  "descriptor/badJwkIsIgnored",
+  parseReplyDescriptor({
+    resourceType: "Task",
+    status: "requested",
+    intent: "order",
     extension: [
       {
         url: REPLY_DESCRIPTOR_EXTENSION,
         extension: [
-          { url: 'replyUrl', valueUrl: 'https://blobs.test/Binary/1' },
-          { url: 'publicJwk', valueString: '{"kty":"RSA"}' }
-        ]
-      }
-    ]
+          { url: "replyUrl", valueUrl: "https://blobs.test/Binary/1" },
+          { url: "publicJwk", valueString: '{"kty":"RSA"}' },
+        ],
+      },
+    ],
   }) === undefined,
-  'a non-P-256 key must not be accepted'
+  "a non-P-256 key must not be accepted",
 );
-check('descriptor/expiryHonoured', isReplyDescriptorExpired({ ...descriptor, expiresAt: 1 }));
-check('descriptor/unexpiredIsUsable', !isReplyDescriptorExpired(descriptor));
+check(
+  "descriptor/expiryHonoured",
+  isReplyDescriptorExpired({ ...descriptor, expiresAt: 1 }),
+);
+check("descriptor/unexpiredIsUsable", !isReplyDescriptorExpired(descriptor));
 
 // ---------------------------------------------------------------------------
 // The Platypus detection contract.
@@ -905,18 +1219,19 @@ check('descriptor/unexpiredIsUsable', !isReplyDescriptorExpired(descriptor));
 // every return channel — degrading to a form nobody can send back.
 // ---------------------------------------------------------------------------
 
-console.log('\nplatypus detection contract\n');
+console.log("\nplatypus detection contract\n");
 
 /** Verbatim port of Platypus's `questionnaireRefFromTask`. */
 function questionnaireRefFromTask(task: Task): string | undefined {
   const focus = task.focus?.reference;
   if (focus && /questionnaire/i.test(focus)) return focus;
-  if (focus && task.focus?.type === 'Questionnaire') return focus;
+  if (focus && task.focus?.type === "Questionnaire") return focus;
 
   for (const input of task.input ?? []) {
     const typeCode = input.type?.coding?.[0]?.code ?? input.type?.text;
     const isQuestionnaire =
-      (typeCode && ['questionnaire', 'Questionnaire'].includes(typeCode)) || input.valueCanonical != null;
+      (typeCode && ["questionnaire", "Questionnaire"].includes(typeCode)) ||
+      input.valueCanonical != null;
     if (!isQuestionnaire) continue;
     if (input.valueCanonical) return input.valueCanonical;
     const ref = input.valueReference?.reference;
@@ -933,76 +1248,118 @@ function questionnaireRefFromTask(task: Task): string | undefined {
 function taskTargetsQuestionnaire(task: Task, q: Questionnaire): boolean {
   const matches = (ref: string | undefined) => {
     if (!ref) return false;
-    const canonical = ref.split('|')[0];
-    return ref === q.url || canonical === q.url || ref === q.id || (q.id != null && ref === `Questionnaire/${q.id}`);
+    const canonical = ref.split("|", 1)[0];
+    return (
+      ref === q.url ||
+      canonical === q.url ||
+      ref === q.id ||
+      (q.id != null && ref === `Questionnaire/${q.id}`)
+    );
   };
 
-  return matches(questionnaireRefFromTask(task)) || matches(task.focus?.reference);
+  return (
+    matches(questionnaireRefFromTask(task)) || matches(task.focus?.reference)
+  );
 }
 
 const detectionQuestionnaire: Questionnaire = {
-  resourceType: 'Questionnaire',
-  id: 'detection-test',
-  url: 'http://example.org/Questionnaire/detection',
-  version: '1.2',
-  status: 'active',
-  title: 'Detection contract',
-  item: [{ linkId: 'q1', type: 'string', text: 'Anything' }]
+  resourceType: "Questionnaire",
+  id: "detection-test",
+  url: "http://example.org/Questionnaire/detection",
+  version: "1.2",
+  status: "active",
+  title: "Detection contract",
+  item: [{ linkId: "q1", type: "string", text: "Anything" }],
 };
 
-const { bundle: detectionBundle, task: detectionTask } = buildRequestBundle(detectionQuestionnaire, {
-  subjectReference: 'Patient/123',
-  subjectDisplay: 'Jane Citizen',
-  requesterDisplay: 'Parkview Medical Centre',
-  replyDescriptor: descriptor
-});
+const { bundle: detectionBundle, task: detectionTask } = buildRequestBundle(
+  detectionQuestionnaire,
+  {
+    subjectReference: "Patient/123",
+    subjectDisplay: "Jane Citizen",
+    requesterDisplay: "Parkview Medical Centre",
+    replyDescriptor: descriptor,
+  },
+);
 
-check('detection/taskIsRequested', detectionTask.status === 'requested', detectionTask.status);
 check(
-  'detection/questionnaireRefResolves',
-  questionnaireRefFromTask(detectionTask) === 'http://example.org/Questionnaire/detection|1.2',
-  String(questionnaireRefFromTask(detectionTask))
+  "detection/taskIsRequested",
+  detectionTask.status === "requested",
+  detectionTask.status,
 );
 check(
-  'detection/taskTargetsQuestionnaire',
+  "detection/questionnaireRefResolves",
+  questionnaireRefFromTask(detectionTask) ===
+    "http://example.org/Questionnaire/detection|1.2",
+  String(questionnaireRefFromTask(detectionTask)),
+);
+check(
+  "detection/taskTargetsQuestionnaire",
   taskTargetsQuestionnaire(detectionTask, detectionQuestionnaire),
-  'if this fails, third parties see a form with no request behind it'
+  "if this fails, third parties see a form with no request behind it",
 );
 check(
-  'detection/focusIsCanonicalNotUrnUuid',
-  detectionTask.focus?.reference === 'http://example.org/Questionnaire/detection|1.2' &&
-    detectionTask.focus?.type === 'Questionnaire',
-  String(detectionTask.focus?.reference)
+  "detection/focusIsCanonicalNotUrnUuid",
+  detectionTask.focus?.reference ===
+    "http://example.org/Questionnaire/detection|1.2" &&
+    detectionTask.focus?.type === "Questionnaire",
+  String(detectionTask.focus?.reference),
 );
 check(
-  'detection/inputKeepsCanonical',
-  detectionTask.input?.[0]?.valueCanonical === 'http://example.org/Questionnaire/detection|1.2',
-  'the return leg drops `focus`, so `input` is what survives'
+  "detection/inputKeepsCanonical",
+  detectionTask.input?.[0]?.valueCanonical ===
+    "http://example.org/Questionnaire/detection|1.2",
+  "the return leg drops `focus`, so `input` is what survives",
 );
-check('detection/addresseeIsReadable', detectionTask.for?.display === 'Jane Citizen');
-check('detection/senderIsReadable', detectionTask.requester?.display === 'Parkview Medical Centre');
-check('detection/descriptorOnTask', parseReplyDescriptor(detectionTask)?.replyUrl === descriptor.replyUrl);
+check(
+  "detection/addresseeIsReadable",
+  detectionTask.for?.display === "Jane Citizen",
+);
+check(
+  "detection/senderIsReadable",
+  detectionTask.requester?.display === "Parkview Medical Centre",
+);
+check(
+  "detection/descriptorOnTask",
+  parseReplyDescriptor(detectionTask)?.replyUrl === descriptor.replyUrl,
+);
 
 // Platypus flattens a Bundle into a resource list and looks for a Questionnaire to decide that an SHL
 // is a form invitation rather than a records import.
 const flattened = (detectionBundle.entry ?? []).map((entry) => entry.resource!);
-check('detection/bundleFlattensToResources', flattened.length === 2, `${flattened.length} resources`);
-check('detection/questionnairePresent', flattened.some((r) => r.resourceType === 'Questionnaire'));
 check(
-  'detection/taskFoundByStatus',
-  flattened.some((r) => r.resourceType === 'Task' && (r as Task).status === 'requested')
+  "detection/bundleFlattensToResources",
+  flattened.length === 2,
+  `${flattened.length} resources`,
+);
+check(
+  "detection/questionnairePresent",
+  flattened.some((r) => r.resourceType === "Questionnaire"),
+);
+check(
+  "detection/taskFoundByStatus",
+  flattened.some(
+    (r) => r.resourceType === "Task" && (r as Task).status === "requested",
+  ),
 );
 
 // A Questionnaire with no canonical cannot be named by reference at all; it must still produce a
 // readable request rather than throwing.
 const { task: urnTask } = buildRequestBundle({
-  resourceType: 'Questionnaire',
-  id: 'no-canonical',
-  status: 'active',
-  item: [{ linkId: 'q1', type: 'string' }]
+  resourceType: "Questionnaire",
+  id: "no-canonical",
+  status: "active",
+  item: [{ linkId: "q1", type: "string" }],
 });
-check('detection/noCanonicalStillBuilds', urnTask.focus?.reference?.startsWith('urn:uuid:') === true);
-check('detection/noCanonicalHasNoFocusType', urnTask.focus?.type === undefined, 'a type here would short-circuit the input lookup');
+check(
+  "detection/noCanonicalStillBuilds",
+  urnTask.focus?.reference?.startsWith("urn:uuid:") === true,
+);
+check(
+  "detection/noCanonicalHasNoFocusType",
+  urnTask.focus?.type === undefined,
+  "a type here would short-circuit the input lookup",
+);
 
 /*
  * The negative case, without which the positive ones above prove nothing: a `focus.type` of
@@ -1012,134 +1369,207 @@ check('detection/noCanonicalHasNoFocusType', urnTask.focus?.type === undefined, 
  * it sees why, rather than discovering it from a connectathon.
  */
 check(
-  'detection/urnUuidFocusWithTypeIsNotDetectable',
+  "detection/urnUuidFocusWithTypeIsNotDetectable",
   !taskTargetsQuestionnaire(
-    { ...detectionTask, focus: { reference: 'urn:uuid:0000', type: 'Questionnaire' } },
-    detectionQuestionnaire
+    {
+      ...detectionTask,
+      focus: { reference: "urn:uuid:0000", type: "Questionnaire" },
+    },
+    detectionQuestionnaire,
   ),
-  'setting focus.type without moving focus.reference to the canonical breaks detection'
+  "setting focus.type without moving focus.reference to the canonical breaks detection",
 );
 check(
-  'detection/urnUuidFocusWithoutTypeStillWorks',
+  "detection/urnUuidFocusWithoutTypeStillWorks",
   taskTargetsQuestionnaire(
-    { ...detectionTask, focus: { reference: 'urn:uuid:0000' } },
-    detectionQuestionnaire
+    { ...detectionTask, focus: { reference: "urn:uuid:0000" } },
+    detectionQuestionnaire,
   ),
-  'the input canonical is the fallback that saved the previous shape'
+  "the input canonical is the fallback that saved the previous shape",
 );
 
 // ---------------------------------------------------------------------------
 // Reply bundle — the wire shape a third-party filler sends back.
 // ---------------------------------------------------------------------------
 
-console.log('\nreply bundle\n');
+console.log("\nreply bundle\n");
 
 const answered: QuestionnaireResponse = {
-  resourceType: 'QuestionnaireResponse',
-  id: 'local-vault-id',
-  status: 'completed',
-  questionnaire: 'http://example.org/Questionnaire/detection|1.2',
-  subject: { reference: 'Patient/vault-local-key' },
-  author: { reference: 'Patient/vault-local-key' },
-  meta: { versionId: '3', lastUpdated: '2020-01-01T00:00:00Z' },
-  item: [{ linkId: 'q1', answer: [{ valueString: 'an answer' }] }]
+  resourceType: "QuestionnaireResponse",
+  id: "local-vault-id",
+  status: "completed",
+  questionnaire: "http://example.org/Questionnaire/detection|1.2",
+  subject: { reference: "Patient/vault-local-key" },
+  author: { reference: "Patient/vault-local-key" },
+  meta: { versionId: "3", lastUpdated: "2020-01-01T00:00:00Z" },
+  item: [{ linkId: "q1", answer: [{ valueString: "an answer" }] }],
 };
 
-const { bundle: replyBundle, provenance: replyProvenance } = buildReplyBundle(answered, {
-  requestTask: detectionTask
-});
+const { bundle: replyBundle, provenance: replyProvenance } = buildReplyBundle(
+  answered,
+  {
+    requestTask: detectionTask,
+  },
+);
 const replyPayload = parseResponseBundle(replyBundle);
 
-check('replyBundle/hasResponse', replyPayload.response.resourceType === 'QuestionnaireResponse');
-check('replyBundle/localIdStripped', replyPayload.response.id === undefined, 'a foreign id could collide on the requester server');
 check(
-  'replyBundle/patientAsserted',
-  (replyPayload.response.meta?.security ?? []).some((coding) => coding.code === 'PATAST'),
-  'without this, patient-entered answers read as clinician-recorded'
+  "replyBundle/hasResponse",
+  replyPayload.response.resourceType === "QuestionnaireResponse",
 );
-check('replyBundle/hasProvenance', replyPayload.provenance !== undefined);
-check('replyBundle/provenanceTargetsResponse', replyProvenance?.target?.[0]?.reference === replyBundle.entry?.[0]?.fullUrl);
-check('replyBundle/provenanceNamesPatient', replyProvenance?.agent?.[0]?.who?.reference === 'Patient/vault-local-key');
-check('replyBundle/taskCompleted', replyPayload.task?.status === 'completed', replyPayload.task?.status);
-check('replyBundle/correlationSurvives', taskCorrelationId(replyPayload.task) === taskCorrelationId(detectionTask));
 check(
-  'replyBundle/descriptorNotEchoedBack',
+  "replyBundle/localIdStripped",
+  replyPayload.response.id === undefined,
+  "a foreign id could collide on the requester server",
+);
+check(
+  "replyBundle/patientAsserted",
+  (replyPayload.response.meta?.security ?? []).some(
+    (coding) => coding.code === "PATAST",
+  ),
+  "without this, patient-entered answers read as clinician-recorded",
+);
+check("replyBundle/hasProvenance", replyPayload.provenance !== undefined);
+check(
+  "replyBundle/provenanceTargetsResponse",
+  replyProvenance?.target?.[0]?.reference === replyBundle.entry?.[0]?.fullUrl,
+);
+check(
+  "replyBundle/provenanceNamesPatient",
+  replyProvenance?.agent?.[0]?.who?.reference === "Patient/vault-local-key",
+);
+check(
+  "replyBundle/taskCompleted",
+  replyPayload.task?.status === "completed",
+  replyPayload.task?.status,
+);
+check(
+  "replyBundle/correlationSurvives",
+  taskCorrelationId(replyPayload.task) === taskCorrelationId(detectionTask),
+);
+check(
+  "replyBundle/descriptorNotEchoedBack",
   parseReplyDescriptor(replyPayload.task) === undefined &&
     !JSON.stringify(replyBundle).includes(descriptor.replyUrl),
-  'returning the slot URL and its token would copy a write capability into the response'
+  "returning the slot URL and its token would copy a write capability into the response",
 );
-check('replyBundle/noDanglingFocus', replyPayload.task?.focus === undefined);
+check("replyBundle/noDanglingFocus", replyPayload.task?.focus === undefined);
 
 // ---------------------------------------------------------------------------
 // Attribution must survive the write. `asNewResource` is not exported, so this exercises the
 // observable behaviour: what `submitResponse` sends to the server.
 // ---------------------------------------------------------------------------
 
-console.log('\nattribution on write\n');
+console.log("\nattribution on write\n");
 
 const posted: { url: string; body: Record<string, unknown> }[] = [];
-globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  if (init?.method === 'POST') {
+globalThis.fetch = (async (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => {
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+  if (init?.method === "POST") {
     posted.push({ url, body: JSON.parse(String(init.body)) });
-    return new Response(JSON.stringify({ resourceType: url.split('/').pop(), id: `created-${posted.length}` }), {
-      status: 201,
-      headers: { 'Content-Type': 'application/fhir+json' }
-    });
+    return Response.json(
+      {
+        resourceType: url.split("/").pop(),
+        id: `created-${posted.length}`,
+      },
+      {
+        status: 201,
+        headers: { "Content-Type": "application/fhir+json" },
+      },
+    );
   }
   // The subject probe: pretend the patient does not exist, as a real destination server would.
-  return new Response('{}', { status: 404 });
+  return new Response("{}", { status: 404 });
 }) as typeof fetch;
 
 const submitted = await submitResponse({
   response: replyPayload.response,
   task: replyPayload.task,
   provenance: replyPayload.provenance,
-  responseServerUrl: 'https://ehr.test/fhir'
+  responseServerUrl: "https://ehr.test/fhir",
 });
 
-const postedResponse = posted.find((entry) => entry.url.endsWith('/QuestionnaireResponse'))?.body as
-  | QuestionnaireResponse
-  | undefined;
-const postedProvenance = posted.find((entry) => entry.url.endsWith('/Provenance'))?.body as
-  | Provenance
-  | undefined;
+const postedResponse = posted.find((entry) =>
+  entry.url.endsWith("/QuestionnaireResponse"),
+)?.body as QuestionnaireResponse | undefined;
+const postedProvenance = posted.find((entry) =>
+  entry.url.endsWith("/Provenance"),
+)?.body as Provenance | undefined;
 
-check('write/responseCreated', submitted[0]?.responseId !== undefined, submitted[0]?.error);
 check(
-  'write/securityLabelPreserved',
-  (postedResponse?.meta?.security ?? []).some((coding) => coding.code === 'PATAST'),
-  'stripping meta wholesale would silently drop the patient-asserted label'
+  "write/responseCreated",
+  submitted[0]?.responseId !== undefined,
+  submitted[0]?.error,
 );
-check('write/versionIdStripped', postedResponse?.meta?.versionId === undefined);
-check('write/lastUpdatedStripped', postedResponse?.meta?.lastUpdated === undefined);
-check('write/idStripped', postedResponse?.id === undefined);
-check('write/provenanceCreated', submitted[0]?.provenanceId !== undefined);
 check(
-  'write/provenanceRetargetedToRealId',
-  postedProvenance?.target?.[0]?.reference === `QuestionnaireResponse/${submitted[0]?.responseId}`,
-  postedProvenance?.target?.[0]?.reference
+  "write/securityLabelPreserved",
+  (postedResponse?.meta?.security ?? []).some(
+    (coding) => coding.code === "PATAST",
+  ),
+  "stripping meta wholesale would silently drop the patient-asserted label",
 );
-check('write/subjectProbeDetectsMissingPatient', (await referenceResolves('https://ehr.test/fhir', 'Patient/vault-local-key')) === false);
+check("write/versionIdStripped", postedResponse?.meta?.versionId === undefined);
 check(
-  'write/subjectProbeToleratesAbsoluteRefs',
-  (await referenceResolves('https://ehr.test/fhir', 'https://elsewhere.test/Patient/1')) === true,
-  'an absolute reference is not ours to resolve'
+  "write/lastUpdatedStripped",
+  postedResponse?.meta?.lastUpdated === undefined,
+);
+check("write/idStripped", postedResponse?.id === undefined);
+check("write/provenanceCreated", submitted[0]?.provenanceId !== undefined);
+check(
+  "write/provenanceRetargetedToRealId",
+  postedProvenance?.target?.[0]?.reference ===
+    `QuestionnaireResponse/${submitted[0]?.responseId}`,
+  postedProvenance?.target?.[0]?.reference,
+);
+check(
+  "write/subjectProbeDetectsMissingPatient",
+  (await referenceResolves(
+    "https://ehr.test/fhir",
+    "Patient/vault-local-key",
+  )) === false,
+);
+check(
+  "write/subjectProbeToleratesAbsoluteRefs",
+  (await referenceResolves(
+    "https://ehr.test/fhir",
+    "https://elsewhere.test/Patient/1",
+  )) === true,
+  "an absolute reference is not ours to resolve",
 );
 
 // The endpoint declaration channel B relies on.
-const declared = declareResponseEndpoint(detectionQuestionnaire, 'https://ehr.test/fhir');
-check('write/endpointDeclared', declaredEndpoints(declared).includes('https://ehr.test/fhir'));
-check('write/endpointDeclarationIsIdempotent', declaredEndpoints(declareResponseEndpoint(declared, 'https://ehr.test/fhir')).length === 1);
-check(
-  'write/catalogueQuestionnaireUntouched',
-  declaredEndpoints(detectionQuestionnaire).length === 0,
-  'the forms server copy must never be mutated'
+const declared = declareResponseEndpoint(
+  detectionQuestionnaire,
+  "https://ehr.test/fhir",
 );
 check(
-  'write/declaredEndpointOutranksConfig',
-  resolveDestinations({ questionnaire: declared, responseServerUrl: 'https://other.test/fhir' }).join() ===
-    'https://ehr.test/fhir'
+  "write/endpointDeclared",
+  declaredEndpoints(declared).includes("https://ehr.test/fhir"),
+);
+check(
+  "write/endpointDeclarationIsIdempotent",
+  declaredEndpoints(declareResponseEndpoint(declared, "https://ehr.test/fhir"))
+    .length === 1,
+);
+check(
+  "write/catalogueQuestionnaireUntouched",
+  declaredEndpoints(detectionQuestionnaire).length === 0,
+  "the forms server copy must never be mutated",
+);
+check(
+  "write/declaredEndpointOutranksConfig",
+  resolveDestinations({
+    questionnaire: declared,
+    responseServerUrl: "https://other.test/fhir",
+  }).join(",") === "https://ehr.test/fhir",
 );
 
 globalThis.fetch = realFetch;
@@ -1151,7 +1581,7 @@ globalThis.fetch = realFetch;
 // than a preference, so it is asserted rather than assumed.
 // ---------------------------------------------------------------------------
 
-console.log('\npublished request task\n');
+console.log("\npublished request task\n");
 
 const published = asPublishedTask(detectionTask);
 
@@ -1167,113 +1597,151 @@ const published = asPublishedTask(detectionTask);
  * and stores fine. Reinstating `focus` here makes every request creation fail with a 400.
  */
 check(
-  'published/focusDropped',
+  "published/focusDropped",
   published.focus === undefined,
-  'a canonical in Task.focus is rejected by FHIR servers (HAPI-0506)'
+  "a canonical in Task.focus is rejected by FHIR servers (HAPI-0506)",
 );
 check(
-  'published/canonicalStillRecorded',
-  published.input?.[0]?.valueCanonical === 'http://example.org/Questionnaire/detection|1.2',
-  'input[].valueCanonical is a canonical, not a Reference, so it stores'
+  "published/canonicalStillRecorded",
+  published.input?.[0]?.valueCanonical ===
+    "http://example.org/Questionnaire/detection|1.2",
+  "input[].valueCanonical is a canonical, not a Reference, so it stores",
 );
 check(
-  'published/noExtensions',
+  "published/noExtensions",
   published.extension === undefined,
-  'the reply descriptor and any write token must not reach a readable server'
+  "the reply descriptor and any write token must not reach a readable server",
 );
 check(
-  'published/carriesNoReplyUrl',
+  "published/carriesNoReplyUrl",
   !JSON.stringify(published).includes(descriptor.replyUrl) &&
     !JSON.stringify(published).includes(replyKeys.publicJwk.x),
-  'a published Task must reveal neither the slot nor the key'
+  "a published Task must reveal neither the slot nor the key",
 );
 check(
-  'published/tagged',
+  "published/tagged",
   (published.meta?.tag ?? []).some(
-    (tag) => tag.system === SHL_REQUEST_TAG.system && tag.code === SHL_REQUEST_TAG.code
+    (tag) =>
+      tag.system === SHL_REQUEST_TAG.system &&
+      tag.code === SHL_REQUEST_TAG.code,
   ),
-  'the tag is how sent requests are searched back out'
+  "the tag is how sent requests are searched back out",
 );
 check(
-  'published/correlationPreserved',
+  "published/correlationPreserved",
   taskCorrelationId(published) === taskCorrelationId(detectionTask),
-  'the identifier is the only join between a listed Task and the locally-held reply key'
+  "the identifier is the only join between a listed Task and the locally-held reply key",
 );
-check('published/addresseeKept', published.for?.display === 'Jane Citizen');
-check('published/senderKept', published.requester?.display === 'Parkview Medical Centre');
+check("published/addresseeKept", published.for?.display === "Jane Citizen");
+check(
+  "published/senderKept",
+  published.requester?.display === "Parkview Medical Centre",
+);
 
 // The invitation copy must be unaffected by any of that.
 check(
-  'published/invitationCopyKeepsCanonicalFocus',
-  detectionTask.focus?.reference === 'http://example.org/Questionnaire/detection|1.2',
-  'stripping focus for the server must not strip it from the invitation'
+  "published/invitationCopyKeepsCanonicalFocus",
+  detectionTask.focus?.reference ===
+    "http://example.org/Questionnaire/detection|1.2",
+  "stripping focus for the server must not strip it from the invitation",
 );
-check('published/invitationCopyKeepsDescriptor', parseReplyDescriptor(detectionTask) !== undefined);
+check(
+  "published/invitationCopyKeepsDescriptor",
+  parseReplyDescriptor(detectionTask) !== undefined,
+);
 
 // ---------------------------------------------------------------------------
 // Joining the two halves of "what have I sent?".
 // ---------------------------------------------------------------------------
 
-console.log('\nsent-request merge\n');
+console.log("\nsent-request merge\n");
 
 const localRecord = {
   id: taskCorrelationId(detectionTask)!,
-  label: 'Detection contract',
-  createdAt: '2026-08-04T02:00:00.000Z',
-  link: 'https://links.example.org/view#shlink:/abc',
-  reply: { url: descriptor.replyUrl, privateJwk: replyKeys.privateJwk }
+  label: "Detection contract",
+  createdAt: "2026-08-04T02:00:00.000Z",
+  link: "https://links.example.org/view#shlink:/abc",
+  reply: { url: descriptor.replyUrl, privateJwk: replyKeys.privateJwk },
 };
 
 const foreignTask: Task = {
-  resourceType: 'Task',
-  id: 'server-99',
-  status: 'requested',
-  intent: 'order',
-  identifier: [{ system: 'urn:ietf:rfc:3986', value: 'urn:uuid:sent-elsewhere' }],
-  authoredOn: '2026-08-03T02:00:00.000Z',
+  resourceType: "Task",
+  id: "server-99",
+  status: "requested",
+  intent: "order",
+  identifier: [
+    { system: "urn:ietf:rfc:3986", value: "urn:uuid:sent-elsewhere" },
+  ],
+  authoredOn: "2026-08-03T02:00:00.000Z",
   description: 'Complete "Physical Therapy"',
-  requester: { display: 'Another Practice' },
-  for: { display: 'John Citizen' }
+  requester: { display: "Another Practice" },
+  for: { display: "John Citizen" },
 };
 
 const merged = mergeSentRequests([localRecord], [published, foreignTask]);
 
-check('merge/producesOneRowPerRequest', merged.length === 2, `${merged.length} rows`);
+check(
+  "merge/producesOneRowPerRequest",
+  merged.length === 2,
+  `${merged.length} rows`,
+);
 
 const trackedRow = merged.find((row) => row.id === localRecord.id);
-check('merge/joinsOnIdentifier', trackedRow?.origin === 'tracked', trackedRow?.origin);
-check('merge/trackedRowIsCollectable', trackedRow?.collectable === true);
-check('merge/trackedRowKeepsLocalKey', trackedRow?.local?.reply?.privateJwk.d === replyKeys.privateJwk.d);
-check('merge/trackedRowGainsServerTask', trackedRow?.serverTask !== undefined);
+check(
+  "merge/joinsOnIdentifier",
+  trackedRow?.origin === "tracked",
+  trackedRow?.origin,
+);
+check("merge/trackedRowIsCollectable", trackedRow?.collectable === true);
+check(
+  "merge/trackedRowKeepsLocalKey",
+  trackedRow?.local?.reply?.privateJwk.d === replyKeys.privateJwk.d,
+);
+check("merge/trackedRowGainsServerTask", trackedRow?.serverTask !== undefined);
 
-const foreignRow = merged.find((row) => row.id === 'urn:uuid:sent-elsewhere');
-check('merge/foreignRowIsServerOnly', foreignRow?.origin === 'server-only', foreignRow?.origin);
+const foreignRow = merged.find((row) => row.id === "urn:uuid:sent-elsewhere");
 check(
-  'merge/foreignRowNotCollectable',
+  "merge/foreignRowIsServerOnly",
+  foreignRow?.origin === "server-only",
+  foreignRow?.origin,
+);
+check(
+  "merge/foreignRowNotCollectable",
   foreignRow?.collectable === false,
-  'offering a Check button that cannot work would be worse than saying why'
+  "offering a Check button that cannot work would be worse than saying why",
 );
 check(
-  'merge/foreignRowExplainsWhy',
-  whyNotCollectable(foreignRow!)?.includes('another browser') === true,
-  whyNotCollectable(foreignRow!)
+  "merge/foreignRowExplainsWhy",
+  whyNotCollectable(foreignRow!)?.includes("another browser") === true,
+  whyNotCollectable(foreignRow!),
 );
 check(
-  'merge/labelRecoveredFromDescription',
-  foreignRow?.label === 'Physical Therapy',
-  `showing the raw description would read as a form named 'Complete "…"' — got ${foreignRow?.label}`
+  "merge/labelRecoveredFromDescription",
+  foreignRow?.label === "Physical Therapy",
+  `showing the raw description would read as a form named 'Complete "…"' — got ${foreignRow?.label}`,
 );
-check('merge/newestFirst', merged[0]?.id === localRecord.id, 'sorted by createdAt descending');
+check(
+  "merge/newestFirst",
+  merged[0]?.id === localRecord.id,
+  "sorted by createdAt descending",
+);
 
 // An unpublished local record must still appear, flagged as invisible elsewhere.
 const localOnly = mergeSentRequests([localRecord], []);
-check('merge/localOnlyRowKept', localOnly[0]?.origin === 'local-only', localOnly[0]?.origin);
-check('merge/localOnlyStillCollectable', localOnly[0]?.collectable === true);
+check(
+  "merge/localOnlyRowKept",
+  localOnly[0]?.origin === "local-only",
+  localOnly[0]?.origin,
+);
+check("merge/localOnlyStillCollectable", localOnly[0]?.collectable === true);
 
 // A Task with no identifier cannot be joined to anything, and is dropped rather than shown as a
 // mystery row that no action applies to.
-const unidentified = mergeSentRequests([], [{ ...foreignTask, identifier: undefined }]);
-check('merge/dropsUnidentifiableTasks', unidentified.length === 0);
+const unidentified = mergeSentRequests(
+  [],
+  [{ ...foreignTask, identifier: undefined }],
+);
+check("merge/dropsUnidentifiableTasks", unidentified.length === 0);
 
 /*
  * Publishing a Task and offering channel B are different things, and the stored record has to keep them
@@ -1282,23 +1750,29 @@ check('merge/dropsUnidentifiableTasks', unidentified.length === 0);
  * arrive unreviewed on requests where they could not.
  */
 const trackedOnly = mergeSentRequests(
-  [{ ...localRecord, serverTaskUrl: 'https://ehr.test/fhir/Task/1', serverReturnOffered: false }],
-  []
+  [
+    {
+      ...localRecord,
+      serverTaskUrl: "https://ehr.test/fhir/Task/1",
+      serverReturnOffered: false,
+    },
+  ],
+  [],
 );
 check(
-  'merge/publishedIsNotDirectWrite',
+  "merge/publishedIsNotDirectWrite",
   trackedOnly[0]?.local?.serverTaskUrl !== undefined &&
     trackedOnly[0]?.local?.serverReturnOffered === false,
-  'a published Task is for tracking; only serverReturnOffered means answers can bypass review'
+  "a published Task is for tracking; only serverReturnOffered means answers can bypass review",
 );
 
 // Expiry removes collectability without removing the row.
 const expiredLocal = mergeSentRequests([{ ...localRecord, expiresAt: 1 }], []);
-check('merge/expiredIsNotCollectable', expiredLocal[0]?.collectable === false);
+check("merge/expiredIsNotCollectable", expiredLocal[0]?.collectable === false);
 check(
-  'merge/expiredExplainsWhy',
-  whyNotCollectable(expiredLocal[0])?.includes('expired') === true,
-  whyNotCollectable(expiredLocal[0])
+  "merge/expiredExplainsWhy",
+  whyNotCollectable(expiredLocal[0])?.includes("expired") === true,
+  whyNotCollectable(expiredLocal[0]),
 );
 
 // ---------------------------------------------------------------------------
@@ -1308,69 +1782,79 @@ check(
 // request was answered from *where* the reply arrived. `Task.identifier` becomes the only thing
 // carrying that, so it has to survive the round trip and the join has to be exact.
 
-console.log('\nresponse correlation\n');
+console.log("\nresponse correlation\n");
 
 const correlationRequest = buildRequestBundle(
   {
-    resourceType: 'Questionnaire',
-    status: 'active',
-    url: 'http://example.org/Questionnaire/correlate',
-    title: 'Correlation'
+    resourceType: "Questionnaire",
+    status: "active",
+    url: "http://example.org/Questionnaire/correlate",
+    title: "Correlation",
   },
-  { requestId: 'urn:uuid:correlate-me', subjectDisplay: 'Jane Citizen' }
+  { requestId: "urn:uuid:correlate-me", subjectDisplay: "Jane Citizen" },
 );
 
 const correlationLocal: OutstandingRequest = {
   id: taskCorrelationId(correlationRequest.task)!,
-  label: 'Correlation',
-  questionnaireCanonical: 'http://example.org/Questionnaire/correlate',
-  createdAt: '2026-08-04T02:00:00.000Z',
-  link: 'https://links.example.org/view#shlink:/abc'
+  label: "Correlation",
+  questionnaireCanonical: "http://example.org/Questionnaire/correlate",
+  createdAt: "2026-08-04T02:00:00.000Z",
+  link: "https://links.example.org/view#shlink:/abc",
 };
 
 // The filler answers, echoing the Task back the way `buildReplyBundle` does.
 const correlationReply = buildReplyBundle(
   {
-    resourceType: 'QuestionnaireResponse',
-    status: 'completed',
-    questionnaire: 'http://example.org/Questionnaire/correlate',
-    item: [{ linkId: 'q1', answer: [{ valueBoolean: true }] }]
+    resourceType: "QuestionnaireResponse",
+    status: "completed",
+    questionnaire: "http://example.org/Questionnaire/correlate",
+    item: [{ linkId: "q1", answer: [{ valueBoolean: true }] }],
   },
-  { requestTask: correlationRequest.task }
+  { requestTask: correlationRequest.task },
 );
 
 const correlationBack = parseResponseBundle(correlationReply.bundle);
 check(
-  'correlate/joinsOnTaskIdentifier',
-  findRequestForTask([correlationLocal], correlationBack.task)?.id === correlationLocal.id,
-  'the identifier is the only correlation key that survives a round trip through a third-party app'
+  "correlate/joinsOnTaskIdentifier",
+  findRequestForTask([correlationLocal], correlationBack.task)?.id ===
+    correlationLocal.id,
+  "the identifier is the only correlation key that survives a round trip through a third-party app",
 );
-check('correlate/noTaskNoMatch', findRequestForTask([correlationLocal], undefined) === undefined);
 check(
-  'correlate/unknownIdNoMatch',
-  findRequestForTask([{ ...correlationLocal, id: 'urn:uuid:something-else' }], correlationBack.task) ===
-    undefined,
-  'a link from a request this browser never sent is reviewable, not matchable'
+  "correlate/noTaskNoMatch",
+  findRequestForTask([correlationLocal]) === undefined,
+);
+check(
+  "correlate/unknownIdNoMatch",
+  findRequestForTask(
+    [{ ...correlationLocal, id: "urn:uuid:something-else" }],
+    correlationBack.task,
+  ) === undefined,
+  "a link from a request this browser never sent is reviewable, not matchable",
 );
 
 check(
-  'correlate/responseCanonicalWins',
-  responseCanonical(correlationBack.response, 'http://example.org/Questionnaire/other') ===
-    'http://example.org/Questionnaire/correlate'
+  "correlate/responseCanonicalWins",
+  responseCanonical(
+    correlationBack.response,
+    "http://example.org/Questionnaire/other",
+  ) === "http://example.org/Questionnaire/correlate",
 );
 check(
-  'correlate/canonicalFallsBackToStored',
+  "correlate/canonicalFallsBackToStored",
   responseCanonical(
     { ...correlationBack.response, questionnaire: undefined },
-    correlationLocal.questionnaireCanonical
+    correlationLocal.questionnaireCanonical,
   ) === correlationLocal.questionnaireCanonical,
-  'a filler that dropped the canonical still answered a form whose identity we recorded'
+  "a filler that dropped the canonical still answered a form whose identity we recorded",
 );
 check(
-  'correlate/canonicalUndefinedWhenNeitherKnows',
-  responseCanonical({ ...correlationBack.response, questionnaire: undefined }, undefined) ===
-    undefined,
-  'not fatal — answers can still be read as a raw table'
+  "correlate/canonicalUndefinedWhenNeitherKnows",
+  responseCanonical({
+    ...correlationBack.response,
+    questionnaire: undefined,
+  }) === undefined,
+  "not fatal — answers can still be read as a raw table",
 );
 
 // ---------------------------------------------------------------------------
@@ -1379,119 +1863,144 @@ check(
 // Off by default because the primary return path is a link the filler mints. These assert that
 // "off" means the invitation carries nothing at all, not that it carries an unused field.
 
-console.log('\nencrypted reply deferred\n');
+console.log("\nencrypted reply deferred\n");
 
-check('deferred/flagDefaultsOff', FALLBACK_CONFIG.enableEncryptedReply === false);
 check(
-  'deferred/needsBlobServer',
-  canUseEncryptedReply({ ...FALLBACK_CONFIG, enableEncryptedReply: true }) === false,
-  'the fallback names no blob server, so the flag alone can never mint a slot'
+  "deferred/flagDefaultsOff",
+  FALLBACK_CONFIG.enableEncryptedReply === false,
 );
 check(
-  'deferred/enabledWithBlobServer',
+  "deferred/needsBlobServer",
+  canUseEncryptedReply({ ...FALLBACK_CONFIG, enableEncryptedReply: true }) ===
+    false,
+  "the fallback names no blob server, so the flag alone can never mint a slot",
+);
+check(
+  "deferred/enabledWithBlobServer",
   canUseEncryptedReply({
     ...FALLBACK_CONFIG,
     enableEncryptedReply: true,
-    blobServerUrl: 'https://blobs.test/fhir'
+    blobServerUrl: "https://blobs.test/fhir",
   }) === true,
-  'the deferral must be reversible by config alone'
+  "the deferral must be reversible by config alone",
 );
 
 const noChannelRequest = buildRequestBundle(
-  { resourceType: 'Questionnaire', status: 'active', url: 'http://example.org/Questionnaire/plain' },
-  { requestId: 'urn:uuid:no-channel', subjectDisplay: 'Jane Citizen' }
+  {
+    resourceType: "Questionnaire",
+    status: "active",
+    url: "http://example.org/Questionnaire/plain",
+  },
+  { requestId: "urn:uuid:no-channel", subjectDisplay: "Jane Citizen" },
 );
 
 check(
-  'deferred/requestCarriesNoDescriptor',
-  parseReplyDescriptor(noChannelRequest.task) === undefined
-);
-check('deferred/requestTaskHasNoExtensions', noChannelRequest.task.extension === undefined);
-check(
-  'deferred/bundleLeaksNoReplyUrl',
-  !JSON.stringify(noChannelRequest.bundle).includes('shl-reply-descriptor') &&
-    !JSON.stringify(noChannelRequest.bundle).includes('replyUrl'),
-  'with the channel off the invitation is just the form'
+  "deferred/requestCarriesNoDescriptor",
+  parseReplyDescriptor(noChannelRequest.task) === undefined,
 );
 check(
-  'deferred/shippedConfigIsBoolean',
-  typeof (shippedConfig as Record<string, unknown>).enableEncryptedReply === 'boolean',
-  String((shippedConfig as Record<string, unknown>).enableEncryptedReply)
+  "deferred/requestTaskHasNoExtensions",
+  noChannelRequest.task.extension === undefined,
+);
+check(
+  "deferred/bundleLeaksNoReplyUrl",
+  !JSON.stringify(noChannelRequest.bundle).includes("shl-reply-descriptor") &&
+    !JSON.stringify(noChannelRequest.bundle).includes("replyUrl"),
+  "with the channel off the invitation is just the form",
+);
+check(
+  "deferred/shippedConfigIsBoolean",
+  typeof (shippedConfig as Record<string, unknown>).enableEncryptedReply ===
+    "boolean",
+  String((shippedConfig as Record<string, unknown>).enableEncryptedReply),
 );
 
 // ---------------------------------------------------------------------------
 // `sfhl:/` is decode-only: links in the wild keep opening, nothing new is minted.
 
-console.log('\ndecode-only codec\n');
+console.log("\ndecode-only codec\n");
 
-check('bespoke/markedDecodeOnly', bespokeCodec.decodeOnly === true);
-check('shl/notDecodeOnly', shlCodec.decodeOnly !== true);
+check("bespoke/markedDecodeOnly", bespokeCodec.decodeOnly === true);
+check("shl/notDecodeOnly", shlCodec.decodeOnly !== true);
 
-let bespokeEncodingRefused = '';
+let bespokeEncodingRefused = "";
 try {
-  encodingCodec({ ...FALLBACK_CONFIG, linkCodec: 'bespoke' } as AppConfig, [bespokeCodec, shlCodec]);
+  encodingCodec({ ...FALLBACK_CONFIG, linkCodec: "bespoke" } as AppConfig, [
+    bespokeCodec,
+    shlCodec,
+  ]);
 } catch (error) {
-  bespokeEncodingRefused = error instanceof Error ? error.message : '';
+  bespokeEncodingRefused = error instanceof Error ? error.message : "";
 }
 check(
-  'bespoke/notSelectableForEncoding',
-  bespokeEncodingRefused.includes('decode-only') && bespokeEncodingRefused.includes('linkCodec'),
-  bespokeEncodingRefused
+  "bespoke/notSelectableForEncoding",
+  bespokeEncodingRefused.includes("decode-only") &&
+    bespokeEncodingRefused.includes("linkCodec"),
+  bespokeEncodingRefused,
 );
 check(
-  'shl/stillSelectableForEncoding',
-  encodingCodec(FALLBACK_CONFIG, [bespokeCodec, shlCodec]).id === 'shl'
+  "shl/stillSelectableForEncoding",
+  encodingCodec(FALLBACK_CONFIG, [bespokeCodec, shlCodec]).id === "shl",
 );
 check(
-  'bespoke/staleConfigStillValidates',
-  isAppConfig({ ...(shippedConfig as object), linkCodec: 'bespoke' }),
-  'a config naming a retired codec is stale, not malformed — rejecting it would discard its servers'
+  "bespoke/staleConfigStillValidates",
+  isAppConfig({ ...(shippedConfig as object), linkCodec: "bespoke" }),
+  "a config naming a retired codec is stale, not malformed — rejecting it would discard its servers",
 );
 
 // ---------------------------------------------------------------------------
 // The raw-answers fallback, now that it is pure enough to assert offline.
 
-console.log('\nraw answers fallback\n');
+console.log("\nraw answers fallback\n");
 
 const rawRows = flattenAnswers({
-  resourceType: 'QuestionnaireResponse',
-  status: 'completed',
+  resourceType: "QuestionnaireResponse",
+  status: "completed",
   item: [
     {
-      linkId: 'group',
-      text: 'Symptoms',
+      linkId: "group",
+      text: "Symptoms",
       item: [
-        { linkId: 'pain', text: 'Pain?', answer: [{ valueBoolean: true }] },
+        { linkId: "pain", text: "Pain?", answer: [{ valueBoolean: true }] },
         {
-          linkId: 'site',
-          text: 'Where?',
+          linkId: "site",
+          text: "Where?",
           answer: [
             {
-              valueCoding: { code: '123', display: 'Lower back' },
-              item: [{ linkId: 'since', text: 'Since?', answer: [{ valueString: 'March' }] }]
-            }
-          ]
-        }
-      ]
-    }
-  ]
+              valueCoding: { code: "123", display: "Lower back" },
+              item: [
+                {
+                  linkId: "since",
+                  text: "Since?",
+                  answer: [{ valueString: "March" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
 });
 
-check('rawAnswers/walksNestedItems', rawRows.some((row) => row.linkId === 'pain'));
 check(
-  'rawAnswers/walksAnswerItems',
-  rawRows.some((row) => row.linkId === 'since' && row.value === 'March'),
-  'an answer can carry its own follow-up items'
+  "rawAnswers/walksNestedItems",
+  rawRows.some((row) => row.linkId === "pain"),
 );
 check(
-  'rawAnswers/prefersCodingDisplay',
-  rawRows.find((row) => row.linkId === 'site')?.value === 'Lower back',
-  'a coded answer rendered as [object Object] is useless to someone deciding whether to accept it'
+  "rawAnswers/walksAnswerItems",
+  rawRows.some((row) => row.linkId === "since" && row.value === "March"),
+  "an answer can carry its own follow-up items",
 );
 check(
-  'rawAnswers/nestedItemIsNotAValue',
-  rawRows.find((row) => row.linkId === 'site')?.value !== undefined &&
-    !JSON.stringify(rawRows).includes('"value":"[object Object]"')
+  "rawAnswers/prefersCodingDisplay",
+  rawRows.find((row) => row.linkId === "site")?.value === "Lower back",
+  "a coded answer rendered as [object Object] is useless to someone deciding whether to accept it",
+);
+check(
+  "rawAnswers/nestedItemIsNotAValue",
+  rawRows.find((row) => row.linkId === "site")?.value !== undefined &&
+    !JSON.stringify(rawRows).includes('"value":"[object Object]"'),
 );
 
 /*
@@ -1501,42 +2010,48 @@ check(
  * the only rendering available when the Questionnaire cannot be resolved.
  */
 const backboneRows = flattenAnswers({
-  resourceType: 'QuestionnaireResponse',
-  status: 'completed',
+  resourceType: "QuestionnaireResponse",
+  status: "completed",
   item: [
-    { linkId: 'lead-id', answer: [{ id: 'a1', valueBoolean: true }] },
+    { linkId: "lead-id", answer: [{ id: "a1", valueBoolean: true }] },
     {
-      linkId: 'lead-ext',
-      answer: [{ extension: [{ url: 'http://x', valueInteger: 3 }], valueInteger: 7 }]
+      linkId: "lead-ext",
+      answer: [
+        { extension: [{ url: "http://x", valueInteger: 3 }], valueInteger: 7 },
+      ],
     },
-    { linkId: 'trailing-id', answer: [{ valueString: 'yes', id: 'z' }] }
-  ]
+    { linkId: "trailing-id", answer: [{ valueString: "yes", id: "z" }] },
+  ],
 });
 
 check(
-  'rawAnswers/ignoresAnswerId',
-  backboneRows.find((row) => row.linkId === 'lead-id')?.value === 'true',
-  backboneRows.find((row) => row.linkId === 'lead-id')?.value
+  "rawAnswers/ignoresAnswerId",
+  backboneRows.find((row) => row.linkId === "lead-id")?.value === "true",
+  backboneRows.find((row) => row.linkId === "lead-id")?.value,
 );
 check(
-  'rawAnswers/ignoresAnswerExtension',
-  backboneRows.find((row) => row.linkId === 'lead-ext')?.value === '7',
-  backboneRows.find((row) => row.linkId === 'lead-ext')?.value
+  "rawAnswers/ignoresAnswerExtension",
+  backboneRows.find((row) => row.linkId === "lead-ext")?.value === "7",
+  backboneRows.find((row) => row.linkId === "lead-ext")?.value,
 );
 check(
-  'rawAnswers/keyOrderDoesNotMatter',
-  backboneRows.find((row) => row.linkId === 'trailing-id')?.value === 'yes',
-  'a foreign app serialising id after value must render the same as one serialising it before'
+  "rawAnswers/keyOrderDoesNotMatter",
+  backboneRows.find((row) => row.linkId === "trailing-id")?.value === "yes",
+  "a foreign app serialising id after value must render the same as one serialising it before",
 );
-check('rawAnswers/indentsByDepth', rawRows.find((row) => row.linkId === 'pain')?.depth === 1);
 check(
-  'rawAnswers/emptyResponseYieldsNoRows',
-  flattenAnswers({ resourceType: 'QuestionnaireResponse', status: 'completed' }).length === 0
+  "rawAnswers/indentsByDepth",
+  rawRows.find((row) => row.linkId === "pain")?.depth === 1,
+);
+check(
+  "rawAnswers/emptyResponseYieldsNoRows",
+  flattenAnswers({ resourceType: "QuestionnaireResponse", status: "completed" })
+    .length === 0,
 );
 
 console.log(
   failures === 0
     ? `\nAll ${total} checks passed.`
-    : `\n${failures} of ${total} check(s) failed.`
+    : `\n${failures} of ${total} check(s) failed.`,
 );
 process.exit(failures === 0 ? 0 : 1);

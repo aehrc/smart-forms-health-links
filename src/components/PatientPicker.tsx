@@ -1,11 +1,17 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Check, Loader2, Search, User } from 'lucide-react';
-import type { Patient } from 'fhir/r4';
-import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
-import { useDebounced } from '@/lib/useDebounced';
-import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
+import { useQuery } from "@tanstack/react-query";
+import { Check, Loader2, Search, User } from "lucide-react";
+import { useState } from "react";
+
+import type { Patient } from "fhir/r4";
+
+import { Input } from "@/components/ui/input";
+import {
+  describePatient,
+  patientDisplay,
+  searchPatients,
+} from "@/fhir/ehrServer";
+import { useDebounced } from "@/lib/useDebounced";
+import { cn } from "@/lib/utils";
 
 /**
  * Search a FHIR server for a patient, inline.
@@ -51,12 +57,12 @@ export default function PatientPicker(props: PatientPickerProps) {
     onChoose,
     selectedReference,
     count = 10,
-    placeholder = 'Search patients by name…',
-    label = 'Search patients by name',
-    id
+    placeholder = "Search patients by name…",
+    label = "Search patients by name",
+    id,
   } = props;
 
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState("");
   const debouncedSearch = useDebounced(searchText, 300);
 
   /*
@@ -67,10 +73,11 @@ export default function PatientPicker(props: PatientPickerProps) {
     data: page,
     isPending,
     isFetching,
-    error
+    error,
   } = useQuery({
-    queryKey: ['ehr-patients', serverUrl, debouncedSearch, count],
-    queryFn: ({ signal }) => searchPatients(serverUrl, debouncedSearch, count, signal)
+    queryKey: ["ehr-patients", serverUrl, debouncedSearch, count],
+    queryFn: ({ signal }) =>
+      searchPatients(serverUrl, debouncedSearch, count, signal),
   });
 
   const patients = page?.resources ?? [];
@@ -101,7 +108,8 @@ export default function PatientPicker(props: PatientPickerProps) {
 
       {error ? (
         <p className="text-xs text-red-700">
-          Could not search {serverUrl} — {error instanceof Error ? error.message : String(error)}
+          Could not search {serverUrl} —{" "}
+          {error instanceof Error ? error.message : String(error)}
         </p>
       ) : null}
 
@@ -109,8 +117,8 @@ export default function PatientPicker(props: PatientPickerProps) {
 
       {!isPending && !error && patients.length === 0 ? (
         <p className="text-xs text-slate-500">
-          {debouncedSearch.trim() === ''
-            ? 'This server holds no patients.'
+          {debouncedSearch.trim() === ""
+            ? "This server holds no patients."
             : `Nothing matched “${debouncedSearch.trim()}”.`}
         </p>
       ) : null}
@@ -130,17 +138,26 @@ export default function PatientPicker(props: PatientPickerProps) {
                   onClick={() => onChoose({ reference, display, patient })}
                   aria-pressed={isSelected}
                   className={cn(
-                    'flex w-full items-start gap-2 px-3 py-2 text-left transition-colors',
-                    'focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:outline-none',
-                    isSelected ? 'bg-slate-100' : 'hover:bg-slate-50'
-                  )}>
+                    "flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
+                    "focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:outline-none",
+                    isSelected ? "bg-slate-100" : "hover:bg-slate-50",
+                  )}
+                >
                   {isSelected ? (
-                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-green-600" aria-hidden />
+                    <Check
+                      className="mt-0.5 h-4 w-4 shrink-0 text-green-600"
+                      aria-hidden
+                    />
                   ) : (
-                    <User className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                    <User
+                      className="mt-0.5 h-4 w-4 shrink-0 text-slate-400"
+                      aria-hidden
+                    />
                   )}
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium text-slate-900">{display}</span>
+                    <span className="block text-sm font-medium text-slate-900">
+                      {display}
+                    </span>
                     <span className="block truncate text-xs text-slate-500">
                       {reference}
                       {summary ? ` · ${summary}` : null}
@@ -155,7 +172,8 @@ export default function PatientPicker(props: PatientPickerProps) {
 
       {more ? (
         <p className="text-xs text-slate-500">
-          Showing {patients.length} of {page?.total} — narrow the search to see the rest.
+          Showing {patients.length} of {page?.total} — narrow the search to see
+          the rest.
         </p>
       ) : null}
     </div>

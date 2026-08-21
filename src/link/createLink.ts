@@ -1,22 +1,43 @@
-import type { Questionnaire, Task } from 'fhir/r4';
-import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
-import type { AppConfig } from '@/lib/config';
+import {
+  getResponse,
+  removeEmptyAnswersFromResponse,
+} from "@aehrc/smart-forms-renderer";
+
+import { encodeUtf8 } from "./binary";
+import {
+  defaultLabel,
+  encodingCodec,
+  ensureQuestionnaireCanonical,
+} from "./codec";
+import {
+  buildReplyBundle,
+  buildRequestBundle,
+  buildResponseBundle,
+} from "./exchange";
+import { LINK_CODECS } from "./registry";
+import {
+  encryptReplyJwe,
+  generateReplyKeyPair,
+  type ReplyPrivateJwk,
+} from "./replyCrypto";
+import {
+  isReplyDescriptorExpired,
+  type ReplyDescriptor,
+} from "./replyDescriptor";
+import { createReplySlot, putReply } from "./replySlot";
+
+import type { AppConfig } from "@/lib/config";
+import type { Questionnaire, Task } from "fhir/r4";
+
+import { fhirBinaryBlobStore, type BlobStore } from "@/fhir/blobStore";
+import { declareResponseEndpoint, publishRequestTask } from "@/fhir/submit";
 import {
   canTrackRequests,
   canUseEncryptedReply,
   canUseServerReturn,
   resolveExpiry,
-  resolveLinkBaseUrl
-} from '@/lib/config';
-import { fhirBinaryBlobStore, type BlobStore } from '@/fhir/blobStore';
-import { declareResponseEndpoint, publishRequestTask } from '@/fhir/submit';
-import { LINK_CODECS } from './registry';
-import { defaultLabel, encodingCodec, ensureQuestionnaireCanonical } from './codec';
-import { buildReplyBundle, buildRequestBundle, buildResponseBundle } from './exchange';
-import { encodeUtf8 } from './binary';
-import { encryptReplyJwe, generateReplyKeyPair, type ReplyPrivateJwk } from './replyCrypto';
-import { createReplySlot, putReply } from './replySlot';
-import { isReplyDescriptorExpired, type ReplyDescriptor } from './replyDescriptor';
+  resolveLinkBaseUrl,
+} from "@/lib/config";
 
 /**
  * Link creation — the boundary where the renderer's global form state and the app's config meet the
@@ -37,15 +58,16 @@ export function canCreateHealthLinks(config: AppConfig): boolean {
 export function resolveBlobStore(config: AppConfig): BlobStore {
   if (!config.blobServerUrl) {
     throw new Error(
-      'No `blobServerUrl` is configured, so there is nowhere to host the encrypted payload. ' +
-        'Set it in config.json — it deliberately does not default to the forms server, which is ' +
-        'a read-only catalogue.'
+      "No `blobServerUrl` is configured, so there is nowhere to host the encrypted payload. " +
+        "Set it in config.json — it deliberately does not default to the forms server, which is " +
+        "a read-only catalogue.",
     );
   }
 
   switch (config.blobStore) {
-    case 'fhir-binary':
+    case "fhir-binary": {
       return fhirBinaryBlobStore(config.blobServerUrl);
+    }
   }
 }
 
@@ -100,7 +122,7 @@ export interface CreatedRequest {
 export async function createRequestLink(
   questionnaire: Questionnaire,
   config: AppConfig,
-  options: CreateRequestOptions = {}
+  options: CreateRequestOptions = {},
 ): Promise<CreatedRequest> {
   const blobStore = resolveBlobStore(config);
   const expiresAt = options.expiresAt ?? resolveExpiry(config);
@@ -116,15 +138,17 @@ export async function createRequestLink(
    * so there is nothing to describe and no slot to mint. With it on, the reply key generated here is
    * the only copy — see `CreatedRequest.reply`.
    */
-  const keyPair = canUseEncryptedReply(config) ? await generateReplyKeyPair() : undefined;
+  const keyPair = canUseEncryptedReply(config)
+    ? await generateReplyKeyPair()
+    : undefined;
   const replyUrl = keyPair ? await createReplySlot(blobStore) : undefined;
   const replyDescriptor: ReplyDescriptor | undefined =
     keyPair && replyUrl
       ? {
           replyUrl,
-          replyMethod: 'PUT',
+          replyMethod: "PUT",
           publicJwk: keyPair.publicJwk,
-          ...(expiresAt !== undefined ? { expiresAt } : {})
+          ...(expiresAt === undefined ? {} : { expiresAt }),
         }
       : undefined;
 
@@ -143,10 +167,14 @@ export async function createRequestLink(
      * Fatal when channel B is on: the invitation is about to name this Task as somewhere the filler
      * may write, and naming one that does not exist would be worse than not offering the channel.
      */
-    serverTaskUrl = await publishRequestTask(config.responseServerUrl!, questionnaire, {
-      ...options,
-      requestId
-    });
+    serverTaskUrl = await publishRequestTask(
+      config.responseServerUrl!,
+      questionnaire,
+      {
+        ...options,
+        requestId,
+      },
+    );
   } else if (canTrackRequests(config)) {
     /*
      * Not fatal when publishing is only for tracking. The default return path — the filler mints a
@@ -156,17 +184,26 @@ export async function createRequestLink(
      * could reach the server.
      */
     try {
-      serverTaskUrl = await publishRequestTask(config.responseServerUrl!, questionnaire, {
-        ...options,
-        requestId
-      });
-    } catch (cause) {
-      console.warn('Could not publish the request Task for tracking; continuing without it.', cause);
+      serverTaskUrl = await publishRequestTask(
+        config.responseServerUrl!,
+        questionnaire,
+        {
+          ...options,
+          requestId,
+        },
+      );
+    } catch (error) {
+      console.warn(
+        "Could not publish the request Task for tracking; continuing without it.",
+        error,
+      );
     }
   }
 
   const { bundle, task } = buildRequestBundle(
-    serverReturn ? declareResponseEndpoint(questionnaire, config.responseServerUrl!) : questionnaire,
+    serverReturn
+      ? declareResponseEndpoint(questionnaire, config.responseServerUrl!)
+      : questionnaire,
     {
       requestId,
       subjectReference: options.subjectReference,
@@ -175,24 +212,26 @@ export async function createRequestLink(
       replyDescriptor,
       // Named in the invitation only when the filler is actually invited to write there. Tracking is
       // ours; there is no reason to tell a filler about a Task it must not touch.
-      serverTaskUrl: serverReturn ? serverTaskUrl : undefined
-    }
+      serverTaskUrl: serverReturn ? serverTaskUrl : undefined,
+    },
   );
 
   const codec = encodingCodec(config, LINK_CODECS);
 
   const link = await codec.encode(
     { bundle, label: defaultLabel(questionnaire) },
-    { baseUrl: resolveLinkBaseUrl(config), blobStore, expiresAt }
+    { baseUrl: resolveLinkBaseUrl(config), blobStore, expiresAt },
   );
 
   return {
     link,
     task,
-    ...(expiresAt !== undefined ? { expiresAt } : {}),
-    ...(keyPair && replyUrl ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } } : {}),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(keyPair && replyUrl
+      ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } }
+      : {}),
     ...(serverTaskUrl ? { serverTaskUrl } : {}),
-    serverReturnOffered: serverReturn
+    serverReturnOffered: serverReturn,
   };
 }
 
@@ -209,7 +248,7 @@ export async function createRequestLink(
 export async function createResponseLink(
   questionnaire: Questionnaire,
   config: AppConfig,
-  requestTask?: Task
+  requestTask?: Task,
 ): Promise<string> {
   const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
   const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
@@ -219,7 +258,10 @@ export async function createResponseLink(
 
   return codec.encode(
     { bundle, label: defaultLabel(questionnaire) },
-    { baseUrl: resolveLinkBaseUrl(config), blobStore: resolveBlobStore(config) }
+    {
+      baseUrl: resolveLinkBaseUrl(config),
+      blobStore: resolveBlobStore(config),
+    },
   );
 }
 
@@ -238,22 +280,30 @@ export async function createResponseLink(
 export async function sendEncryptedReply(
   questionnaire: Questionnaire,
   descriptor: ReplyDescriptor,
-  requestTask?: Task
+  requestTask?: Task,
 ): Promise<void> {
-  if (descriptor.replyMethod !== 'PUT') {
+  if (descriptor.replyMethod !== "PUT") {
     throw new Error(
       `This request expects its reply to be delivered by "${descriptor.replyMethod}", which this app ` +
-        'does not implement. Return the answers as a link instead.'
+        "does not implement. Return the answers as a link instead.",
     );
   }
 
   if (isReplyDescriptorExpired(descriptor)) {
-    throw new Error('This request has expired, so its reply slot will no longer accept answers.');
+    throw new Error(
+      "This request has expired, so its reply slot will no longer accept answers.",
+    );
   }
 
   const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
   const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
   const { bundle } = buildReplyBundle(response, { requestTask });
 
-  await putReply(descriptor.replyUrl, await encryptReplyJwe(encodeUtf8(JSON.stringify(bundle)), descriptor.publicJwk));
+  await putReply(
+    descriptor.replyUrl,
+    await encryptReplyJwe(
+      encodeUtf8(JSON.stringify(bundle)),
+      descriptor.publicJwk,
+    ),
+  );
 }

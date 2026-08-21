@@ -1,6 +1,7 @@
-import type { Task } from 'fhir/r4';
-import { taskCorrelationId } from '@/link/exchange';
-import { isExpired, type OutstandingRequest } from '@/lib/requestStore';
+import type { Task } from "fhir/r4";
+
+import { isExpired, type OutstandingRequest } from "@/lib/requestStore";
+import { taskCorrelationId } from "@/link/exchange";
 
 /**
  * One view over two half-answers to "what have I sent?".
@@ -21,11 +22,11 @@ import { isExpired, type OutstandingRequest } from '@/lib/requestStore';
 
 export type SentRequestOrigin =
   /** Local record and published Task agree — the normal case. */
-  | 'tracked'
+  | "tracked"
   /** Created here but never published, so it is invisible to any other browser. */
-  | 'local-only'
+  | "local-only"
   /** Published, but this browser has no key for it. Visible, not collectable. */
-  | 'server-only';
+  | "server-only";
 
 export interface SentRequest {
   /** Correlation id — `Task.identifier` value, shared by both copies. */
@@ -56,12 +57,13 @@ function labelFromTask(task: Task): string {
   }
 
   const canonical =
-    task.input?.find((input) => input.valueCanonical)?.valueCanonical ?? task.focus?.reference;
+    task.input?.find((input) => input.valueCanonical)?.valueCanonical ??
+    task.focus?.reference;
   if (canonical) {
-    return canonical.split('|')[0].split('/').filter(Boolean).pop() ?? canonical;
+    return canonical.split("|", 1)[0].split("/").findLast(Boolean) ?? canonical;
   }
 
-  return 'Requested form';
+  return "Requested form";
 }
 
 /**
@@ -71,7 +73,7 @@ function labelFromTask(task: Task): string {
  */
 export function mergeSentRequests(
   local: OutstandingRequest[],
-  serverTasks: Task[]
+  serverTasks: Task[],
 ): SentRequest[] {
   const byId = new Map<string, SentRequest>();
 
@@ -79,12 +81,12 @@ export function mergeSentRequests(
     byId.set(request.id, {
       id: request.id,
       label: request.label,
-      origin: 'local-only',
+      origin: "local-only",
       createdAt: request.createdAt,
       subjectDisplay: request.subjectDisplay,
       expiresAt: request.expiresAt,
       local: request,
-      collectable: request.reply !== undefined && !isExpired(request)
+      collectable: request.reply !== undefined && !isExpired(request),
     });
   }
 
@@ -99,11 +101,11 @@ export function mergeSentRequests(
     if (existing) {
       byId.set(id, {
         ...existing,
-        origin: 'tracked',
+        origin: "tracked",
         serverTask: task,
         // Prefer what the server recorded for display fields the local copy may not have.
         subjectDisplay: existing.subjectDisplay ?? task.for?.display,
-        requesterDisplay: task.requester?.display
+        requesterDisplay: task.requester?.display,
       });
       continue;
     }
@@ -111,17 +113,17 @@ export function mergeSentRequests(
     byId.set(id, {
       id,
       label: labelFromTask(task),
-      origin: 'server-only',
+      origin: "server-only",
       createdAt: task.authoredOn,
       subjectDisplay: task.for?.display,
       requesterDisplay: task.requester?.display,
       serverTask: task,
-      collectable: false
+      collectable: false,
     });
   }
 
   return [...byId.values()].sort((left, right) =>
-    (right.createdAt ?? '').localeCompare(left.createdAt ?? '')
+    (right.createdAt ?? "").localeCompare(left.createdAt ?? ""),
   );
 }
 
@@ -131,17 +133,17 @@ export function whyNotCollectable(request: SentRequest): string | undefined {
     return undefined;
   }
 
-  if (request.origin === 'server-only') {
-    return 'Sent from another browser. Its reply key is held there — import it to collect the answers here.';
+  if (request.origin === "server-only") {
+    return "Sent from another browser. Its reply key is held there — import it to collect the answers here.";
   }
 
   if (!request.local?.reply) {
     // Not a fault: with the encrypted channel off, this is what every request looks like, and the
     // answers come back as a link to scan rather than into a slot to poll.
-    return 'Answers to this request come back as a link. Scan or paste it to review them.';
+    return "Answers to this request come back as a link. Scan or paste it to review them.";
   }
 
-  return 'This request has expired, so its reply slot no longer accepts answers.';
+  return "This request has expired, so its reply slot no longer accepts answers.";
 }
 
 /**
@@ -157,7 +159,7 @@ export function whyNotCollectable(request: SentRequest): string | undefined {
  */
 export function findRequestForTask(
   requests: OutstandingRequest[],
-  task: Task | undefined
+  task: Task | undefined,
 ): OutstandingRequest | undefined {
   const id = taskCorrelationId(task);
   if (!id) {

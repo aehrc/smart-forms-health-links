@@ -1,13 +1,14 @@
-import { useEffect } from 'react';
-import { QueryClientProvider } from '@tanstack/react-query';
-import type { Questionnaire, QuestionnaireResponse } from 'fhir/r4';
 import {
   BaseRenderer,
   RendererThemeProvider,
   destroyForm,
   useBuildForm,
-  useRendererQueryClient
-} from '@aehrc/smart-forms-renderer';
+  useRendererQueryClient,
+} from "@aehrc/smart-forms-renderer";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { useEffect } from "react";
+
+import type { Questionnaire, QuestionnaireResponse } from "fhir/r4";
 
 export interface FormRendererProps {
   questionnaire: Questionnaire;
@@ -26,13 +27,18 @@ export interface FormRendererProps {
  * torn down on unmount — otherwise answers from the previous form leak into the next one.
  */
 export default function FormRenderer(props: FormRendererProps) {
-  const { questionnaire, questionnaireResponse, terminologyServerUrl, readOnly } = props;
+  const {
+    questionnaire,
+    questionnaireResponse,
+    terminologyServerUrl,
+    readOnly,
+  } = props;
 
   const isBuilding = useBuildForm({
     questionnaire,
     questionnaireResponse,
     readOnly,
-    terminologyServerUrl
+    terminologyServerUrl,
   });
 
   const queryClient = useRendererQueryClient();

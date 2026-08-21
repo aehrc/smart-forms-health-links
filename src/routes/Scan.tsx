@@ -1,13 +1,21 @@
-import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { BrowserQRCodeReader } from '@zxing/browser';
-import type { IScannerControls } from '@zxing/browser';
-import { CameraOff, ScanLine } from 'lucide-react';
-import { LINK_CODECS } from '@/link/registry';
-import { extractFragment } from '@/link/codec';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { BrowserQRCodeReader } from "@zxing/browser";
+import { CameraOff, ScanLine } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
+import type { IScannerControls } from "@zxing/browser";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { extractFragment } from "@/link/codec";
+import { LINK_CODECS } from "@/link/registry";
 
 /**
  * Turn scanned or pasted text into a viewer route.
@@ -18,7 +26,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
  */
 function toViewerHash(scanned: string): string | null {
   const fragment = extractFragment(scanned);
-  if (fragment === '' || !LINK_CODECS.some((codec) => codec.canDecode(fragment))) {
+  if (
+    fragment === "" ||
+    !LINK_CODECS.some((codec) => codec.canDecode(fragment))
+  ) {
     return null;
   }
 
@@ -30,7 +41,7 @@ export default function Scan() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [rejected, setRejected] = useState(false);
-  const [pasted, setPasted] = useState('');
+  const [pasted, setPasted] = useState("");
 
   useEffect(() => {
     let controls: IScannerControls | undefined;
@@ -39,20 +50,24 @@ export default function Scan() {
     const reader = new BrowserQRCodeReader();
 
     reader
-      .decodeFromVideoDevice(undefined, videoRef.current ?? undefined, (result) => {
-        if (!result) {
-          return;
-        }
+      .decodeFromVideoDevice(
+        undefined,
+        videoRef.current ?? undefined,
+        (result) => {
+          if (!result) {
+            return;
+          }
 
-        const hash = toViewerHash(result.getText());
-        if (hash === null) {
-          setRejected(true);
-          return;
-        }
+          const hash = toViewerHash(result.getText());
+          if (hash === null) {
+            setRejected(true);
+            return;
+          }
 
-        controls?.stop();
-        navigate({ pathname: '/view', hash });
-      })
+          controls?.stop();
+          navigate({ pathname: "/view", hash });
+        },
+      )
       .then((scannerControls) => {
         if (cancelled) {
           scannerControls.stop();
@@ -60,9 +75,11 @@ export default function Scan() {
         }
         controls = scannerControls;
       })
-      .catch((cause: unknown) => {
+      .catch((error: unknown) => {
         if (!cancelled) {
-          setCameraError(cause instanceof Error ? cause.message : String(cause));
+          setCameraError(
+            error instanceof Error ? error.message : String(error),
+          );
         }
       });
 
@@ -79,7 +96,7 @@ export default function Scan() {
       return;
     }
 
-    navigate({ pathname: '/view', hash });
+    navigate({ pathname: "/view", hash });
   }
 
   return (
@@ -95,13 +112,19 @@ export default function Scan() {
         <Alert tone="warning" title="Camera unavailable">
           <p>{cameraError}</p>
           <p className="mt-1">
-            Camera access needs a secure context — that means HTTPS, or localhost. Opening the dev
-            server by LAN IP from a phone will not work; use a tunnel, or paste the link below.
+            Camera access needs a secure context — that means HTTPS, or
+            localhost. Opening the dev server by LAN IP from a phone will not
+            work; use a tunnel, or paste the link below.
           </p>
         </Alert>
       ) : (
         <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-black">
-          <video ref={videoRef} className="aspect-video w-full object-cover" muted playsInline />
+          <video
+            ref={videoRef}
+            className="aspect-video w-full object-cover"
+            muted
+            playsInline
+          />
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <ScanLine className="h-16 w-16 text-white/40" aria-hidden />
           </div>
@@ -110,7 +133,8 @@ export default function Scan() {
 
       {rejected ? (
         <Alert tone="warning" title="Not a Smart Forms link">
-          That code was readable, but it does not contain a link this app understands.
+          That code was readable, but it does not contain a link this app
+          understands.
         </Alert>
       ) : null}
 
@@ -120,7 +144,9 @@ export default function Scan() {
             <CameraOff className="h-4 w-4 text-slate-400" aria-hidden />
             Or paste a link
           </CardTitle>
-          <CardDescription>Useful when there is no camera available.</CardDescription>
+          <CardDescription>
+            Useful when there is no camera available.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           <textarea
@@ -133,7 +159,11 @@ export default function Scan() {
             placeholder="https://…/view#shlink:/…"
             className="w-full resize-none rounded-md border border-slate-300 p-2 font-mono text-xs break-all"
           />
-          <Button onClick={openPasted} disabled={pasted.trim() === ''} size="sm">
+          <Button
+            onClick={openPasted}
+            disabled={pasted.trim() === ""}
+            size="sm"
+          >
             Open link
           </Button>
         </CardContent>

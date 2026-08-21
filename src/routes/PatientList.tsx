@@ -1,15 +1,32 @@
-import { useState } from 'react';
-import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ClipboardList, Loader2, Search, Send, User } from 'lucide-react';
-import type { Patient } from 'fhir/r4';
-import { useConfig } from '@/lib/ConfigContext';
-import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
-import { useDebounced } from '@/lib/useDebounced';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent } from '@/components/ui/card';
+import { useQuery } from "@tanstack/react-query";
+import {
+  ArrowLeft,
+  ClipboardList,
+  Loader2,
+  Search,
+  Send,
+  User,
+} from "lucide-react";
+import { useState } from "react";
+import {
+  Link as RouterLink,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
+
+import type { Patient } from "fhir/r4";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  describePatient,
+  patientDisplay,
+  searchPatients,
+} from "@/fhir/ehrServer";
+import { useConfig } from "@/lib/ConfigContext";
+import { useDebounced } from "@/lib/useDebounced";
 
 /**
  * Patients on the EHR.
@@ -29,7 +46,7 @@ export default function PatientList() {
   const config = useConfig();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState("");
   const debouncedSearch = useDebounced(searchText, 300);
 
   const ehrServerUrl = config.responseServerUrl;
@@ -37,17 +54,21 @@ export default function PatientList() {
    * Where to go once a patient is chosen. Restricted to an in-app path: this value comes from the URL,
    * so treating it as a destination without checking would let a crafted link bounce someone off-site.
    */
-  const rawReturnTo = params.get('returnTo');
-  const returnTo = rawReturnTo?.startsWith('/') && !rawReturnTo.startsWith('//') ? rawReturnTo : null;
+  const rawReturnTo = params.get("returnTo");
+  const returnTo =
+    rawReturnTo?.startsWith("/") && !rawReturnTo.startsWith("//")
+      ? rawReturnTo
+      : null;
 
   const {
     data: page,
     isPending,
-    error
+    error,
   } = useQuery({
-    queryKey: ['ehr-patients', ehrServerUrl, debouncedSearch, PAGE_SIZE],
-    queryFn: ({ signal }) => searchPatients(ehrServerUrl!, debouncedSearch, PAGE_SIZE, signal),
-    enabled: ehrServerUrl !== null
+    queryKey: ["ehr-patients", ehrServerUrl, debouncedSearch, PAGE_SIZE],
+    queryFn: ({ signal }) =>
+      searchPatients(ehrServerUrl!, debouncedSearch, PAGE_SIZE, signal),
+    enabled: ehrServerUrl !== null,
   });
 
   function choose(patient: Patient) {
@@ -55,9 +76,9 @@ export default function PatientList() {
     const display = patientDisplay(patient);
 
     if (returnTo) {
-      const separator = returnTo.includes('?') ? '&' : '?';
+      const separator = returnTo.includes("?") ? "&" : "?";
       navigate(
-        `${returnTo}${separator}subject=${encodeURIComponent(reference)}&subjectDisplay=${encodeURIComponent(display)}`
+        `${returnTo}${separator}subject=${encodeURIComponent(reference)}&subjectDisplay=${encodeURIComponent(display)}`,
       );
       return;
     }
@@ -70,9 +91,10 @@ export default function PatientList() {
       <div className="space-y-4">
         <BackLink />
         <Alert tone="warning" title="No EHR server is configured">
-          Set <span className="font-mono text-xs">responseServerUrl</span> in{' '}
-          <span className="font-mono text-xs">config.json</span> — that is the server holding patients.
-          The forms server is a catalogue of questionnaire definitions and holds none.
+          Set <span className="font-mono text-xs">responseServerUrl</span> in{" "}
+          <span className="font-mono text-xs">config.json</span> — that is the
+          server holding patients. The forms server is a catalogue of
+          questionnaire definitions and holds none.
         </Alert>
       </div>
     );
@@ -86,8 +108,8 @@ export default function PatientList() {
         <h1 className="text-xl font-semibold text-slate-900">Patients</h1>
         <p className="text-sm text-slate-500">
           On <span className="font-mono text-xs">{ehrServerUrl}</span>
-          {page?.total !== undefined ? ` · ${page.total} in total` : null}
-          {returnTo ? ' · choose who the request is for' : null}
+          {page?.total === undefined ? null : ` · ${page.total} in total`}
+          {returnTo ? " · choose who the request is for" : null}
         </p>
       </div>
 
@@ -120,8 +142,8 @@ export default function PatientList() {
 
       {page && page.resources.length === 0 ? (
         <Alert title="No patients found">
-          {debouncedSearch.trim() === ''
-            ? 'This server holds no patients.'
+          {debouncedSearch.trim() === ""
+            ? "This server holds no patients."
             : `Nothing matched “${debouncedSearch}”.`}
         </Alert>
       ) : null}
@@ -131,12 +153,19 @@ export default function PatientList() {
           <li key={patient.id}>
             <Card className="transition-colors hover:border-slate-400">
               <CardContent className="flex flex-wrap items-start gap-3 p-4">
-                <User className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                <User
+                  className="mt-0.5 h-4 w-4 shrink-0 text-slate-400"
+                  aria-hidden
+                />
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-slate-900">{patientDisplay(patient)}</p>
+                  <p className="font-medium text-slate-900">
+                    {patientDisplay(patient)}
+                  </p>
                   <p className="truncate text-xs text-slate-500">
                     Patient/{patient.id}
-                    {describePatient(patient) ? ` · ${describePatient(patient)}` : null}
+                    {describePatient(patient)
+                      ? ` · ${describePatient(patient)}`
+                      : null}
                   </p>
                 </div>
 
@@ -148,7 +177,8 @@ export default function PatientList() {
                     </Button>
                   ) : null}
                   <RouterLink
-                    to={`/responses?subject=${encodeURIComponent(`Patient/${patient.id}`)}`}>
+                    to={`/responses?subject=${encodeURIComponent(`Patient/${patient.id}`)}`}
+                  >
                     <Button variant="outline" size="sm">
                       <ClipboardList className="h-3.5 w-3.5" aria-hidden />
                       Responses
@@ -168,7 +198,8 @@ function BackLink() {
   return (
     <RouterLink
       to="/"
-      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+    >
       <ArrowLeft className="h-4 w-4" aria-hidden />
       All forms
     </RouterLink>

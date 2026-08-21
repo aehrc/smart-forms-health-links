@@ -1,6 +1,7 @@
-import type { LinkCodec } from './codec';
-import { bespokeCodec } from './bespokeCodec';
-import { shlCodec } from './shlCodec';
+import { bespokeCodec } from "./bespokeCodec";
+import { shlCodec } from "./shlCodec";
+
+import type { LinkCodec } from "./codec";
 
 /**
  * Every codec the app knows about.

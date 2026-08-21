@@ -1,5 +1,6 @@
-import type { Bundle, Patient, QuestionnaireResponse, Task } from 'fhir/r4';
-import { SHL_REQUEST_TAG } from './submit';
+import { SHL_REQUEST_TAG } from "./submit";
+
+import type { Bundle, Patient, QuestionnaireResponse, Task } from "fhir/r4";
 
 /**
  * Reading the EHR — the server that holds patient data, as distinct from the forms catalogue.
@@ -19,20 +20,22 @@ import { SHL_REQUEST_TAG } from './submit';
  * Everything here is a read. Writes go through `src/fhir/submit.ts`.
  */
 
-const FHIR_JSON = 'application/fhir+json';
+const FHIR_JSON = "application/fhir+json";
 
 /** How many rows a list fetches at once. Enough to be useful, small enough to stay responsive. */
 export const DEFAULT_PAGE_SIZE = 50;
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, '');
+  return url.replace(/\/+$/, "");
 }
 
 async function fetchFhir<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { headers: { Accept: FHIR_JSON }, signal });
 
   if (!response.ok) {
-    throw new Error(`FHIR request failed (${response.status} ${response.statusText}): ${url}`);
+    throw new Error(
+      `FHIR request failed (${response.status} ${response.statusText}): ${url}`,
+    );
   }
 
   return (await response.json()) as T;
@@ -59,26 +62,32 @@ export interface Page<T> {
 export function patientDisplay(patient: Patient | undefined): string {
   const name = patient?.name?.[0];
   if (!name) {
-    return patient?.id ? `Patient/${patient.id}` : 'Unnamed patient';
+    return patient?.id ? `Patient/${patient.id}` : "Unnamed patient";
   }
 
-  const joined = [...(name.given ?? []), name.family].filter(Boolean).join(' ');
-  return name.text ?? (joined !== '' ? joined : (patient?.id ?? 'Unnamed patient'));
+  const joined = [...(name.given ?? []), name.family].filter(Boolean).join(" ");
+  return (
+    name.text ?? (joined === "" ? (patient?.id ?? "Unnamed patient") : joined)
+  );
 }
 
 /**
  * The Australian national patient identifier, surfaced ahead of any other because it is the one a
  * clinician recognises. Everything else a sandbox server holds is bookkeeping.
  */
-const IHI_SYSTEM = 'http://ns.electronichealth.net.au/id/hi/ihi/1.0';
+const IHI_SYSTEM = "http://ns.electronichealth.net.au/id/hi/ihi/1.0";
 
 function identifierSummary(patient: Patient): string | undefined {
-  const ihi = patient.identifier?.find((identifier) => identifier.system === IHI_SYSTEM)?.value;
+  const ihi = patient.identifier?.find(
+    (identifier) => identifier.system === IHI_SYSTEM,
+  )?.value;
   if (ihi) {
     return `IHI ${ihi}`;
   }
 
-  const first = patient.identifier?.find((identifier) => identifier.value)?.value;
+  const first = patient.identifier?.find(
+    (identifier) => identifier.value,
+  )?.value;
   return first ? `id ${first}` : undefined;
 }
 
@@ -93,10 +102,10 @@ export function describePatient(patient: Patient): string {
   return [
     patient.gender,
     patient.birthDate ? `born ${patient.birthDate}` : undefined,
-    identifierSummary(patient)
+    identifierSummary(patient),
   ]
     .filter(Boolean)
-    .join(' · ');
+    .join(" · ");
 }
 
 export interface SearchResponsesOptions {
@@ -117,16 +126,16 @@ export interface SearchResponsesOptions {
 export async function searchQuestionnaireResponses(
   ehrServerUrl: string,
   options: SearchResponsesOptions = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Page<QuestionnaireResponse>> {
   const params = new URLSearchParams({
     _count: String(options.count ?? DEFAULT_PAGE_SIZE),
-    _sort: '-_lastUpdated',
-    _total: 'accurate'
+    _sort: "-_lastUpdated",
+    _total: "accurate",
   });
 
   if (options.subject) {
-    params.set('subject', options.subject);
+    params.set("subject", options.subject);
   }
 
   if (options.questionnaire) {
@@ -135,48 +144,51 @@ export async function searchQuestionnaireResponses(
      * as stored, so `…/715|0.3.0-assembled` finds only responses that recorded that exact version —
      * which is rarely what someone filtering by form wants, since versions turn over.
      */
-    params.set('questionnaire', options.questionnaire.split('|')[0]);
+    params.set("questionnaire", options.questionnaire.split("|", 1)[0]);
   }
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse?${params.toString()}`,
-    signal
+    signal,
   );
 
-  return { resources: bundleResources<QuestionnaireResponse>(bundle), total: bundle.total };
+  return {
+    resources: bundleResources<QuestionnaireResponse>(bundle),
+    total: bundle.total,
+  };
 }
 
 export async function fetchQuestionnaireResponse(
   ehrServerUrl: string,
   id: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<QuestionnaireResponse> {
   return fetchFhir<QuestionnaireResponse>(
     `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse/${encodeURIComponent(id)}`,
-    signal
+    signal,
   );
 }
 
 /** Search patients by name, or list them when the search text is empty. */
 export async function searchPatients(
   ehrServerUrl: string,
-  searchText = '',
+  searchText = "",
   count = DEFAULT_PAGE_SIZE,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Page<Patient>> {
   const params = new URLSearchParams({
     _count: String(count),
-    _sort: 'family',
-    _total: 'accurate'
+    _sort: "family",
+    _total: "accurate",
   });
 
-  if (searchText.trim() !== '') {
-    params.set('name', searchText.trim());
+  if (searchText.trim() !== "") {
+    params.set("name", searchText.trim());
   }
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient?${params.toString()}`,
-    signal
+    signal,
   );
 
   return { resources: bundleResources<Patient>(bundle), total: bundle.total };
@@ -185,11 +197,11 @@ export async function searchPatients(
 export async function fetchPatient(
   ehrServerUrl: string,
   id: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Patient> {
   return fetchFhir<Patient>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient/${encodeURIComponent(id)}`,
-    signal
+    signal,
   );
 }
 
@@ -204,18 +216,18 @@ export async function fetchPatient(
 export async function searchPublishedRequests(
   ehrServerUrl: string,
   count = DEFAULT_PAGE_SIZE,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Page<Task>> {
   const params = new URLSearchParams({
     _tag: `${SHL_REQUEST_TAG.system}|${SHL_REQUEST_TAG.code}`,
     _count: String(count),
-    _sort: '-_lastUpdated',
-    _total: 'accurate'
+    _sort: "-_lastUpdated",
+    _total: "accurate",
   });
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Task?${params.toString()}`,
-    signal
+    signal,
   );
 
   return { resources: bundleResources<Task>(bundle), total: bundle.total };

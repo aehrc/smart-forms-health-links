@@ -5,10 +5,10 @@
 **Audience:** anyone building an app that fills in a questionnaire delivered by SMART Health Link and
 needs to hand the answers back.
 
-This document specifies what this app accepts as an *inbound response link*: the filler mints its own
+This document specifies what this app accepts as an _inbound response link_: the filler mints its own
 SMART Health Link carrying the completed `QuestionnaireResponse`, and the requester scans or pastes it
 back. It is the companion to [`shl-form-reply-channel.md`](shl-form-reply-channel.md), which
-specifies the channels an invitation can *declare*; this one needs no declaration at all.
+specifies the channels an invitation can _declare_; this one needs no declaration at all.
 
 It is written so it can be implemented without reading our source.
 
@@ -16,7 +16,7 @@ It is written so it can be implemented without reading our source.
 
 SMART Health Links are strictly one-directional, and using one as a return transport is off-spec in
 the sense that the spec never contemplates it. But nothing off-spec actually happens: the filler
-*publishes* a link, exactly as a sharer does, and the requester *reads* it, exactly as a receiver
+_publishes_ a link, exactly as a sharer does, and the requester _reads_ it, exactly as a receiver
 does. Nothing is pushed anywhere, no credential travels to the filler, and no endpoint has to accept
 anonymous writes.
 
@@ -43,11 +43,11 @@ to a public key that only the requester holds.
 
 Any valid SMART Health Link. Both hosting modes are read:
 
-| | `U` flag | manifest |
-| --- | --- | --- |
-| Retrieval | plain `GET` of `payload.url` | `POST payload.url` with `{recipient, passcode?}` |
-| Passcode | not possible (`U` excludes `P`) | supported |
-| Multiple files | no | yes, all merged |
+|                | `U` flag                        | manifest                                         |
+| -------------- | ------------------------------- | ------------------------------------------------ |
+| Retrieval      | plain `GET` of `payload.url`    | `POST payload.url` with `{recipient, passcode?}` |
+| Passcode       | not possible (`U` excludes `P`) | supported                                        |
+| Multiple files | no                              | yes, all merged                                  |
 
 Expiry (`exp`) is honoured. A `v` greater than 1 is refused rather than guessed at.
 
@@ -66,8 +66,8 @@ The `GET` carries **no `Accept` header and no query parameters**. Both matter:
 - an `Accept` of `application/fhir+json` makes a FHIR server wrap the bytes in a `Binary` resource
   instead of returning the JWE; and
 - appending anything to the URL — `?recipient=…`, most plausibly — makes a FHIR `Binary` read fail
-  with `400 not-supported`. The SHL spec defines `recipient` as a field of the *manifest request
-  body*, and defines no equivalent for `U`-flag direct retrieval.
+  with `400 not-supported`. The SHL spec defines `recipient` as a field of the _manifest request
+  body_, and defines no equivalent for `U`-flag direct retrieval.
 
 ## The payload
 
@@ -87,7 +87,7 @@ content types are matched after stripping any `;charset=…` parameter. Splittin
 `Provenance` across two files is therefore fine — they are one payload, not a choice.
 
 Files this app cannot render (`application/smart-health-card`, for instance) are skipped and named on
-screen. A file that will not decrypt costs its own content, not the whole link; a link where *nothing*
+screen. A file that will not decrypt costs its own content, not the whole link; a link where _nothing_
 decoded is an error, because reporting "no answers" for a link that failed to decrypt would be a lie.
 
 ### Attribution
@@ -96,8 +96,11 @@ Stamp `meta.security` with `PATAST` when the answers were recorded by the person
 than by a clinician:
 
 ```json
-{ "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationValue",
-  "code": "PATAST", "display": "patient asserted" }
+{
+  "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationValue",
+  "code": "PATAST",
+  "display": "patient asserted"
+}
 ```
 
 This is the most important field in the payload. Without it, answers typed by a patient on their own
@@ -113,13 +116,13 @@ should reference the response's `fullUrl` — the response has no server id yet.
 R4 gives `QuestionnaireResponse` no way to reference a `Task`, so correlation runs from the Task
 outward. Echo the invitation's `Task` back if you can:
 
-| Field | What to do |
-| --- | --- |
-| `identifier` | **Preserve verbatim.** This is the only key that survives the round trip, and the only thing that ties the answers to the request that asked for them |
-| `status` | `completed` |
-| `output[].valueReference` | the response's `fullUrl` |
-| `focus` | **drop it** — it named a Questionnaire entry in a Bundle that no longer exists |
-| `extension` | **drop it** — echoing a reply descriptor back copies a write capability into whatever the answers travel on, possibly an unencrypted QR |
+| Field                     | What to do                                                                                                                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identifier`              | **Preserve verbatim.** This is the only key that survives the round trip, and the only thing that ties the answers to the request that asked for them |
+| `status`                  | `completed`                                                                                                                                           |
+| `output[].valueReference` | the response's `fullUrl`                                                                                                                              |
+| `focus`                   | **drop it** — it named a Questionnaire entry in a Bundle that no longer exists                                                                        |
+| `extension`               | **drop it** — echoing a reply descriptor back copies a write capability into whatever the answers travel on, possibly an unencrypted QR               |
 
 Without a Task the answers are still perfectly reviewable; they just cannot be matched to a request
 automatically, and the reviewer is told so rather than left to wonder.

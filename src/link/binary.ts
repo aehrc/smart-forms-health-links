@@ -10,15 +10,20 @@
  */
 
 export function supportsCompressionStream(): boolean {
-  return typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+  return (
+    typeof CompressionStream !== "undefined" &&
+    typeof DecompressionStream !== "undefined"
+  );
 }
 
 async function streamThrough(
   bytes: Uint8Array,
-  transform: CompressionStream | DecompressionStream
+  transform: CompressionStream | DecompressionStream,
 ): Promise<Uint8Array> {
   // `Blob.stream()` avoids having to hand-feed the writable side of the transform.
-  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(transform as ReadableWritablePair);
+  const stream = new Blob([bytes as BlobPart])
+    .stream()
+    .pipeThrough(transform as ReadableWritablePair);
   const buffer = await new Response(stream).arrayBuffer();
   return new Uint8Array(buffer);
 }
@@ -26,39 +31,42 @@ async function streamThrough(
 export async function deflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
   if (!supportsCompressionStream()) {
     throw new Error(
-      'This browser does not support CompressionStream, which is required to build links.'
+      "This browser does not support CompressionStream, which is required to build links.",
     );
   }
 
-  return streamThrough(bytes, new CompressionStream('deflate-raw'));
+  return streamThrough(bytes, new CompressionStream("deflate-raw"));
 }
 
 export async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
   if (!supportsCompressionStream()) {
     throw new Error(
-      'This browser does not support DecompressionStream, which is required to read links.'
+      "This browser does not support DecompressionStream, which is required to read links.",
     );
   }
 
-  return streamThrough(bytes, new DecompressionStream('deflate-raw'));
+  return streamThrough(bytes, new DecompressionStream("deflate-raw"));
 }
 
 export function toBase64Url(bytes: Uint8Array): string {
-  let binary = '';
+  let binary = "";
   // Chunked to stay well clear of the argument-count limit on String.fromCharCode.
-  const chunkSize = 0x8000;
+  const chunkSize = 0x80_00;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
 
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
 }
 
 export function fromBase64Url(value: string): Uint8Array {
   const padded = value
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .padEnd(Math.ceil(value.length / 4) * 4, '=');
+    .replaceAll("-", "+")
+    .replaceAll("_", "/")
+    .padEnd(Math.ceil(value.length / 4) * 4, "=");
 
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);

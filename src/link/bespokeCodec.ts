@@ -1,7 +1,15 @@
-import type { LinkCodec, LinkContent, EncodeOptions } from './codec';
-import { extractFragment } from './codec';
-import { decodeUtf8, deflateRaw, encodeUtf8, fromBase64Url, inflateRaw, toBase64Url } from './binary';
-import type { Bundle } from 'fhir/r4';
+import {
+  decodeUtf8,
+  deflateRaw,
+  encodeUtf8,
+  fromBase64Url,
+  inflateRaw,
+  toBase64Url,
+} from "./binary";
+import { extractFragment } from "./codec";
+
+import type { LinkCodec, LinkContent, EncodeOptions } from "./codec";
+import type { Bundle } from "fhir/r4";
 
 /**
  * Legacy codec, **decode-only**: the whole payload travels inside the URL fragment.
@@ -19,7 +27,7 @@ import type { Bundle } from 'fhir/r4';
  * than deleting it — `decodingCodec` still considers this codec, `encodingCodec` refuses it.
  */
 
-const PREFIX = 'sfhl:/';
+const PREFIX = "sfhl:/";
 const VERSION = 1;
 
 interface BespokePayload {
@@ -30,17 +38,17 @@ interface BespokePayload {
 }
 
 function isBespokePayload(value: unknown): value is BespokePayload {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return false;
   }
 
   const candidate = value as Record<string, unknown>;
   const content = candidate.content as Record<string, unknown> | undefined;
-  return typeof candidate.v === 'number' && content?.resourceType === 'Bundle';
+  return typeof candidate.v === "number" && content?.resourceType === "Bundle";
 }
 
 export const bespokeCodec: LinkCodec = {
-  id: 'bespoke',
+  id: "bespoke",
   prefix: PREFIX,
   decodeOnly: true,
 
@@ -57,11 +65,11 @@ export const bespokeCodec: LinkCodec = {
     const payload: BespokePayload = {
       v: VERSION,
       label: content.label,
-      content: content.bundle
+      content: content.bundle,
     };
 
     const compressed = await deflateRaw(encodeUtf8(JSON.stringify(payload)));
-    const base = options.baseUrl.replace(/\/+$/, '');
+    const base = options.baseUrl.replace(/\/+$/, "");
 
     return `${base}/view#${PREFIX}${toBase64Url(compressed)}`;
   },
@@ -69,31 +77,33 @@ export const bespokeCodec: LinkCodec = {
   async decode(linkOrFragment: string): Promise<LinkContent> {
     const fragment = extractFragment(linkOrFragment);
     if (!fragment.startsWith(PREFIX)) {
-      throw new Error('Not a Smart Forms link.');
+      throw new Error("Not a Smart Forms link.");
     }
 
     const body = fragment.slice(PREFIX.length);
-    if (body === '') {
-      throw new Error('Link payload is empty.');
+    if (body === "") {
+      throw new Error("Link payload is empty.");
     }
 
     let payload: unknown;
     try {
       payload = JSON.parse(decodeUtf8(await inflateRaw(fromBase64Url(body))));
-    } catch (cause) {
-      throw new Error('Link payload is corrupt or truncated.', { cause });
+    } catch (error) {
+      throw new Error("Link payload is corrupt or truncated.", {
+        cause: error,
+      });
     }
 
     if (!isBespokePayload(payload)) {
-      throw new Error('Link payload is not in the expected format.');
+      throw new Error("Link payload is not in the expected format.");
     }
 
     if (payload.v > VERSION) {
       throw new Error(
-        `This link was created by a newer version of the app (format v${payload.v}).`
+        `This link was created by a newer version of the app (format v${payload.v}).`,
       );
     }
 
     return { bundle: payload.content, label: payload.label };
-  }
+  },
 };

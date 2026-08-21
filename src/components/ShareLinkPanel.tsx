@@ -1,29 +1,41 @@
-import { useEffect, useState } from 'react';
-import { Check, Copy, Loader2 } from 'lucide-react';
-import { MAX_QR_BYTES, linkByteLength, renderQr, type QrResult } from '@/link/qr';
-import { LINK_CODECS } from '@/link/registry';
-import { decodingCodec } from '@/link/codec';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Check, Copy, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { decodingCodec } from "@/link/codec";
+import {
+  MAX_QR_BYTES,
+  linkByteLength,
+  renderQr,
+  type QrResult,
+} from "@/link/qr";
+import { LINK_CODECS } from "@/link/registry";
 
 export interface ShareLinkPanelProps {
   link: string;
   /** Shapes the wording only; the security note is derived from the link itself. */
-  kind?: 'request' | 'response';
+  kind?: "request" | "response";
 }
 
 /** Which codec produced this link, so the security note can tell the truth about it. */
-function codecIdOf(link: string): 'bespoke' | 'shl' | 'unknown' {
+function codecIdOf(link: string): "bespoke" | "shl" | "unknown" {
   try {
     return decodingCodec(link, LINK_CODECS).id;
   } catch {
-    return 'unknown';
+    return "unknown";
   }
 }
 
 export default function ShareLinkPanel(props: ShareLinkPanelProps) {
-  const { link, kind = 'response' } = props;
+  const { link, kind = "response" } = props;
 
   const [qr, setQr] = useState<QrResult | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
@@ -63,26 +75,29 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{kind === 'request' ? 'Request link' : 'Shareable link'}</CardTitle>
+        <CardTitle>
+          {kind === "request" ? "Request link" : "Shareable link"}
+        </CardTitle>
         <CardDescription>
-          {kind === 'request'
-            ? 'Scan this to open the form on another device. The whole questionnaire travels inside it.'
-            : 'Scan this to hand the answers back, or copy the link.'}
+          {kind === "request"
+            ? "Scan this to open the form on another device. The whole questionnaire travels inside it."
+            : "Scan this to hand the answers back, or copy the link."}
         </CardDescription>
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {codecId === 'shl' ? (
+        {codecId === "shl" ? (
           <Alert title="Encrypted SMART Health Link">
-            The contents are encrypted (A256GCM) and hosted separately; this link carries only a
-            pointer and the decryption key. Anyone holding the link can decrypt it — there is no
-            passcode, because the single-file <span className="font-mono text-xs">U</span> flag
-            cannot be combined with one.
+            The contents are encrypted (A256GCM) and hosted separately; this
+            link carries only a pointer and the decryption key. Anyone holding
+            the link can decrypt it — there is no passcode, because the
+            single-file <span className="font-mono text-xs">U</span> flag cannot
+            be combined with one.
           </Alert>
         ) : (
           <Alert tone="warning" title="This link is not encrypted">
-            The answers are compressed into the link, not protected. Anyone who photographs the QR
-            code or sees the URL can read them.
+            The answers are compressed into the link, not protected. Anyone who
+            photographs the QR code or sees the URL can read them.
           </Alert>
         )}
 
@@ -98,7 +113,8 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
                   height={320}
                 />
                 <p className="mt-1 text-center text-xs text-slate-500">
-                  {qr.byteLength} / {MAX_QR_BYTES} bytes · error correction {qr.level}
+                  {qr.byteLength} / {MAX_QR_BYTES} bytes · error correction{" "}
+                  {qr.level}
                 </p>
               </>
             ) : qrError ? (
@@ -119,7 +135,10 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
           </div>
 
           <div className="min-w-0 flex-1 space-y-2">
-            <label className="text-sm font-medium text-slate-700" htmlFor="share-link">
+            <label
+              className="text-sm font-medium text-slate-700"
+              htmlFor="share-link"
+            >
               Link
             </label>
             <textarea
@@ -136,7 +155,7 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
               ) : (
                 <Copy className="h-4 w-4" aria-hidden />
               )}
-              {copied ? 'Copied' : 'Copy link'}
+              {copied ? "Copied" : "Copy link"}
             </Button>
           </div>
         </div>

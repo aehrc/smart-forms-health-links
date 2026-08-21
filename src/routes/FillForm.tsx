@@ -1,14 +1,18 @@
-import { useState } from 'react';
-import { useParams, Link as RouterLink } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Link2, Loader2 } from 'lucide-react';
-import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
-import { useConfig } from '@/lib/ConfigContext';
-import { canCreateHealthLinks, createResponseLink } from '@/link/createLink';
-import FormRenderer from '@/components/FormRenderer';
-import ShareLinkPanel from '@/components/ShareLinkPanel';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, Link2, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { useParams, Link as RouterLink } from "react-router-dom";
+
+import FormRenderer from "@/components/FormRenderer";
+import ShareLinkPanel from "@/components/ShareLinkPanel";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  fetchQuestionnaireById,
+  isRenderableQuestionnaire,
+} from "@/fhir/formsServer";
+import { useConfig } from "@/lib/ConfigContext";
+import { canCreateHealthLinks, createResponseLink } from "@/link/createLink";
 
 export default function FillForm() {
   const { questionnaireId } = useParams<{ questionnaireId: string }>();
@@ -23,12 +27,12 @@ export default function FillForm() {
   const {
     data: questionnaire,
     isPending,
-    error
+    error,
   } = useQuery({
-    queryKey: ['questionnaire', config.formsServerUrl, questionnaireId],
+    queryKey: ["questionnaire", config.formsServerUrl, questionnaireId],
     queryFn: ({ signal }) =>
       fetchQuestionnaireById(config.formsServerUrl, questionnaireId!, signal),
-    enabled: !!questionnaireId
+    enabled: !!questionnaireId,
   });
 
   async function handleCreateLink() {
@@ -42,9 +46,9 @@ export default function FillForm() {
       // No Task here: this route fills a form directly rather than answering a request, so there is
       // nothing to correlate against.
       setLink(await createResponseLink(questionnaire, config));
-    } catch (cause) {
+    } catch (error_) {
       setLink(null);
-      setLinkError(cause instanceof Error ? cause.message : String(cause));
+      setLinkError(error_ instanceof Error ? error_.message : String(error_));
     } finally {
       setIsCreating(false);
     }
@@ -70,8 +74,9 @@ export default function FillForm() {
   if (!isRenderableQuestionnaire(questionnaire)) {
     return (
       <Alert tone="warning" title="This form has no items">
-        {questionnaire.title ?? questionnaireId} contains no questions, so there is nothing to
-        render. It is most likely a sub-questionnaire intended for assembly.
+        {questionnaire.title ?? questionnaireId} contains no questions, so there
+        is nothing to render. It is most likely a sub-questionnaire intended for
+        assembly.
       </Alert>
     );
   }
@@ -80,7 +85,8 @@ export default function FillForm() {
     <div className="space-y-4">
       <RouterLink
         to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+      >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         All forms
       </RouterLink>
@@ -92,25 +98,27 @@ export default function FillForm() {
         <Button
           onClick={handleCreateLink}
           disabled={isCreating || !canHost}
-          title={canHost ? undefined : 'Needs blobServerUrl in config.json'}
-          className="ml-auto">
+          title={canHost ? undefined : "Needs blobServerUrl in config.json"}
+          className="ml-auto"
+        >
           {isCreating ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           ) : (
             <Link2 className="h-4 w-4" aria-hidden />
           )}
-          {isCreating ? 'Creating…' : 'Create link'}
+          {isCreating ? "Creating…" : "Create link"}
         </Button>
       </div>
 
-      {!canHost ? (
+      {canHost ? null : (
         <Alert tone="warning" title="Links cannot be created">
-          Answers are shared as a SMART Health Link, whose encrypted payload has to be hosted
-          somewhere. Set <span className="font-mono text-xs">blobServerUrl</span> in{' '}
-          <span className="font-mono text-xs">config.json</span>. The form below still works; there is
-          just nowhere to put the result.
+          Answers are shared as a SMART Health Link, whose encrypted payload has
+          to be hosted somewhere. Set{" "}
+          <span className="font-mono text-xs">blobServerUrl</span> in{" "}
+          <span className="font-mono text-xs">config.json</span>. The form below
+          still works; there is just nowhere to put the result.
         </Alert>
-      ) : null}
+      )}
 
       {linkError ? (
         <Alert tone="error" title="Could not create link">

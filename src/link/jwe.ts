@@ -16,9 +16,9 @@
  *
  * The protected header is the GCM additional authenticated data, per RFC 7516 §5.1.
  */
-import { fromBase64Url, toBase64Url } from './binary';
+import { fromBase64Url, toBase64Url } from "./binary";
 
-const PROTECTED_HEADER = { alg: 'dir', enc: 'A256GCM' } as const;
+const PROTECTED_HEADER = { alg: "dir", enc: "A256GCM" } as const;
 
 /** AES-256 key length. */
 export const KEY_BYTES = 32;
@@ -51,39 +51,62 @@ export function keyFromBase64Url(value: string): Uint8Array {
   return key;
 }
 
-async function importKey(key: Uint8Array, usage: 'encrypt' | 'decrypt'): Promise<CryptoKey> {
+async function importKey(
+  key: Uint8Array,
+  usage: "encrypt" | "decrypt",
+): Promise<CryptoKey> {
   if (key.length !== KEY_BYTES) {
-    throw new Error(`Encryption key must be ${KEY_BYTES} bytes, got ${key.length}.`);
+    throw new Error(
+      `Encryption key must be ${KEY_BYTES} bytes, got ${key.length}.`,
+    );
   }
 
-  return crypto.subtle.importKey('raw', key as BufferSource, 'AES-GCM', false, [usage]);
+  return crypto.subtle.importKey("raw", key as BufferSource, "AES-GCM", false, [
+    usage,
+  ]);
 }
 
 function encodeProtectedHeader(): string {
   // Encoded once and used verbatim as the AAD, so the exact bytes must match on both sides.
-  return toBase64Url(new TextEncoder().encode(JSON.stringify(PROTECTED_HEADER)));
+  return toBase64Url(
+    new TextEncoder().encode(JSON.stringify(PROTECTED_HEADER)),
+  );
 }
 
 /** Encrypt to JWE compact serialisation. */
-export async function encryptJwe(plaintext: Uint8Array, key: Uint8Array): Promise<string> {
-  const cryptoKey = await importKey(key, 'encrypt');
+export async function encryptJwe(
+  plaintext: Uint8Array,
+  key: Uint8Array,
+): Promise<string> {
+  const cryptoKey = await importKey(key, "encrypt");
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const protectedHeader = encodeProtectedHeader();
   const additionalData = new TextEncoder().encode(protectedHeader);
 
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: iv as BufferSource, additionalData: additionalData as BufferSource, tagLength: TAG_BYTES * 8 },
+      {
+        name: "AES-GCM",
+        iv: iv as BufferSource,
+        additionalData: additionalData as BufferSource,
+        tagLength: TAG_BYTES * 8,
+      },
       cryptoKey,
-      plaintext as BufferSource
-    )
+      plaintext as BufferSource,
+    ),
   );
 
   // WebCrypto appends the tag; JWE wants it in its own segment.
   const ciphertext = sealed.subarray(0, sealed.length - TAG_BYTES);
   const tag = sealed.subarray(sealed.length - TAG_BYTES);
 
-  return [protectedHeader, '', toBase64Url(iv), toBase64Url(ciphertext), toBase64Url(tag)].join('.');
+  return [
+    protectedHeader,
+    "",
+    toBase64Url(iv),
+    toBase64Url(ciphertext),
+    toBase64Url(tag),
+  ].join(".");
 }
 
 /**
@@ -92,11 +115,14 @@ export async function encryptJwe(plaintext: Uint8Array, key: Uint8Array): Promis
  * Throws on a wrong key, a tampered payload, or an unsupported algorithm — AES-GCM authentication
  * failure is indistinguishable from the former two, which is the point.
  */
-export async function decryptJwe(compact: string, key: Uint8Array): Promise<Uint8Array> {
-  const segments = compact.trim().split('.');
+export async function decryptJwe(
+  compact: string,
+  key: Uint8Array,
+): Promise<Uint8Array> {
+  const segments = compact.trim().split(".");
   if (segments.length !== 5) {
     throw new Error(
-      `Not a JWE compact serialisation: expected 5 dot-separated segments, got ${segments.length}.`
+      `Not a JWE compact serialisation: expected 5 dot-separated segments, got ${segments.length}.`,
     );
   }
 
@@ -104,29 +130,35 @@ export async function decryptJwe(compact: string, key: Uint8Array): Promise<Uint
 
   let header: { alg?: string; enc?: string; zip?: string };
   try {
-    header = JSON.parse(new TextDecoder().decode(fromBase64Url(protectedHeader)));
-  } catch (cause) {
-    throw new Error('JWE protected header is not valid base64url JSON.', { cause });
+    header = JSON.parse(
+      new TextDecoder().decode(fromBase64Url(protectedHeader)),
+    );
+  } catch (error) {
+    throw new Error("JWE protected header is not valid base64url JSON.", {
+      cause: error,
+    });
   }
 
-  if (header.alg !== 'dir' || header.enc !== 'A256GCM') {
+  if (header.alg !== "dir" || header.enc !== "A256GCM") {
     throw new Error(
       `Unsupported JWE algorithms (alg=${header.alg}, enc=${header.enc}). ` +
-        'SMART Health Links require alg=dir and enc=A256GCM.'
+        "SMART Health Links require alg=dir and enc=A256GCM.",
     );
   }
 
   if (header.zip) {
     // DEF-compressed payloads are legal JOSE but SHL does not use them; fail loudly rather than
     // hand back deflate bytes that the caller would try to JSON.parse.
-    throw new Error(`Compressed JWE payloads (zip=${header.zip}) are not supported.`);
+    throw new Error(
+      `Compressed JWE payloads (zip=${header.zip}) are not supported.`,
+    );
   }
 
-  if (encryptedKey !== '') {
-    throw new Error('JWE encrypted key segment must be empty when alg=dir.');
+  if (encryptedKey !== "") {
+    throw new Error("JWE encrypted key segment must be empty when alg=dir.");
   }
 
-  const cryptoKey = await importKey(key, 'decrypt');
+  const cryptoKey = await importKey(key, "decrypt");
 
   // Re-join ciphertext and tag the way WebCrypto expects them.
   const ciphertextBytes = fromBase64Url(ciphertext);
@@ -138,20 +170,22 @@ export async function decryptJwe(compact: string, key: Uint8Array): Promise<Uint
   try {
     const plaintext = await crypto.subtle.decrypt(
       {
-        name: 'AES-GCM',
+        name: "AES-GCM",
         iv: fromBase64Url(iv) as BufferSource,
-        additionalData: new TextEncoder().encode(protectedHeader) as BufferSource,
-        tagLength: TAG_BYTES * 8
+        additionalData: new TextEncoder().encode(
+          protectedHeader,
+        ) as BufferSource,
+        tagLength: TAG_BYTES * 8,
       },
       cryptoKey,
-      sealed as BufferSource
+      sealed,
     );
 
     return new Uint8Array(plaintext);
-  } catch (cause) {
+  } catch (error) {
     throw new Error(
-      'Could not decrypt the payload. The key is wrong, or the content has been altered.',
-      { cause }
+      "Could not decrypt the payload. The key is wrong, or the content has been altered.",
+      { cause: error },
     );
   }
 }

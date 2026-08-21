@@ -1,25 +1,36 @@
-import { useState } from 'react';
-import { Link as RouterLink, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, KeyRound, Loader2 } from 'lucide-react';
-import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
-import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
-import { useConfig } from '@/lib/ConfigContext';
-import { listRequests, updateRequest, type OutstandingRequest } from '@/lib/requestStore';
-import { findRequestForTask } from '@/lib/sentRequests';
-import { LINK_CODECS } from '@/link/registry';
-import { PasscodeRequiredError, decodingCodec } from '@/link/codec';
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, KeyRound, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Link as RouterLink, useLocation } from "react-router-dom";
+
+import type {
+  Provenance,
+  Questionnaire,
+  QuestionnaireResponse,
+  Task,
+} from "fhir/r4";
+
+import FillFromRequest from "@/components/FillFromRequest";
+import ReviewResponse from "@/components/ReviewResponse";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
+import { useConfig } from "@/lib/ConfigContext";
+import {
+  listRequests,
+  updateRequest,
+  type OutstandingRequest,
+} from "@/lib/requestStore";
+import { findRequestForTask } from "@/lib/sentRequests";
+import { PasscodeRequiredError, decodingCodec } from "@/link/codec";
 import {
   isRequestBundle,
   parseRequestBundle,
   parseResponseBundle,
-  responseCanonical
-} from '@/link/exchange';
-import FillFromRequest from '@/components/FillFromRequest';
-import ReviewResponse from '@/components/ReviewResponse';
-import { Alert } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+  responseCanonical,
+} from "@/link/exchange";
+import { LINK_CODECS } from "@/link/registry";
 
 /**
  * The single entry point for any link, in either direction.
@@ -36,9 +47,9 @@ import { Input } from '@/components/ui/input';
  */
 
 type Opened = { warnings?: string[]; label?: string } & (
-  | { mode: 'request'; questionnaire: Questionnaire; task: Task }
+  | { mode: "request"; questionnaire: Questionnaire; task: Task }
   | {
-      mode: 'response';
+      mode: "response";
       questionnaire?: Questionnaire;
       questionnaireError?: string;
       response: QuestionnaireResponse;
@@ -51,7 +62,7 @@ type Opened = { warnings?: string[]; label?: string } & (
 async function openLink(
   fragment: string,
   formsServerUrl: string,
-  options: { passcode?: string; signal?: AbortSignal } = {}
+  options: { passcode?: string; signal?: AbortSignal } = {},
 ): Promise<Opened> {
   const codec = decodingCodec(fragment, LINK_CODECS);
   const content = await codec.decode(fragment, { passcode: options.passcode });
@@ -59,7 +70,13 @@ async function openLink(
   if (isRequestBundle(content.bundle)) {
     // A request embeds its Questionnaire, so nothing needs resolving.
     const { questionnaire, task } = parseRequestBundle(content.bundle);
-    return { mode: 'request', questionnaire, task, label: content.label, warnings: content.warnings };
+    return {
+      mode: "request",
+      questionnaire,
+      task,
+      label: content.label,
+      warnings: content.warnings,
+    };
   }
 
   const { response, task, provenance } = parseResponseBundle(content.bundle);
@@ -68,13 +85,13 @@ async function openLink(
   const matchedRequest = findRequestForTask(listRequests(), task);
 
   const base = {
-    mode: 'response' as const,
+    mode: "response" as const,
     response,
     task,
     provenance,
     matchedRequest,
     warnings: content.warnings,
-    label: content.label
+    label: content.label,
   };
 
   /*
@@ -82,29 +99,36 @@ async function openLink(
    * Questionnaire would defeat the point — so it is resolved here, falling back to what the
    * originating request recorded when the answers do not say.
    */
-  const canonical = responseCanonical(response, matchedRequest?.questionnaireCanonical);
+  const canonical = responseCanonical(
+    response,
+    matchedRequest?.questionnaireCanonical,
+  );
   if (!canonical) {
     return {
       ...base,
-      questionnaireError: 'These answers do not name the questionnaire they were given against.'
+      questionnaireError:
+        "These answers do not name the questionnaire they were given against.",
     };
   }
 
   try {
     return {
       ...base,
-      questionnaire: await fetchQuestionnaireByCanonical(formsServerUrl, canonical, options.signal)
+      questionnaire: await fetchQuestionnaireByCanonical(
+        formsServerUrl,
+        canonical,
+        options.signal,
+      ),
     };
-  } catch (cause) {
+  } catch (error) {
     // A cancelled query is not a resolution failure, and must not be presented as one.
     if (options.signal?.aborted) {
-      throw cause;
+      throw error;
     }
 
     return {
       ...base,
-      questionnaireError:
-        `These answers cite ${canonical}, which ${formsServerUrl} does not hold.`
+      questionnaireError: `These answers cite ${canonical}, which ${formsServerUrl} does not hold.`,
     };
   }
 }
@@ -125,27 +149,39 @@ export default function ViewLink() {
    * and carrying a passcode across would spend one of the *next* link's limited attempts on
    * something the user never entered for it, which is exactly what the `P` pre-empt exists to avoid.
    */
-  const [attempt, setAttempt] = useState<{ fragment: string; passcode?: string; nonce: number }>({
+  const [attempt, setAttempt] = useState<{
+    fragment: string;
+    passcode?: string;
+    nonce: number;
+  }>({
     fragment,
-    nonce: 0
+    nonce: 0,
   });
   const passcode = attempt.fragment === fragment ? attempt.passcode : undefined;
 
   const {
     data: opened,
     isPending,
-    error
+    error,
   } = useQuery({
-    queryKey: ['link', config.formsServerUrl, fragment, passcode ?? '', attempt.nonce],
-    queryFn: ({ signal }) => openLink(fragment, config.formsServerUrl, { passcode, signal }),
-    enabled: fragment !== '',
-    retry: false
+    queryKey: [
+      "link",
+      config.formsServerUrl,
+      fragment,
+      passcode ?? "",
+      attempt.nonce,
+    ],
+    queryFn: ({ signal }) =>
+      openLink(fragment, config.formsServerUrl, { passcode, signal }),
+    enabled: fragment !== "",
+    retry: false,
   });
 
-  if (fragment === '') {
+  if (fragment === "") {
     return (
       <Alert title="No link to open">
-        This page opens a form from a link. Scan a QR code, or paste a link on the Scan page.
+        This page opens a form from a link. Scan a QR code, or paste a link on
+        the Scan page.
       </Alert>
     );
   }
@@ -169,7 +205,7 @@ export default function ViewLink() {
             setAttempt((previous) => ({
               fragment,
               passcode: entered,
-              nonce: previous.nonce + 1
+              nonce: previous.nonce + 1,
             }))
           }
         />
@@ -203,7 +239,7 @@ export default function ViewLink() {
         </Alert>
       ) : null}
 
-      {opened.mode === 'request' ? (
+      {opened.mode === "request" ? (
         <FillFromRequest
           questionnaire={opened.questionnaire}
           task={opened.task}
@@ -224,7 +260,9 @@ export default function ViewLink() {
              * outstanding forever, because nothing else observes that the answers came back.
              */
             if (opened.matchedRequest) {
-              updateRequest(opened.matchedRequest.id, { collectedAt: new Date().toISOString() });
+              updateRequest(opened.matchedRequest.id, {
+                collectedAt: new Date().toISOString(),
+              });
             }
           }}
         />
@@ -233,33 +271,44 @@ export default function ViewLink() {
   );
 }
 
-function PasscodePrompt(props: { error: PasscodeRequiredError; onSubmit: (passcode: string) => void }) {
-  const [passcode, setPasscode] = useState('');
+function PasscodePrompt(props: {
+  error: PasscodeRequiredError;
+  onSubmit: (passcode: string) => void;
+}) {
+  const [passcode, setPasscode] = useState("");
   const exhausted = props.error.remainingAttempts === 0;
 
   return (
-    <Alert tone={props.error.wasAttempted ? 'error' : 'warning'} title="This link requires a passcode">
+    <Alert
+      tone={props.error.wasAttempted ? "error" : "warning"}
+      title="This link requires a passcode"
+    >
       <p>
         {props.error.wasAttempted
           ? props.error.message
-          : 'The sender protected this link with a passcode. They should have given it to you separately from the link itself.'}
+          : "The sender protected this link with a passcode. They should have given it to you separately from the link itself."}
       </p>
 
       {exhausted ? (
         <p className="mt-2">
-          No attempts remain, so this link can no longer be opened. Ask the sender for a new one.
+          No attempts remain, so this link can no longer be opened. Ask the
+          sender for a new one.
         </p>
       ) : (
         <form
           className="mt-2 flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            if (passcode.trim() !== '') {
+            if (passcode.trim() !== "") {
               props.onSubmit(passcode);
             }
-          }}>
+          }}
+        >
           <div className="space-y-1">
-            <label className="block text-xs font-medium text-slate-700" htmlFor="shl-passcode">
+            <label
+              className="block text-xs font-medium text-slate-700"
+              htmlFor="shl-passcode"
+            >
               Passcode
             </label>
             <Input
@@ -271,7 +320,7 @@ function PasscodePrompt(props: { error: PasscodeRequiredError; onSubmit: (passco
               aria-label="Link passcode"
             />
           </div>
-          <Button type="submit" disabled={passcode.trim() === ''}>
+          <Button type="submit" disabled={passcode.trim() === ""}>
             <KeyRound className="h-4 w-4" aria-hidden />
             Open link
           </Button>
@@ -285,7 +334,8 @@ function BackLink() {
   return (
     <RouterLink
       to="/"
-      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+    >
       <ArrowLeft className="h-4 w-4" aria-hidden />
       All forms
     </RouterLink>

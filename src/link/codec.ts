@@ -1,6 +1,11 @@
-import type { Bundle, FhirResource, Questionnaire, QuestionnaireResponse } from 'fhir/r4';
-import type { AppConfig, LinkCodecId } from '@/lib/config';
-import type { BlobStore } from '@/fhir/blobStore';
+import type { BlobStore } from "@/fhir/blobStore";
+import type { AppConfig, LinkCodecId } from "@/lib/config";
+import type {
+  Bundle,
+  FhirResource,
+  Questionnaire,
+  QuestionnaireResponse,
+} from "fhir/r4";
 
 /**
  * The payload a link carries, independent of how it is transported.
@@ -56,12 +61,12 @@ export class PasscodeRequiredError extends Error {
     super(
       options.wasAttempted
         ? options.remainingAttempts === undefined
-          ? 'Incorrect passcode.'
+          ? "Incorrect passcode."
           : `Incorrect passcode. ${options.remainingAttempts} attempt(s) remaining.`
-        : 'This link requires a passcode.'
+        : "This link requires a passcode.",
     );
 
-    this.name = 'PasscodeRequiredError';
+    this.name = "PasscodeRequiredError";
     this.remainingAttempts = options.remainingAttempts;
     this.wasAttempted = options.wasAttempted;
   }
@@ -126,14 +131,14 @@ export interface LinkCodec {
 export function extractFragment(linkOrFragment: string): string {
   const trimmed = linkOrFragment.trim();
 
-  const hashIndex = trimmed.indexOf('#');
+  const hashIndex = trimmed.indexOf("#");
   if (hashIndex !== -1) {
     return trimmed.slice(hashIndex + 1);
   }
 
   // No '#': either a bare fragment body already, or a full URL with nothing useful in it.
   if (/^https?:\/\//.test(trimmed)) {
-    return '';
+    return "";
   }
 
   return trimmed;
@@ -146,16 +151,22 @@ export function extractFragment(linkOrFragment: string): string {
  * `urn:uuid:` — which is how a Task points at the QuestionnaireResponse it produced, given that
  * QuestionnaireResponse cannot reference a Task in the other direction. See `exchange.ts`.
  */
-export function collectionBundle(entries: { fullUrl?: string; resource: FhirResource }[]): Bundle {
+export function collectionBundle(
+  entries: { fullUrl?: string; resource: FhirResource }[],
+): Bundle {
   return {
-    resourceType: 'Bundle',
-    type: 'collection',
-    entry: entries.map(({ fullUrl, resource }) => (fullUrl ? { fullUrl, resource } : { resource }))
+    resourceType: "Bundle",
+    type: "collection",
+    entry: entries.map(({ fullUrl, resource }) =>
+      fullUrl ? { fullUrl, resource } : { resource },
+    ),
   };
 }
 
 /** Build a `collection` Bundle around a QuestionnaireResponse — the simplest link payload. */
-export function bundleResponse(questionnaireResponse: QuestionnaireResponse): Bundle {
+export function bundleResponse(
+  questionnaireResponse: QuestionnaireResponse,
+): Bundle {
   return collectionBundle([{ resource: questionnaireResponse }]);
 }
 
@@ -169,8 +180,8 @@ export function bundleResponse(questionnaireResponse: QuestionnaireResponse): Bu
  * working in Bundles.
  */
 export function asBundle(resource: FhirResource): Bundle {
-  return resource.resourceType === 'Bundle'
-    ? (resource as Bundle)
+  return resource.resourceType === "Bundle"
+    ? resource
     : collectionBundle([{ resource }]);
 }
 
@@ -180,16 +191,19 @@ export function asBundle(resource: FhirResource): Bundle {
  * `what` names the payload in error messages ("link payload", "reply") — the only difference
  * between the two call sites, which is why there is one implementation.
  */
-export function bundleFromJson(text: string, what = 'link payload'): Bundle {
+export function bundleFromJson(text: string, what = "link payload"): Bundle {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (cause) {
-    throw new Error(`The decrypted ${what} was not valid JSON.`, { cause });
+  } catch (error) {
+    throw new Error(`The decrypted ${what} was not valid JSON.`, {
+      cause: error,
+    });
   }
 
-  const resourceType = (parsed as { resourceType?: unknown } | null)?.resourceType;
-  if (typeof resourceType !== 'string' || resourceType === '') {
+  const resourceType = (parsed as { resourceType?: unknown } | null)
+    ?.resourceType;
+  if (typeof resourceType !== "string" || resourceType === "") {
     throw new Error(`The decrypted ${what} is not a FHIR resource.`);
   }
 
@@ -225,13 +239,13 @@ export function mergeBundles(bundles: Bundle[]): Bundle {
       return true;
     });
 
-  return { resourceType: 'Bundle', type: 'collection', entry };
+  return { resourceType: "Bundle", type: "collection", entry };
 }
 
 /** Find the first resource of a given type in a Bundle. */
 export function findInBundle<T extends FhirResource>(
   bundle: Bundle,
-  resourceType: T['resourceType']
+  resourceType: T["resourceType"],
 ): T | undefined {
   return (bundle.entry ?? [])
     .map((entry) => entry.resource)
@@ -240,10 +254,13 @@ export function findInBundle<T extends FhirResource>(
 
 /** Pull the QuestionnaireResponse back out of a decoded payload. */
 export function responseFromBundle(bundle: Bundle): QuestionnaireResponse {
-  const response = findInBundle<QuestionnaireResponse>(bundle, 'QuestionnaireResponse');
+  const response = findInBundle<QuestionnaireResponse>(
+    bundle,
+    "QuestionnaireResponse",
+  );
 
   if (!response) {
-    throw new Error('Link payload contains no QuestionnaireResponse.');
+    throw new Error("Link payload contains no QuestionnaireResponse.");
   }
 
   return response;
@@ -255,10 +272,12 @@ export function responseFromBundle(bundle: Bundle): QuestionnaireResponse {
  * The Questionnaire is always carried by reference, never by value: the Aboriginal and Torres
  * Strait Islander Health Check questionnaire alone is ~821 KB, which no QR code can hold.
  */
-export function questionnaireCanonical(response: QuestionnaireResponse): string {
+export function questionnaireCanonical(
+  response: QuestionnaireResponse,
+): string {
   if (!response.questionnaire) {
     throw new Error(
-      'QuestionnaireResponse has no `questionnaire` canonical, so the form cannot be resolved.'
+      "QuestionnaireResponse has no `questionnaire` canonical, so the form cannot be resolved.",
     );
   }
 
@@ -273,7 +292,7 @@ export function questionnaireCanonical(response: QuestionnaireResponse): string 
  */
 export function ensureQuestionnaireCanonical(
   response: QuestionnaireResponse,
-  questionnaire: Questionnaire
+  questionnaire: Questionnaire,
 ): QuestionnaireResponse {
   if (response.questionnaire) {
     return response;
@@ -281,7 +300,7 @@ export function ensureQuestionnaireCanonical(
 
   if (!questionnaire.url) {
     throw new Error(
-      'This Questionnaire has no canonical `url`, so a link to it cannot be resolved by the reader.'
+      "This Questionnaire has no canonical `url`, so a link to it cannot be resolved by the reader.",
     );
   }
 
@@ -293,20 +312,30 @@ export function ensureQuestionnaireCanonical(
 }
 
 export function defaultLabel(questionnaire: Questionnaire): string {
-  return questionnaire.title ?? questionnaire.name ?? questionnaire.id ?? 'Questionnaire';
+  return (
+    questionnaire.title ??
+    questionnaire.name ??
+    questionnaire.id ??
+    "Questionnaire"
+  );
 }
 
 /** Resolve the codec used for *creating* links. */
-export function encodingCodec(config: AppConfig, codecs: LinkCodec[]): LinkCodec {
+export function encodingCodec(
+  config: AppConfig,
+  codecs: LinkCodec[],
+): LinkCodec {
   const codec = codecs.find((candidate) => candidate.id === config.linkCodec);
   if (!codec) {
-    throw new Error(`Configured linkCodec "${config.linkCodec}" is not registered.`);
+    throw new Error(
+      `Configured linkCodec "${config.linkCodec}" is not registered.`,
+    );
   }
 
   if (codec.decodeOnly) {
     throw new Error(
       `Configured linkCodec "${config.linkCodec}" is decode-only — its links can still be opened, ` +
-        'but nothing new is minted with it. Set linkCodec to "shl".'
+        'but nothing new is minted with it. Set linkCodec to "shl".',
     );
   }
 
@@ -320,10 +349,13 @@ export function encodingCodec(config: AppConfig, codecs: LinkCodec[]): LinkCodec
  * that codec is still used for minting. That asymmetry is what lets a transport be retired without
  * invalidating links already in the wild.
  */
-export function decodingCodec(linkOrFragment: string, codecs: LinkCodec[]): LinkCodec {
+export function decodingCodec(
+  linkOrFragment: string,
+  codecs: LinkCodec[],
+): LinkCodec {
   const codec = codecs.find((candidate) => candidate.canDecode(linkOrFragment));
   if (!codec) {
-    throw new Error('Not a recognised Smart Forms link.');
+    throw new Error("Not a recognised Smart Forms link.");
   }
 
   return codec;

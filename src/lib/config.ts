@@ -8,7 +8,7 @@
  */
 
 /** Identifier of the link codec used when *creating* links. See `src/link/codec.ts`. */
-export type LinkCodecId = 'bespoke' | 'shl';
+export type LinkCodecId = "bespoke" | "shl";
 
 export interface AppConfig {
   /** Questionnaire-hosting FHIR server. Read-only usage — we never write to it. */
@@ -55,7 +55,7 @@ export interface AppConfig {
   blobServerUrl: string | null;
 
   /** How SHL payloads are stored. Only FHIR `Binary` is implemented. */
-  blobStore: 'fhir-binary';
+  blobStore: "fhir-binary";
 
   /**
    * Base URL of an external SMART Health Links manifest server, if one is ever stood up.
@@ -124,14 +124,14 @@ export interface AppConfig {
 }
 
 export const FALLBACK_CONFIG: AppConfig = {
-  formsServerUrl: 'https://smartforms.csiro.au/api/fhir',
-  terminologyServerUrl: 'https://r4.ontoserver.csiro.au/fhir',
+  formsServerUrl: "https://smartforms.csiro.au/api/fhir",
+  terminologyServerUrl: "https://r4.ontoserver.csiro.au/fhir",
   linkBaseUrl: null,
-  linkCodec: 'shl',
+  linkCodec: "shl",
   // Null on purpose: writing must be configured, never inferred. See the field docs above.
   responseServerUrl: null,
   blobServerUrl: null,
-  blobStore: 'fhir-binary',
+  blobStore: "fhir-binary",
   shlManifestUrl: null,
   senderName: null,
   // Off unless asked for: it is the channel that writes without review. See the field docs above.
@@ -139,11 +139,11 @@ export const FALLBACK_CONFIG: AppConfig = {
   // Deferred, not removed. The primary return path is a link the filler mints. See the field docs.
   enableEncryptedReply: false,
   linkLifetimeDays: 30,
-  publishRequestTasks: true
+  publishRequestTasks: true,
 };
 
 function isValidUrl(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^https?:\/\/.+/.test(value.trim())) {
+  if (typeof value !== "string" || !/^https?:\/\/.+/.test(value.trim())) {
     return false;
   }
 
@@ -156,7 +156,10 @@ function isValidUrl(value: unknown): value is string {
 }
 
 /** Absent is fine and takes the fallback; present but the wrong shape is not. */
-function isAbsentOr(value: unknown, valid: (candidate: unknown) => boolean): boolean {
+function isAbsentOr(
+  value: unknown,
+  valid: (candidate: unknown) => boolean,
+): boolean {
   return value === undefined || valid(value);
 }
 
@@ -169,7 +172,7 @@ function isAbsentOr(value: unknown, valid: (candidate: unknown) => boolean): boo
  * silently point a deployment somewhere else.
  */
 export function isAppConfig(value: unknown): value is Partial<AppConfig> {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return false;
   }
 
@@ -178,21 +181,35 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
     isValidUrl(candidate.formsServerUrl) &&
     isValidUrl(candidate.terminologyServerUrl) &&
     (candidate.linkBaseUrl === null || isValidUrl(candidate.linkBaseUrl)) &&
-    (candidate.linkCodec === 'bespoke' || candidate.linkCodec === 'shl') &&
-    (candidate.responseServerUrl === null || isValidUrl(candidate.responseServerUrl)) &&
+    (candidate.linkCodec === "bespoke" || candidate.linkCodec === "shl") &&
+    (candidate.responseServerUrl === null ||
+      isValidUrl(candidate.responseServerUrl)) &&
     (candidate.blobServerUrl === null || isValidUrl(candidate.blobServerUrl)) &&
-    candidate.blobStore === 'fhir-binary' &&
-    (candidate.shlManifestUrl === null || isValidUrl(candidate.shlManifestUrl)) &&
+    candidate.blobStore === "fhir-binary" &&
+    (candidate.shlManifestUrl === null ||
+      isValidUrl(candidate.shlManifestUrl)) &&
     isAbsentOr(
       candidate.senderName,
-      (name) => name === null || (typeof name === 'string' && name.trim() !== '')
+      (name) =>
+        name === null || (typeof name === "string" && name.trim() !== ""),
     ) &&
-    isAbsentOr(candidate.enableServerReturn, (flag) => typeof flag === 'boolean') &&
-    isAbsentOr(candidate.enableEncryptedReply, (flag) => typeof flag === 'boolean') &&
-    isAbsentOr(candidate.publishRequestTasks, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(
+      candidate.enableServerReturn,
+      (flag) => typeof flag === "boolean",
+    ) &&
+    isAbsentOr(
+      candidate.enableEncryptedReply,
+      (flag) => typeof flag === "boolean",
+    ) &&
+    isAbsentOr(
+      candidate.publishRequestTasks,
+      (flag) => typeof flag === "boolean",
+    ) &&
     isAbsentOr(
       candidate.linkLifetimeDays,
-      (days) => days === null || (typeof days === 'number' && Number.isFinite(days) && days > 0)
+      (days) =>
+        days === null ||
+        (typeof days === "number" && Number.isFinite(days) && days > 0),
     )
   );
 }
@@ -205,14 +222,16 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
  */
 export async function loadConfig(): Promise<AppConfig> {
   try {
-    const response = await fetch('/config.json', { headers: { Accept: 'application/json' } });
+    const response = await fetch("/config.json", {
+      headers: { Accept: "application/json" },
+    });
     if (!response.ok) {
       return FALLBACK_CONFIG;
     }
 
     const parsed: unknown = await response.json();
     if (!isAppConfig(parsed)) {
-      console.warn('config.json is malformed, falling back to defaults');
+      console.warn("config.json is malformed, falling back to defaults");
       return FALLBACK_CONFIG;
     }
 
@@ -220,23 +239,26 @@ export async function loadConfig(): Promise<AppConfig> {
     // instead of `undefined`.
     return { ...FALLBACK_CONFIG, ...parsed };
   } catch {
-    console.warn('config.json could not be loaded, falling back to defaults');
+    console.warn("config.json could not be loaded, falling back to defaults");
     return FALLBACK_CONFIG;
   }
 }
 
 /** Origin that generated links point at. */
 export function resolveLinkBaseUrl(config: AppConfig): string {
-  return config.linkBaseUrl ?? window.location.origin;
+  return config.linkBaseUrl ?? globalThis.location.origin;
 }
 
 /** Epoch seconds at which a request minted now should stop being openable. */
-export function resolveExpiry(config: AppConfig, now = Date.now()): number | undefined {
+export function resolveExpiry(
+  config: AppConfig,
+  now = Date.now(),
+): number | undefined {
   if (config.linkLifetimeDays === null) {
     return undefined;
   }
 
-  return Math.floor(now / 1000) + Math.round(config.linkLifetimeDays * 86400);
+  return Math.floor(now / 1000) + Math.round(config.linkLifetimeDays * 86_400);
 }
 
 /** Whether the plain-FHIR return channel is both enabled and pointed somewhere. */

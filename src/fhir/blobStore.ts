@@ -16,10 +16,10 @@ export interface BlobStore {
 }
 
 /** Media type for a JWE compact serialisation (RFC 7515 §9.2.1). */
-export const JOSE_CONTENT_TYPE = 'application/jose';
+export const JOSE_CONTENT_TYPE = "application/jose";
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, '');
+  return url.replace(/\/+$/, "");
 }
 
 /**
@@ -48,14 +48,14 @@ export function fhirBinaryBlobStore(baseUrl: string): BlobStore {
   return {
     async put(bytes: Uint8Array, contentType: string): Promise<string> {
       const response = await fetch(`${base}/Binary`, {
-        method: 'POST',
-        headers: { 'Content-Type': contentType },
-        body: bytes as BodyInit
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: bytes as BodyInit,
       });
 
       if (!response.ok) {
         throw new Error(
-          `Could not store the encrypted payload (${response.status} ${response.statusText}).`
+          `Could not store the encrypted payload (${response.status} ${response.statusText}).`,
         );
       }
 
@@ -68,7 +68,7 @@ export function fhirBinaryBlobStore(baseUrl: string): BlobStore {
       const id = await readCreatedId(response);
 
       return `${base}/Binary/${encodeURIComponent(id)}`;
-    }
+    },
   };
 }
 
@@ -79,7 +79,9 @@ export function fhirBinaryBlobStore(baseUrl: string): BlobStore {
  * Location header's path — its host may be wrong but its id is not.
  */
 async function readCreatedId(response: Response): Promise<string> {
-  const location = response.headers.get('Location') ?? response.headers.get('Content-Location');
+  const location =
+    response.headers.get("Location") ??
+    response.headers.get("Content-Location");
   if (location) {
     const match = /\/Binary\/([^/?]+)/.exec(location);
     if (match) {
@@ -90,21 +92,25 @@ async function readCreatedId(response: Response): Promise<string> {
   try {
     const body: unknown = await response.clone().json();
     const id = (body as { id?: unknown } | null)?.id;
-    if (typeof id === 'string' && id !== '') {
+    if (typeof id === "string" && id !== "") {
       return id;
     }
   } catch {
     // Binary creates echo raw bytes rather than JSON, so this is an expected miss.
   }
 
-  throw new Error('The server accepted the payload but did not report where it was stored.');
+  throw new Error(
+    "The server accepted the payload but did not report where it was stored.",
+  );
 }
 
 /**
  * In-memory store, for tests. Returns `blob:`-style URLs that only `inMemoryBlobStore` itself can
  * resolve, so it is paired with a fetch shim in the test scripts.
  */
-export function inMemoryBlobStore(): BlobStore & { get(url: string): Uint8Array | undefined } {
+export function inMemoryBlobStore(): BlobStore & {
+  get(url: string): Uint8Array | undefined;
+} {
   const blobs = new Map<string, Uint8Array>();
   let counter = 0;
 
@@ -118,6 +124,6 @@ export function inMemoryBlobStore(): BlobStore & { get(url: string): Uint8Array 
 
     get(url: string): Uint8Array | undefined {
       return blobs.get(url);
-    }
+    },
   };
 }

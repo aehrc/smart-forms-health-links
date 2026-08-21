@@ -1,17 +1,18 @@
+import { collectionBundle, findInBundle } from "./codec";
+import {
+  buildReplyDescriptorExtension,
+  buildServerTaskUrlExtension,
+  type ReplyDescriptor,
+} from "./replyDescriptor";
+
 import type {
   Bundle,
   Extension,
   Provenance,
   Questionnaire,
   QuestionnaireResponse,
-  Task
-} from 'fhir/r4';
-import { collectionBundle, findInBundle, questionnaireCanonical } from './codec';
-import {
-  buildReplyDescriptorExtension,
-  buildServerTaskUrlExtension,
-  type ReplyDescriptor
-} from './replyDescriptor';
+  Task,
+} from "fhir/r4";
 
 /**
  * The two payloads that travel between a requester and a form filler.
@@ -36,11 +37,11 @@ import {
  */
 
 /** `Task.input`/`output` slot describing which questionnaire the task concerns. */
-const QUESTIONNAIRE_INPUT_TYPE = { text: 'questionnaire' } as const;
-const RESPONSE_OUTPUT_TYPE = { text: 'questionnaire-response' } as const;
+const QUESTIONNAIRE_INPUT_TYPE = { text: "questionnaire" } as const;
+const RESPONSE_OUTPUT_TYPE = { text: "questionnaire-response" } as const;
 
 /** RFC 3986 URI namespace, the conventional system for a UUID-based business identifier. */
-const URI_IDENTIFIER_SYSTEM = 'urn:ietf:rfc:3986';
+const URI_IDENTIFIER_SYSTEM = "urn:ietf:rfc:3986";
 
 /**
  * "This content was asserted by the patient, not by a clinician."
@@ -51,13 +52,13 @@ const URI_IDENTIFIER_SYSTEM = 'urn:ietf:rfc:3986';
  * indistinguishable in the record from answers recorded by a clinician.
  */
 export const PATIENT_ASSERTED_SECURITY = {
-  system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationValue',
-  code: 'PATAST',
-  display: 'patient asserted'
+  system: "http://terminology.hl7.org/CodeSystem/v3-ObservationValue",
+  code: "PATAST",
+  display: "patient asserted",
 } as const;
 
 const PROVENANCE_PARTICIPANT_TYPE =
-  'http://terminology.hl7.org/CodeSystem/provenance-participant-type';
+  "http://terminology.hl7.org/CodeSystem/provenance-participant-type";
 
 export interface RequestPayload {
   questionnaire: Questionnaire;
@@ -115,18 +116,20 @@ function newUuid(): string {
  */
 export function buildRequestBundle(
   questionnaire: Questionnaire,
-  options: BuildRequestOptions = {}
+  options: BuildRequestOptions = {},
 ): { bundle: Bundle; task: Task } {
   const questionnaireUuid = `urn:uuid:${newUuid()}`;
   const requestId = options.requestId ?? newUuid();
 
   const task: Task = {
-    resourceType: 'Task',
-    status: 'requested',
-    intent: 'order',
-    identifier: [{ system: URI_IDENTIFIER_SYSTEM, value: `urn:uuid:${requestId}` }],
+    resourceType: "Task",
+    status: "requested",
+    intent: "order",
+    identifier: [
+      { system: URI_IDENTIFIER_SYSTEM, value: `urn:uuid:${requestId}` },
+    ],
     authoredOn: options.authoredOn ?? new Date().toISOString(),
-    description: `Complete "${questionnaire.title ?? questionnaire.name ?? 'questionnaire'}"`,
+    description: `Complete "${questionnaire.title ?? questionnaire.name ?? "questionnaire"}"`,
     /*
      * `focus` names the Questionnaire by **canonical**, not by the `urn:uuid` of its Bundle entry.
      *
@@ -144,18 +147,26 @@ export function buildRequestBundle(
     focus: questionnaire.url
       ? {
           reference: canonicalOf(questionnaire),
-          type: 'Questionnaire',
-          display: questionnaire.title ?? questionnaire.name
+          type: "Questionnaire",
+          display: questionnaire.title ?? questionnaire.name,
         }
-      : { reference: questionnaireUuid, display: questionnaire.title ?? questionnaire.name },
+      : {
+          reference: questionnaireUuid,
+          display: questionnaire.title ?? questionnaire.name,
+        },
     /*
      * The canonical is duplicated into `input` deliberately, and stays duplicated even now that
      * `focus` carries it: `focus` is dropped on the return leg (it would dangle once the Questionnaire
      * is gone), so `input` is what survives to record which form was answered.
      */
     input: questionnaire.url
-      ? [{ type: QUESTIONNAIRE_INPUT_TYPE, valueCanonical: canonicalOf(questionnaire) }]
-      : undefined
+      ? [
+          {
+            type: QUESTIONNAIRE_INPUT_TYPE,
+            valueCanonical: canonicalOf(questionnaire),
+          },
+        ]
+      : undefined,
   };
 
   if (options.requesterDisplay) {
@@ -164,8 +175,10 @@ export function buildRequestBundle(
 
   if (options.subjectReference || options.subjectDisplay) {
     task.for = {
-      ...(options.subjectReference ? { reference: options.subjectReference } : {}),
-      ...(options.subjectDisplay ? { display: options.subjectDisplay } : {})
+      ...(options.subjectReference
+        ? { reference: options.subjectReference }
+        : {}),
+      ...(options.subjectDisplay ? { display: options.subjectDisplay } : {}),
     };
   }
 
@@ -182,24 +195,26 @@ export function buildRequestBundle(
 
   const bundle = collectionBundle([
     { fullUrl: questionnaireUuid, resource: questionnaire },
-    { fullUrl: `urn:uuid:${newUuid()}`, resource: task }
+    { fullUrl: `urn:uuid:${newUuid()}`, resource: task },
   ]);
 
   return { bundle, task };
 }
 
 export function parseRequestBundle(bundle: Bundle): RequestPayload {
-  const questionnaire = findInBundle<Questionnaire>(bundle, 'Questionnaire');
+  const questionnaire = findInBundle<Questionnaire>(bundle, "Questionnaire");
   if (!questionnaire) {
     throw new Error(
-      'This link does not contain a Questionnaire, so there is no form to fill in. ' +
-        'It may be a completed response rather than a request.'
+      "This link does not contain a Questionnaire, so there is no form to fill in. " +
+        "It may be a completed response rather than a request.",
     );
   }
 
-  const task = findInBundle<Task>(bundle, 'Task');
+  const task = findInBundle<Task>(bundle, "Task");
   if (!task) {
-    throw new Error('This request is missing its Task, so the answers could not be matched back.');
+    throw new Error(
+      "This request is missing its Task, so the answers could not be matched back.",
+    );
   }
 
   return { questionnaire, task };
@@ -213,17 +228,19 @@ export function parseRequestBundle(bundle: Bundle): RequestPayload {
  */
 export function buildResponseBundle(
   response: QuestionnaireResponse,
-  requestTask?: Task
+  requestTask?: Task,
 ): { bundle: Bundle; task?: Task } {
   const responseUuid = `urn:uuid:${newUuid()}`;
 
   if (!requestTask) {
-    return { bundle: collectionBundle([{ fullUrl: responseUuid, resource: response }]) };
+    return {
+      bundle: collectionBundle([{ fullUrl: responseUuid, resource: response }]),
+    };
   }
 
   const task: Task = {
     ...requestTask,
-    status: 'completed',
+    status: "completed",
     lastModified: new Date().toISOString(),
     /*
      * `focus` named the Questionnaire in the request Bundle. That entry is gone here, so the canonical
@@ -237,15 +254,20 @@ export function buildResponseBundle(
      * copy a capability into whatever transport the answers travel on, including an unencrypted QR.
      */
     extension: undefined,
-    output: [{ type: RESPONSE_OUTPUT_TYPE, valueReference: { reference: responseUuid } }]
+    output: [
+      {
+        type: RESPONSE_OUTPUT_TYPE,
+        valueReference: { reference: responseUuid },
+      },
+    ],
   };
 
   return {
     bundle: collectionBundle([
       { fullUrl: responseUuid, resource: response },
-      { fullUrl: `urn:uuid:${newUuid()}`, resource: task }
+      { fullUrl: `urn:uuid:${newUuid()}`, resource: task },
     ]),
-    task
+    task,
   };
 }
 
@@ -262,23 +284,26 @@ export function buildResponseBundle(
  */
 export function responseCanonical(
   response: QuestionnaireResponse,
-  fallback?: string
+  fallback?: string,
 ): string | undefined {
   return response.questionnaire ?? fallback;
 }
 
 export function parseResponseBundle(bundle: Bundle): ResponsePayload {
-  const response = findInBundle<QuestionnaireResponse>(bundle, 'QuestionnaireResponse');
+  const response = findInBundle<QuestionnaireResponse>(
+    bundle,
+    "QuestionnaireResponse",
+  );
   if (!response) {
     throw new Error(
-      'This link does not contain a QuestionnaireResponse, so there are no answers to review.'
+      "This link does not contain a QuestionnaireResponse, so there are no answers to review.",
     );
   }
 
   return {
     response,
-    task: findInBundle<Task>(bundle, 'Task'),
-    provenance: findInBundle<Provenance>(bundle, 'Provenance')
+    task: findInBundle<Task>(bundle, "Task"),
+    provenance: findInBundle<Provenance>(bundle, "Provenance"),
   };
 }
 
@@ -312,17 +337,20 @@ export interface BuildReplyOptions {
  */
 export function buildReplyBundle(
   response: QuestionnaireResponse,
-  options: BuildReplyOptions = {}
+  options: BuildReplyOptions = {},
 ): { bundle: Bundle; provenance?: Provenance } {
   const { id: _id, ...withoutLocalId } = response;
 
   const attributed: QuestionnaireResponse = {
     ...withoutLocalId,
-    status: 'completed',
+    status: "completed",
     meta: {
       ...response.meta,
-      security: [...(response.meta?.security ?? []), { ...PATIENT_ASSERTED_SECURITY }]
-    }
+      security: [
+        ...(response.meta?.security ?? []),
+        { ...PATIENT_ASSERTED_SECURITY },
+      ],
+    },
   };
 
   const { bundle } = buildResponseBundle(attributed, options.requestTask);
@@ -331,7 +359,9 @@ export function buildReplyBundle(
   const responseUuid = bundle.entry?.[0]?.fullUrl;
 
   const patientReference =
-    options.patientReference ?? response.author?.reference ?? response.subject?.reference;
+    options.patientReference ??
+    response.author?.reference ??
+    response.subject?.reference;
 
   if (!patientReference || !responseUuid) {
     // `Provenance.agent.who` is 1..1, so there is no valid Provenance to write without someone to
@@ -340,36 +370,43 @@ export function buildReplyBundle(
   }
 
   const provenance: Provenance = {
-    resourceType: 'Provenance',
+    resourceType: "Provenance",
     target: [{ reference: responseUuid }],
     recorded: options.recorded ?? new Date().toISOString(),
     agent: [
       {
         type: {
-          coding: [{ system: PROVENANCE_PARTICIPANT_TYPE, code: 'author', display: 'Author' }]
+          coding: [
+            {
+              system: PROVENANCE_PARTICIPANT_TYPE,
+              code: "author",
+              display: "Author",
+            },
+          ],
         },
-        who: { reference: patientReference }
-      }
-    ]
+        who: { reference: patientReference },
+      },
+    ],
   };
 
   return {
     bundle: collectionBundle([
       ...(bundle.entry ?? []).map((entry) => ({
         fullUrl: entry.fullUrl,
-        resource: entry.resource!
+        resource: entry.resource!,
       })),
-      { fullUrl: `urn:uuid:${newUuid()}`, resource: provenance }
+      { fullUrl: `urn:uuid:${newUuid()}`, resource: provenance },
     ]),
-    provenance
+    provenance,
   };
 }
 
 /** Whether a decoded payload is a request to fill rather than a completed response. */
 export function isRequestBundle(bundle: Bundle): boolean {
   return (
-    findInBundle<Questionnaire>(bundle, 'Questionnaire') !== undefined &&
-    findInBundle<QuestionnaireResponse>(bundle, 'QuestionnaireResponse') === undefined
+    findInBundle<Questionnaire>(bundle, "Questionnaire") !== undefined &&
+    findInBundle<QuestionnaireResponse>(bundle, "QuestionnaireResponse") ===
+      undefined
   );
 }
 
@@ -385,18 +422,22 @@ export function taskCorrelationId(task: Task | undefined): string | undefined {
  * they get to decide whether it matters. {@link canonicalOf} is the variant for callers that cannot
  * proceed without one.
  */
-export function questionnaireCanonicalOf(questionnaire: Questionnaire): string | undefined {
+export function questionnaireCanonicalOf(
+  questionnaire: Questionnaire,
+): string | undefined {
   if (!questionnaire.url) {
     return undefined;
   }
 
-  return questionnaire.version ? `${questionnaire.url}|${questionnaire.version}` : questionnaire.url;
+  return questionnaire.version
+    ? `${questionnaire.url}|${questionnaire.version}`
+    : questionnaire.url;
 }
 
 function canonicalOf(questionnaire: Questionnaire): string {
   const canonical = questionnaireCanonicalOf(questionnaire);
   if (!canonical) {
-    throw new Error('Questionnaire has no canonical url.');
+    throw new Error("Questionnaire has no canonical url.");
   }
 
   return canonical;
@@ -407,8 +448,10 @@ function canonicalOf(questionnaire: Questionnaire): string {
  * request and the response agree even if the filler resolved the form some other way.
  */
 export function canonicalFromRequest(payload: RequestPayload): string {
-  const fromInput = payload.task.input?.find((input) => input.valueCanonical)?.valueCanonical;
+  const fromInput = payload.task.input?.find(
+    (input) => input.valueCanonical,
+  )?.valueCanonical;
   return fromInput ?? canonicalOf(payload.questionnaire);
 }
 
-export { questionnaireCanonical };
+export { questionnaireCanonical } from "./codec";
