@@ -15,3 +15,7 @@ playwright-report
 
 # Per-developer tool state. Only ignored by one contributor's global gitignore otherwise.
 .claude/settings.local.json
+
+# Local runtime state and the operator's own issuer registry.
+config/issuers.json
+data
