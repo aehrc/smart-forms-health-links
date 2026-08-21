@@ -108,11 +108,11 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
                 <img
                   src={qr.dataUrl}
                   alt="QR code containing the link"
-                  className="rounded-md border border-slate-200"
+                  className="rounded-md border border-slate-200 dark:border-slate-800"
                   width={320}
                   height={320}
                 />
-                <p className="mt-1 text-center text-xs text-slate-500">
+                <p className="mt-1 text-center text-xs text-slate-500 dark:text-slate-400">
                   {qr.byteLength} / {MAX_QR_BYTES} bytes · error correction{" "}
                   {qr.level}
                 </p>
@@ -127,7 +127,7 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
                 </Alert>
               </div>
             ) : (
-              <p className="flex h-80 w-80 items-center justify-center gap-2 rounded-md border border-slate-200 text-sm text-slate-500">
+              <p className="flex h-80 w-80 items-center justify-center gap-2 rounded-md border border-slate-200 dark:border-slate-800 text-sm text-slate-500 dark:text-slate-400">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                 Building QR…
               </p>
@@ -136,7 +136,7 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
 
           <div className="min-w-0 flex-1 space-y-2">
             <label
-              className="text-sm font-medium text-slate-700"
+              className="text-sm font-medium text-slate-700 dark:text-slate-300"
               htmlFor="share-link"
             >
               Link
@@ -147,7 +147,7 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
               value={link}
               rows={6}
               onFocus={(event) => event.currentTarget.select()}
-              className="w-full resize-none rounded-md border border-slate-300 bg-slate-50 p-2 font-mono text-xs break-all"
+              className="w-full resize-none rounded-md border border-slate-300 bg-slate-50 p-2 font-mono text-xs break-all dark:border-slate-700 dark:bg-slate-950"
             />
             <Button onClick={copyLink} variant="outline" size="sm">
               {copied ? (

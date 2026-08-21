@@ -84,7 +84,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
   }
 
   const correlationId = taskCorrelationId(task);
-  const canHost = canCreateHealthLinks(config);
+  const canHost = canCreateHealthLinks();
   const requester = task.requester?.display;
   const addressedTo = task.for?.display;
 
@@ -92,10 +92,10 @@ export default function FillFromRequest(props: FillFromRequestProps) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
             {label ?? questionnaire.title ?? questionnaire.id}
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
             {requester
               ? `${requester} has asked for this form to be completed.`
               : "Someone has asked for this form to be completed."}
@@ -153,7 +153,10 @@ export default function FillFromRequest(props: FillFromRequestProps) {
       {sent ? (
         <Alert title="Sent securely">
           <span className="inline-flex items-center gap-1.5">
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-600" aria-hidden />
+            <CheckCircle2
+              className="h-3.5 w-3.5 text-green-600 dark:text-green-400"
+              aria-hidden
+            />
             The encrypted answers were delivered to the requester&rsquo;s reply
             slot.
           </span>

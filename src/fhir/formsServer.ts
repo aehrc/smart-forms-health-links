@@ -1,18 +1,19 @@
 import type { Bundle, Questionnaire } from "fhir/r4";
 
-const FHIR_JSON = "application/fhir+json";
+import { fetchProxiedFhir } from "@/lib/session";
 
-async function fetchFhir<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { headers: { Accept: FHIR_JSON }, signal });
-
-  if (!response.ok) {
-    throw new Error(
-      `FHIR request failed (${response.status} ${response.statusText}): ${url}`,
-    );
-  }
-
-  return (await response.json()) as T;
-}
+/**
+ * Reading Questionnaires from the launched server.
+ *
+ * These used to come from a public forms catalogue named in `config.json`, which is why the
+ * parameter below is still called `formsServerUrl`. They now come from the clinical system the
+ * requester signed in to, reached through the BFF proxy, so the forms a user sees are the forms
+ * their own organisation publishes rather than a shared reference library (FR-004).
+ *
+ * The base URL remains a parameter: callers pass `FHIR_PROXY_BASE`, and these functions stay
+ * unit-testable against any base.
+ * @author John Grimes
+ */
 
 function bundleResources<T>(bundle: Bundle | undefined): T[] {
   return (bundle?.entry ?? [])
@@ -21,9 +22,9 @@ function bundleResources<T>(bundle: Bundle | undefined): T[] {
 }
 
 /**
- * A Questionnaire is only renderable if it actually has items. The forms server hosts a number of
- * sub-questionnaires and assembly roots that have none, and feeding those to the renderer produces
- * a blank form rather than an error — so filter them out at the source.
+ * A Questionnaire is only renderable if it actually has items. A FHIR server may hold
+ * sub-questionnaires and assembly roots that have none, and feeding those to the renderer
+ * produces a blank form rather than an error — so filter them out at the source.
  */
 export function isRenderableQuestionnaire(
   questionnaire: Questionnaire | undefined,
@@ -52,13 +53,13 @@ export async function searchQuestionnaires(
     params.set("title:contains", searchText.trim());
   }
 
-  const bundle = await fetchFhir<Bundle>(
+  const bundle = await fetchProxiedFhir<Bundle>(
     `${trimTrailingSlash(formsServerUrl)}/Questionnaire?${params.toString()}`,
     signal,
   );
 
-  return bundleResources<Questionnaire>(bundle).filter(
-    isRenderableQuestionnaire,
+  return bundleResources<Questionnaire>(bundle).filter((questionnaire) =>
+    isRenderableQuestionnaire(questionnaire),
   );
 }
 
@@ -67,7 +68,7 @@ export async function fetchQuestionnaireById(
   id: string,
   signal?: AbortSignal,
 ): Promise<Questionnaire> {
-  return fetchFhir<Questionnaire>(
+  return fetchProxiedFhir<Questionnaire>(
     `${trimTrailingSlash(formsServerUrl)}/Questionnaire/${encodeURIComponent(id)}`,
     signal,
   );
@@ -92,7 +93,7 @@ export async function fetchQuestionnaireByCanonical(
     params.set("version", version);
   }
 
-  const bundle = await fetchFhir<Bundle>(
+  const bundle = await fetchProxiedFhir<Bundle>(
     `${trimTrailingSlash(formsServerUrl)}/Questionnaire?${params.toString()}`,
     signal,
   );

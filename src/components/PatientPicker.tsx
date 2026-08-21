@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
  * `serverUrl` is a parameter rather than read from config because the two callers mean different
  * servers by it: a request is addressed to a patient on the EHR, while a response has to name one the
  * *destination* server can resolve, and a questionnaire may declare a destination of its own.
+ * @author John Grimes
  */
 
 export interface ChosenPatient {
@@ -107,16 +108,18 @@ export default function PatientPicker(props: PatientPickerProps) {
       </div>
 
       {error ? (
-        <p className="text-xs text-red-700">
+        <p className="text-xs text-red-700 dark:text-red-400">
           Could not search {serverUrl} —{" "}
           {error instanceof Error ? error.message : String(error)}
         </p>
       ) : null}
 
-      {isPending ? <p className="text-xs text-slate-500">Searching…</p> : null}
+      {isPending ? (
+        <p className="text-xs text-slate-500 dark:text-slate-400">Searching…</p>
+      ) : null}
 
       {!isPending && !error && patients.length === 0 ? (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-slate-500 dark:text-slate-400">
           {debouncedSearch.trim() === ""
             ? "This server holds no patients."
             : `Nothing matched “${debouncedSearch.trim()}”.`}
@@ -124,7 +127,7 @@ export default function PatientPicker(props: PatientPickerProps) {
       ) : null}
 
       {patients.length > 0 ? (
-        <ul className="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-md border border-slate-200 bg-white">
+        <ul className="max-h-64 divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
           {patients.map((patient) => {
             const reference = `Patient/${patient.id}`;
             const display = patientDisplay(patient);
@@ -139,13 +142,15 @@ export default function PatientPicker(props: PatientPickerProps) {
                   aria-pressed={isSelected}
                   className={cn(
                     "flex w-full items-start gap-2 px-3 py-2 text-left transition-colors",
-                    "focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:outline-none",
-                    isSelected ? "bg-slate-100" : "hover:bg-slate-50",
+                    "focus-visible:ring-2 focus-visible:ring-slate-400 dark:focus-visible:ring-slate-500 focus-visible:outline-none",
+                    isSelected
+                      ? "bg-slate-100 dark:bg-slate-800"
+                      : "hover:bg-slate-50 dark:hover:bg-slate-800",
                   )}
                 >
                   {isSelected ? (
                     <Check
-                      className="mt-0.5 h-4 w-4 shrink-0 text-green-600"
+                      className="mt-0.5 h-4 w-4 shrink-0 text-green-600 dark:text-green-400"
                       aria-hidden
                     />
                   ) : (
@@ -155,10 +160,10 @@ export default function PatientPicker(props: PatientPickerProps) {
                     />
                   )}
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium text-slate-900">
+                    <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">
                       {display}
                     </span>
-                    <span className="block truncate text-xs text-slate-500">
+                    <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                       {reference}
                       {summary ? ` · ${summary}` : null}
                     </span>
@@ -171,7 +176,7 @@ export default function PatientPicker(props: PatientPickerProps) {
       ) : null}
 
       {more ? (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-slate-500 dark:text-slate-400">
           Showing {patients.length} of {page?.total} — narrow the search to see
           the rest.
         </p>

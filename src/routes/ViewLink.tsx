@@ -16,7 +16,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
-import { useConfig } from "@/lib/ConfigContext";
+import { FHIR_PROXY_BASE } from "@/lib/session";
 import {
   listRequests,
   updateRequest,
@@ -42,8 +42,9 @@ import { LINK_CODECS } from "@/link/registry";
  * The response direction is now the primary one: a filler mints its own SMART Health Link and the
  * requester scans it back. Two consequences shape this file. Answers arriving by link carry no
  * indication of *which* request they answer beyond `Task.identifier`, so the local record is looked
- * up here and stamped on save. And a link this app did not write may cite a form its forms server
- * does not hold, so an unresolvable Questionnaire degrades the display rather than failing the open.
+ * up here and stamped on save. And a link this app did not write may cite a form the launched
+ * server does not hold - or is being opened by a filler with no session at all - so an unresolvable
+ * Questionnaire degrades the display rather than failing the open.
  */
 
 type Opened = { warnings?: string[]; label?: string } & (
@@ -135,7 +136,6 @@ async function openLink(
 
 export default function ViewLink() {
   const location = useLocation();
-  const config = useConfig();
 
   // `location.hash` includes the leading '#'; the codecs strip it.
   const fragment = location.hash;
@@ -164,15 +164,15 @@ export default function ViewLink() {
     isPending,
     error,
   } = useQuery({
-    queryKey: [
-      "link",
-      config.formsServerUrl,
-      fragment,
-      passcode ?? "",
-      attempt.nonce,
-    ],
+    queryKey: ["link", fragment, passcode ?? "", attempt.nonce],
+    /*
+     * TODO(phase-5): T037-T039 rework this surface. The canonical resolution below reads through
+     * the session proxy, which is right for the requester scanning answers back, and unavailable
+     * to a filler who holds only a link - so an unresolvable Questionnaire has to keep degrading
+     * the display rather than failing the open, exactly as it already does.
+     */
     queryFn: ({ signal }) =>
-      openLink(fragment, config.formsServerUrl, { passcode, signal }),
+      openLink(fragment, FHIR_PROXY_BASE, { passcode, signal }),
     enabled: fragment !== "",
     retry: false,
   });
@@ -188,7 +188,7 @@ export default function ViewLink() {
 
   if (isPending) {
     return (
-      <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
+      <p className="flex items-center gap-2 py-8 text-sm text-slate-500 dark:text-slate-400">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         Opening link…
       </p>
@@ -306,7 +306,7 @@ function PasscodePrompt(props: {
         >
           <div className="space-y-1">
             <label
-              className="block text-xs font-medium text-slate-700"
+              className="block text-xs font-medium text-slate-700 dark:text-slate-300"
               htmlFor="shl-passcode"
             >
               Passcode
@@ -334,7 +334,7 @@ function BackLink() {
   return (
     <RouterLink
       to="/"
-      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
     >
       <ArrowLeft className="h-4 w-4" aria-hidden />
       All forms

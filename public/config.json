@@ -1,15 +1,7 @@
 {
-  "formsServerUrl": "https://smartforms.csiro.au/api/fhir",
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
   "linkBaseUrl": null,
   "linkCodec": "shl",
-  "responseServerUrl": "https://proxy.smartforms.io/fhir",
-  "blobServerUrl": "https://proxy.smartforms.io/fhir",
-  "blobStore": "fhir-binary",
-  "shlManifestUrl": null,
   "senderName": null,
-  "enableServerReturn": false,
-  "enableEncryptedReply": false,
-  "linkLifetimeDays": 30,
-  "publishRequestTasks": true
+  "linkLifetimeDays": 30
 }

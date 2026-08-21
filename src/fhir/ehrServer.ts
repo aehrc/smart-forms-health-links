@@ -2,43 +2,31 @@ import { SHL_REQUEST_TAG } from "./submit";
 
 import type { Bundle, Patient, QuestionnaireResponse, Task } from "fhir/r4";
 
+import { fetchProxiedFhir } from "@/lib/session";
+
 /**
- * Reading the EHR — the server that holds patient data, as distinct from the forms catalogue.
+ * Reading the launched server: patients, their responses, and the request Tasks this app
+ * published.
  *
- * Three servers, three jobs, and keeping them straight is most of the point of this file:
+ * There used to be three servers here - a forms catalogue, a response server and a blob host -
+ * each named by its own configuration key, because the app had no launch context and had to be
+ * told where everything was. There is now one server and no configuration: the requester signs
+ * in to a clinical system and every read below goes to that system through the BFF proxy, which
+ * attaches the session's access token server-side (FR-004, FR-005).
  *
- * | `formsServerUrl`    | `smartforms.csiro.au/api/fhir` | Questionnaire **definitions**. Read only. |
- * | `responseServerUrl` | `proxy.smartforms.io/fhir`     | Patients and QuestionnaireResponses — the EHR. |
- * | `blobServerUrl`     | wherever                       | Encrypted payloads and reply slots. |
- *
- * The middle one is what smart-forms calls the *patient data FHIR API* and what `sdc-populate` takes as
- * its `sourceServerUrl`. It is a plain HAPI instance behind `proxy.smartforms.io/fhir`; the sibling
- * `proxy.smartforms.io/v/r4/fhir` is the same data behind a SMART-on-FHIR launcher facade, which is the
- * right base for an app doing SMART App Launch and the wrong one here — this app has no launch context,
- * and the plain base is also the one that reports usable `Location` headers.
+ * The base URL is still a parameter rather than a constant in this file. Callers pass
+ * `FHIR_PROXY_BASE`, and the functions stay unit-testable against any base without a browser
+ * origin to intercept.
  *
  * Everything here is a read. Writes go through `src/fhir/submit.ts`.
+ * @author John Grimes
  */
-
-const FHIR_JSON = "application/fhir+json";
 
 /** How many rows a list fetches at once. Enough to be useful, small enough to stay responsive. */
 export const DEFAULT_PAGE_SIZE = 50;
 
 function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
-}
-
-async function fetchFhir<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { headers: { Accept: FHIR_JSON }, signal });
-
-  if (!response.ok) {
-    throw new Error(
-      `FHIR request failed (${response.status} ${response.statusText}): ${url}`,
-    );
-  }
-
-  return (await response.json()) as T;
 }
 
 function bundleResources<T>(bundle: Bundle | undefined): T[] {
@@ -147,7 +135,7 @@ export async function searchQuestionnaireResponses(
     params.set("questionnaire", options.questionnaire.split("|", 1)[0]);
   }
 
-  const bundle = await fetchFhir<Bundle>(
+  const bundle = await fetchProxiedFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse?${params.toString()}`,
     signal,
   );
@@ -163,7 +151,7 @@ export async function fetchQuestionnaireResponse(
   id: string,
   signal?: AbortSignal,
 ): Promise<QuestionnaireResponse> {
-  return fetchFhir<QuestionnaireResponse>(
+  return fetchProxiedFhir<QuestionnaireResponse>(
     `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse/${encodeURIComponent(id)}`,
     signal,
   );
@@ -186,7 +174,7 @@ export async function searchPatients(
     params.set("name", searchText.trim());
   }
 
-  const bundle = await fetchFhir<Bundle>(
+  const bundle = await fetchProxiedFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient?${params.toString()}`,
     signal,
   );
@@ -199,7 +187,7 @@ export async function fetchPatient(
   id: string,
   signal?: AbortSignal,
 ): Promise<Patient> {
-  return fetchFhir<Patient>(
+  return fetchProxiedFhir<Patient>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient/${encodeURIComponent(id)}`,
     signal,
   );
@@ -225,7 +213,7 @@ export async function searchPublishedRequests(
     _total: "accurate",
   });
 
-  const bundle = await fetchFhir<Bundle>(
+  const bundle = await fetchProxiedFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Task?${params.toString()}`,
     signal,
   );

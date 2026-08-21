@@ -15,60 +15,54 @@ import {
   buildResponseBundle,
 } from "./exchange";
 import { LINK_CODECS } from "./registry";
-import {
-  encryptReplyJwe,
-  generateReplyKeyPair,
-  type ReplyPrivateJwk,
-} from "./replyCrypto";
+import { encryptReplyJwe, type ReplyPrivateJwk } from "./replyCrypto";
 import {
   isReplyDescriptorExpired,
   type ReplyDescriptor,
 } from "./replyDescriptor";
-import { createReplySlot, putReply } from "./replySlot";
+import { putReply } from "./replySlot";
 
 import type { AppConfig } from "@/lib/config";
 import type { Questionnaire, Task } from "fhir/r4";
 
-import { fhirBinaryBlobStore, type BlobStore } from "@/fhir/blobStore";
-import { declareResponseEndpoint, publishRequestTask } from "@/fhir/submit";
-import {
-  canTrackRequests,
-  canUseEncryptedReply,
-  canUseServerReturn,
-  resolveExpiry,
-  resolveLinkBaseUrl,
-} from "@/lib/config";
+import { type BlobStore } from "@/fhir/blobStore";
+import { resolveExpiry, resolveLinkBaseUrl } from "@/lib/config";
 
 /**
  * Link creation — the boundary where the renderer's global form state and the app's config meet the
  * codecs. This is the only part of the link layer that depends on `@aehrc/smart-forms-renderer`.
+ *
+ * TODO(phase-4): T031 replaces the two functions below and reworks minting onto
+ * `POST /api/invitations`, which hosts the encrypted payload on the BFF (FR-013) instead of on a
+ * third-party blob server. The `blobServerUrl` and `blobStore` configuration keys that used to
+ * answer "where does the payload live" were deleted with the rest of anonymous mode in T022, so
+ * until T031 lands there is nowhere for the browser to host one and minting is unavailable. T032
+ * then deletes `src/fhir/blobStore.ts`, `src/link/replySlot.ts` and `src/link/collectReply.ts`
+ * outright, along with the reply-slot half of this module.
  */
 
-/** Whether the app is configured to host SHL payloads at all. */
-export function canCreateHealthLinks(config: AppConfig): boolean {
-  return config.blobServerUrl !== null;
+/**
+ * Whether this app can mint SMART Health Links.
+ *
+ * TODO(phase-4): T031. Always false until minting moves to `POST /api/invitations`; the surfaces
+ * that ask show an explanation rather than a mint button that could not work.
+ */
+export function canCreateHealthLinks(): boolean {
+  return false;
 }
 
 /**
- * Where a SMART Health Link's encrypted payload gets hosted, per config.
+ * Where a SMART Health Link's encrypted payload gets hosted.
  *
- * Note what this does *not* do: fall back to `formsServerUrl`. That server is a read-only
- * catalogue — writing blobs into it would put transactional data in a shared reference library.
+ * TODO(phase-4): T031 replaces this with the BFF's own hosting. Throws in the meantime: there is
+ * no configured blob server any more, and inventing one would put transactional data on a server
+ * nobody chose.
  */
-export function resolveBlobStore(config: AppConfig): BlobStore {
-  if (!config.blobServerUrl) {
-    throw new Error(
-      "No `blobServerUrl` is configured, so there is nowhere to host the encrypted payload. " +
-        "Set it in config.json — it deliberately does not default to the forms server, which is " +
-        "a read-only catalogue.",
-    );
-  }
-
-  switch (config.blobStore) {
-    case "fhir-binary": {
-      return fhirBinaryBlobStore(config.blobServerUrl);
-    }
-  }
+export function resolveBlobStore(): BlobStore {
+  throw new Error(
+    "Minting a SMART Health Link is not available in this build: hosting for the encrypted " +
+      "payload moves to this app's own server, which is not implemented yet.",
+  );
 }
 
 export interface CreateRequestOptions {
@@ -104,117 +98,39 @@ export interface CreatedRequest {
 }
 
 /**
- * Build a "please fill this in" link, with whatever return channels are configured.
+ * Build a "please fill this in" link.
  *
  * The Questionnaire is embedded whole so the filler needs no forms-server access, which is what
  * pushes this onto the hosted-SHL path — hundreds of kilobytes cannot ride inside a QR code.
  *
- * By default the only return channel is the one that needs no arrangement at all: the filler mints
- * its own SMART Health Link and the requester scans it back. Nothing about that has to be described
- * in the invitation, so a default request is just the form.
- *
- * Ordering matters for the channels that *are* described inside the payload, when they are enabled.
- * A slot URL cannot be added to a link that has already been sealed and uploaded, so the slot is
- * minted first, the Task published second, and only then is the Bundle built. The cost is that a
- * failure at the encryption step leaves an unused slot behind, which is harmless — a `Binary`
- * holding the word "pending".
+ * TODO(phase-4): T031. Channel B (`sdc-questionnaire-endpoint` declaration) and channel C (the
+ * encrypted reply slot) are gone with the configuration keys that enabled them, and Task
+ * publishing moves server-side where it can use the session's authority (FR-010). What is left
+ * here builds the invitation Bundle and asks the codec to seal it, which is the half T031 keeps -
+ * it will call `POST /api/invitations` instead of hosting the payload from the browser, so
+ * {@link resolveBlobStore} throws until then and this function cannot currently complete.
  */
 export async function createRequestLink(
   questionnaire: Questionnaire,
   config: AppConfig,
   options: CreateRequestOptions = {},
 ): Promise<CreatedRequest> {
-  const blobStore = resolveBlobStore(config);
+  const blobStore = resolveBlobStore();
   const expiresAt = options.expiresAt ?? resolveExpiry(config);
   /*
-   * Fixed up front rather than left to `buildRequestBundle`, because channel B publishes a second copy
-   * of this Task to a server and the two copies have to share one business identifier — otherwise a
-   * response returned through either channel could not be matched to the other's record of the request.
+   * The business identifier shared by the embedded Task and the copy published to the launched
+   * server. It is the only correlation key that survives the round trip: `urn:uuid` references
+   * are relative to a Bundle that no longer exists by the time answers come back, and the two
+   * copies of the Task have different server ids.
    */
   const requestId = crypto.randomUUID();
 
-  /*
-   * Channel C, when it is enabled. Off by default: the answers come back as a link the filler mints,
-   * so there is nothing to describe and no slot to mint. With it on, the reply key generated here is
-   * the only copy — see `CreatedRequest.reply`.
-   */
-  const keyPair = canUseEncryptedReply(config)
-    ? await generateReplyKeyPair()
-    : undefined;
-  const replyUrl = keyPair ? await createReplySlot(blobStore) : undefined;
-  const replyDescriptor: ReplyDescriptor | undefined =
-    keyPair && replyUrl
-      ? {
-          replyUrl,
-          replyMethod: "PUT",
-          publicJwk: keyPair.publicJwk,
-          ...(expiresAt === undefined ? {} : { expiresAt }),
-        }
-      : undefined;
-
-  /*
-   * Publishing the Task and offering channel B are separate decisions, and conflating them would be a
-   * mistake in both directions. Publishing only records that a request was sent, so `/requests` can
-   * list it from any browser; channel B additionally tells the filler to write answers straight to that
-   * server, unreviewed. So a Task may be published without channel B, but never the reverse — channel B
-   * needs a Task to point at.
-   */
-  const serverReturn = canUseServerReturn(config);
-  let serverTaskUrl: string | undefined;
-
-  if (serverReturn) {
-    /*
-     * Fatal when channel B is on: the invitation is about to name this Task as somewhere the filler
-     * may write, and naming one that does not exist would be worse than not offering the channel.
-     */
-    serverTaskUrl = await publishRequestTask(
-      config.responseServerUrl!,
-      questionnaire,
-      {
-        ...options,
-        requestId,
-      },
-    );
-  } else if (canTrackRequests(config)) {
-    /*
-     * Not fatal when publishing is only for tracking. The default return path — the filler mints a
-     * link and the requester scans it back — needs nothing from this server, so an EHR that is down
-     * would otherwise block a flow that does not depend on it. The request still works and is still
-     * saved locally; it just shows as local-only in `/requests` until it is sent from a browser that
-     * could reach the server.
-     */
-    try {
-      serverTaskUrl = await publishRequestTask(
-        config.responseServerUrl!,
-        questionnaire,
-        {
-          ...options,
-          requestId,
-        },
-      );
-    } catch (error) {
-      console.warn(
-        "Could not publish the request Task for tracking; continuing without it.",
-        error,
-      );
-    }
-  }
-
-  const { bundle, task } = buildRequestBundle(
-    serverReturn
-      ? declareResponseEndpoint(questionnaire, config.responseServerUrl!)
-      : questionnaire,
-    {
-      requestId,
-      subjectReference: options.subjectReference,
-      subjectDisplay: options.subjectDisplay,
-      requesterDisplay: config.senderName ?? undefined,
-      replyDescriptor,
-      // Named in the invitation only when the filler is actually invited to write there. Tracking is
-      // ours; there is no reason to tell a filler about a Task it must not touch.
-      serverTaskUrl: serverReturn ? serverTaskUrl : undefined,
-    },
-  );
+  const { bundle, task } = buildRequestBundle(questionnaire, {
+    requestId,
+    subjectReference: options.subjectReference,
+    subjectDisplay: options.subjectDisplay,
+    requesterDisplay: config.senderName ?? undefined,
+  });
 
   const codec = encodingCodec(config, LINK_CODECS);
 
@@ -227,11 +143,7 @@ export async function createRequestLink(
     link,
     task,
     ...(expiresAt === undefined ? {} : { expiresAt }),
-    ...(keyPair && replyUrl
-      ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } }
-      : {}),
-    ...(serverTaskUrl ? { serverTaskUrl } : {}),
-    serverReturnOffered: serverReturn,
+    serverReturnOffered: false,
   };
 }
 
@@ -260,7 +172,7 @@ export async function createResponseLink(
     { bundle, label: defaultLabel(questionnaire) },
     {
       baseUrl: resolveLinkBaseUrl(config),
-      blobStore: resolveBlobStore(config),
+      blobStore: resolveBlobStore(),
     },
   );
 }

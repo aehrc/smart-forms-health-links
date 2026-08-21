@@ -24,6 +24,10 @@ import {
   type SubmitResult,
 } from "@/fhir/submit";
 import { useConfig } from "@/lib/ConfigContext";
+// TODO(phase-5): T045 finishes the proxy write path. Responses are already written through
+// `/api/fhir` here, but `src/fhir/submit.ts` still uses a bare `fetch`, so a session that has
+// expired mid-review surfaces as a plain FHIR error rather than as a re-launch prompt.
+import { FHIR_PROXY_BASE } from "@/lib/session";
 import { taskCorrelationId } from "@/link/exchange";
 
 export interface ReviewResponseProps {
@@ -66,6 +70,7 @@ function isPatientAsserted(response: QuestionnaireResponse): boolean {
  * This human step is what keeps the whole design inside the specs: SMART Health Links have no
  * submission channel, so nothing was pushed here. The payload was published, this app pulled it, and
  * a person decides whether it enters the record.
+ * @author John Grimes
  */
 export default function ReviewResponse(props: ReviewResponseProps) {
   const {
@@ -100,7 +105,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
   const destinations = resolveDestinations({
     questionnaire,
-    responseServerUrl: config.responseServerUrl,
+    responseServerUrl: FHIR_PROXY_BASE,
   });
   const isFormDeclared =
     questionnaire !== undefined && declaredEndpoints(questionnaire).length > 0;
@@ -191,7 +196,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         task,
         provenance,
         questionnaire,
-        responseServerUrl: config.responseServerUrl,
+        responseServerUrl: FHIR_PROXY_BASE,
       });
       setResults(submitted);
       if (submitted.some((result) => result.responseId)) {
@@ -212,7 +217,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
             Review:{" "}
             {label ??
               questionnaire?.title ??
@@ -220,7 +225,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               questionnaire?.id ??
               "answers"}
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
             Completed answers received.
             {matchedRequest ? (
               <>
@@ -265,7 +270,10 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       {isPatientAsserted(response) ? (
         <Alert title="Patient-asserted answers">
           <span className="inline-flex items-center gap-1.5">
-            <ShieldCheck className="h-3.5 w-3.5 text-slate-500" aria-hidden />
+            <ShieldCheck
+              className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400"
+              aria-hidden
+            />
             These answers are labelled{" "}
             <span className="font-mono text-xs">PATAST</span> — recorded by the
             person themselves rather than by a clinician.
@@ -322,7 +330,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 .{" "}
                 <button
                   type="button"
-                  className="underline underline-offset-2 hover:text-slate-900"
+                  className="underline underline-offset-2 hover:text-slate-900 dark:hover:text-slate-200"
                   onClick={() =>
                     chooseSubject(
                       matchedRequest.subjectReference!,
@@ -337,7 +345,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             ) : null}
 
             <div className="space-y-1.5">
-              <p className="text-xs font-medium text-slate-800">
+              <p className="text-xs font-medium text-slate-800 dark:text-slate-200">
                 Search <span className="font-mono">{searchServer}</span>
               </p>
               {/*
@@ -361,7 +369,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
             <div className="space-y-1.5">
               <label
-                className="block text-xs font-medium text-slate-800"
+                className="block text-xs font-medium text-slate-800 dark:text-slate-200"
                 htmlFor="subject-override"
               >
                 Or enter a reference on that server by hand
@@ -387,7 +395,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             )}
 
             {hasSubject ? (
-              <label className="flex items-start gap-2 text-xs text-slate-700">
+              <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={clearSubject}
@@ -447,7 +455,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             {saved.map((result) => (
               <li key={result.serverUrl} className="flex items-center gap-1.5">
                 <CheckCircle2
-                  className="h-3.5 w-3.5 text-green-600"
+                  className="h-3.5 w-3.5 text-green-600 dark:text-green-400"
                   aria-hidden
                 />
                 <span className="font-mono text-xs">

@@ -12,6 +12,7 @@ import {
   isRenderableQuestionnaire,
 } from "@/fhir/formsServer";
 import { useConfig } from "@/lib/ConfigContext";
+import { FHIR_PROXY_BASE } from "@/lib/session";
 import { canCreateHealthLinks, createResponseLink } from "@/link/createLink";
 
 export default function FillForm() {
@@ -22,16 +23,16 @@ export default function FillForm() {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  const canHost = canCreateHealthLinks(config);
+  const canHost = canCreateHealthLinks();
 
   const {
     data: questionnaire,
     isPending,
     error,
   } = useQuery({
-    queryKey: ["questionnaire", config.formsServerUrl, questionnaireId],
+    queryKey: ["questionnaire", questionnaireId],
     queryFn: ({ signal }) =>
-      fetchQuestionnaireById(config.formsServerUrl, questionnaireId!, signal),
+      fetchQuestionnaireById(FHIR_PROXY_BASE, questionnaireId!, signal),
     enabled: !!questionnaireId,
   });
 
@@ -56,7 +57,7 @@ export default function FillForm() {
 
   if (isPending) {
     return (
-      <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
+      <p className="flex items-center gap-2 py-8 text-sm text-slate-500 dark:text-slate-400">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         Loading form…
       </p>
@@ -85,20 +86,22 @@ export default function FillForm() {
     <div className="space-y-4">
       <RouterLink
         to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         All forms
       </RouterLink>
 
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold text-slate-900">
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
           {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
         </h1>
         <Button
           onClick={handleCreateLink}
           disabled={isCreating || !canHost}
-          title={canHost ? undefined : "Needs blobServerUrl in config.json"}
+          title={
+            canHost ? undefined : "Link creation is not available in this build"
+          }
           className="ml-auto"
         >
           {isCreating ? (
@@ -111,12 +114,16 @@ export default function FillForm() {
       </div>
 
       {canHost ? null : (
-        <Alert tone="warning" title="Links cannot be created">
+        <Alert tone="warning" title="Links cannot be created yet">
+          {/*
+            TODO(phase-4): T031 moves minting to `POST /api/invitations`, which hosts the
+            encrypted payload on this app's own server. Until then there is nowhere to put one,
+            because the third-party blob server that used to host them went with anonymous mode.
+          */}
           Answers are shared as a SMART Health Link, whose encrypted payload has
-          to be hosted somewhere. Set{" "}
-          <span className="font-mono text-xs">blobServerUrl</span> in{" "}
-          <span className="font-mono text-xs">config.json</span>. The form below
-          still works; there is just nowhere to put the result.
+          to be hosted somewhere. Hosting moves to this app&rsquo;s own server,
+          which is not implemented yet. The form below still works; there is
+          just nowhere to put the result.
         </Alert>
       )}
 

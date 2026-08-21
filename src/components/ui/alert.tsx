@@ -16,9 +16,11 @@ export function Alert({
   className?: string;
 }) {
   const tones = {
-    info: "border-slate-200 bg-slate-50 text-slate-700",
-    warning: "border-amber-300 bg-amber-50 text-amber-900",
-    error: "border-red-300 bg-red-50 text-red-900",
+    info: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300",
+    warning:
+      "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200",
+    error:
+      "border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200",
   } as const;
 
   const Icon = tone === "info" ? Info : AlertTriangle;

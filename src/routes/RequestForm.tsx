@@ -23,9 +23,9 @@ import {
   fetchQuestionnaireById,
   isRenderableQuestionnaire,
 } from "@/fhir/formsServer";
-import { canUseEncryptedReply, canUseServerReturn } from "@/lib/config";
 import { useConfig } from "@/lib/ConfigContext";
 import { saveRequest } from "@/lib/requestStore";
+import { FHIR_PROXY_BASE } from "@/lib/session";
 import { canCreateHealthLinks, createRequestLink } from "@/link/createLink";
 import { questionnaireCanonicalOf, taskCorrelationId } from "@/link/exchange";
 
@@ -33,8 +33,14 @@ import { questionnaireCanonicalOf, taskCorrelationId } from "@/link/exchange";
  * Create a "please fill this in" SMART Health Link for a form.
  *
  * The Questionnaire is embedded in the encrypted payload, so whoever scans this needs no access to
- * the forms server. The link itself stays a few hundred bytes because it carries only a URL and a
- * decryption key.
+ * the launched server. The link itself stays a few hundred bytes because it carries only a URL and
+ * a decryption key.
+ *
+ * TODO(phase-4): T031 reworks this surface onto `POST /api/invitations`: the subject is pre-filled
+ * from the session's launch context, the Task is published server-side with the session's
+ * authority (FR-010), and the payload is hosted by this app rather than by a third-party blob
+ * server. Channel B and channel C went with the configuration keys that enabled them, so what is
+ * left below is the subject picker and an explanation that minting is not available yet.
  */
 export default function RequestForm() {
   const { questionnaireId } = useParams<{ questionnaireId: string }>();
@@ -66,18 +72,16 @@ export default function RequestForm() {
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  const canHost = canCreateHealthLinks(config);
-  const serverReturn = canUseServerReturn(config);
-  const encryptedReply = canUseEncryptedReply(config);
+  const canHost = canCreateHealthLinks();
 
   const {
     data: questionnaire,
     isPending,
     error: loadError,
   } = useQuery({
-    queryKey: ["questionnaire", config.formsServerUrl, questionnaireId],
+    queryKey: ["questionnaire", questionnaireId],
     queryFn: ({ signal }) =>
-      fetchQuestionnaireById(config.formsServerUrl, questionnaireId!, signal),
+      fetchQuestionnaireById(FHIR_PROXY_BASE, questionnaireId!, signal),
     enabled: !!questionnaireId,
   });
 
@@ -139,7 +143,7 @@ export default function RequestForm() {
 
   if (isPending) {
     return (
-      <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
+      <p className="flex items-center gap-2 py-8 text-sm text-slate-500 dark:text-slate-400">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         Loading form…
       </p>
@@ -167,18 +171,18 @@ export default function RequestForm() {
     <div className="space-y-4">
       <RouterLink
         to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         All forms
       </RouterLink>
 
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
           Request:{" "}
           {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
         </h1>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Creates an encrypted SMART Health Link containing this whole form.
         </p>
       </div>
@@ -193,29 +197,26 @@ export default function RequestForm() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {config.responseServerUrl ? (
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium text-slate-700">
-                Search{" "}
-                <span className="font-mono">{config.responseServerUrl}</span>
-              </p>
-              <PatientPicker
-                serverUrl={config.responseServerUrl}
-                selectedReference={
-                  subject.trim() === "" ? undefined : subject.trim()
-                }
-                onChoose={(chosen) => {
-                  setSubject(chosen.reference);
-                  setSubjectDisplay(chosen.display);
-                }}
-                label="Search patients to address this request to"
-              />
-            </div>
-          ) : null}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-slate-700 dark:text-slate-300">
+              Search the server you are signed in to
+            </p>
+            <PatientPicker
+              serverUrl={FHIR_PROXY_BASE}
+              selectedReference={
+                subject.trim() === "" ? undefined : subject.trim()
+              }
+              onChoose={(chosen) => {
+                setSubject(chosen.reference);
+                setSubjectDisplay(chosen.display);
+              }}
+              label="Search patients to address this request to"
+            />
+          </div>
 
           <div className="space-y-2">
-            <p className="text-xs font-medium text-slate-700">
-              {config.responseServerUrl ? "Or enter it by hand" : "Subject"}
+            <p className="text-xs font-medium text-slate-700 dark:text-slate-300">
+              Or enter it by hand
             </p>
             <Input
               value={subject}
@@ -231,18 +232,16 @@ export default function RequestForm() {
             />
           </div>
 
-          {config.responseServerUrl ? (
-            <p className="text-xs text-slate-500">
-              Or{" "}
-              <RouterLink
-                to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ""}`)}`}
-                className="underline"
-              >
-                browse the full patient list
-              </RouterLink>
-              , which also shows what each one has already answered.
-            </p>
-          ) : null}
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Or{" "}
+            <RouterLink
+              to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ""}`)}`}
+              className="underline"
+            >
+              browse the full patient list
+            </RouterLink>
+            , which also shows what each one has already answered.
+          </p>
 
           <Button onClick={handleCreate} disabled={isCreating || !canHost}>
             {isCreating ? (
@@ -255,80 +254,31 @@ export default function RequestForm() {
         </CardContent>
       </Card>
 
-      <Alert
-        tone={serverReturn ? "warning" : undefined}
-        title={`${serverReturn || encryptedReply ? "Two" : "One"} return channel${
-          serverReturn || encryptedReply ? "s" : ""
-        }`}
-      >
-        <ul className="space-y-1">
-          <li>
-            <strong>Answers come back as a link</strong> — whoever fills this in
-            produces their own SMART Health Link and you scan or paste it into{" "}
-            <RouterLink to="/scan" className="underline">
-              Scan
-            </RouterLink>
-            . You review the answers, and nothing is written until you accept.
-            Nothing has to be arranged in advance, so this needs no setting.
-          </li>
-          {encryptedReply ? (
-            <li>
-              <strong>Encrypted reply</strong> — a slot is created alongside the
-              link and the answers come back encrypted to a key held only in
-              this browser. You collect them from{" "}
-              <RouterLink to="/requests" className="underline">
-                Sent requests
-              </RouterLink>
-              . Useful when whoever fills this in cannot get a QR code back to
-              you.
-            </li>
-          ) : null}
-          <li>
-            <strong>Direct write to your server</strong> —{" "}
-            {serverReturn ? (
-              <>
-                enabled. The form will declare{" "}
-                <span className="font-mono text-xs">
-                  {config.responseServerUrl}
-                </span>{" "}
-                via sdc-questionnaire-endpoint, so a filler can post answers
-                there itself. <strong>Those arrive unreviewed</strong> — point
-                the endpoint at a staging server if that is not what you want.
-              </>
-            ) : (
-              <>
-                off. Set{" "}
-                <span className="font-mono text-xs">enableServerReturn</span>{" "}
-                and <span className="font-mono text-xs">responseServerUrl</span>{" "}
-                to offer it.
-              </>
-            )}
-          </li>
-        </ul>
-        {encryptedReply ? null : (
-          <p className="mt-2">
-            The encrypted reply channel is off. Set{" "}
-            <span className="font-mono text-xs">enableEncryptedReply</span> to
-            offer it as well — worth doing when a filler may have no way to show
-            you a QR code.
-          </p>
-        )}
+      <Alert title="One return channel">
+        <p>
+          <strong>Answers come back as a link</strong> - whoever fills this in
+          produces their own SMART Health Link and you scan or paste it into{" "}
+          <RouterLink to="/scan" className="underline">
+            Scan
+          </RouterLink>
+          . You review the answers, and nothing is written until you accept.
+        </p>
         {config.senderName ? null : (
           <p className="mt-2">
             No <span className="font-mono text-xs">senderName</span> is
-            configured, so this request cannot say who it is from — which is a
-            reason for someone to decline it.
+            configured, so this request falls back to whatever the launch
+            disclosed about who is signed in. A request that cannot say who it
+            is from is a reason for someone to decline it.
           </p>
         )}
       </Alert>
 
       {canHost ? null : (
-        <Alert tone="warning" title="Nowhere to host the encrypted payload">
-          Set <span className="font-mono text-xs">blobServerUrl</span> in{" "}
-          <span className="font-mono text-xs">config.json</span>. It
-          deliberately does not default to the forms server, which is a
-          read-only catalogue of questionnaires rather than somewhere to put
-          transactional data.
+        <Alert tone="warning" title="Requests cannot be created yet">
+          {/* TODO(phase-4): T031 mints through `POST /api/invitations`. */}
+          An invitation&rsquo;s encrypted payload has to be hosted somewhere.
+          Hosting moves to this app&rsquo;s own server, which is not implemented
+          yet, so nothing can be minted in this build.
         </Alert>
       )}
 
