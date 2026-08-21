@@ -3,9 +3,10 @@
  *
  * Applies everything `contracts/aidbox-setup.md` describes: the confidential launch client, the
  * SMART Backend Services client, one narrow `AccessPolicy` per client, the demo Questionnaires
- * from repo fixtures, the demo Patient, and the `User` the Playwright suite logs in as. It then
- * verifies whether the filler browser may POST a transaction to `/fhir` cross-origin, and
- * reports which of the two send modes validation will run in.
+ * from repo fixtures, the demo Patient, and the `User` the Playwright suite logs in as together
+ * with the `Practitioner` that user stands for. It then verifies whether the filler browser may
+ * POST a transaction to `/fhir` cross-origin, and reports which of the two send modes
+ * validation will run in.
  *
  * ## Idempotence
  *
@@ -43,7 +44,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Patient, Questionnaire } from "fhir/r4";
+import type { Patient, Practitioner, Questionnaire } from "fhir/r4";
 import type { JWK } from "jose";
 
 /** Fixed id of the confidential launch client (contract section 1). */
@@ -60,6 +61,9 @@ export const BACKEND_POLICY_ID = "smart-forms-health-links-backend-policy";
 
 /** Fixed id of the demo patient (contract section 5). */
 export const DEMO_PATIENT_ID = "pt-demo";
+
+/** Fixed id of the demo practitioner the e2e user stands for (contract section 5). */
+export const DEMO_PRACTITIONER_ID = "prac-demo";
 
 /** Questionnaire fixture files, relative to `fixtures/questionnaires`. */
 export const QUESTIONNAIRE_FIXTURES = [
@@ -378,8 +382,19 @@ export function buildBackendClient(options: {
 /**
  * Build the launch client's AccessPolicy: the FHIR API, for that client's signed-in user.
  *
- * The `link` keeps the policy off every other request, and `user: "present?"` keeps it from
- * authorising anything the client does without a session.
+ * The `link` keeps the policy off every other request, and the `jwt` assertion keeps it from
+ * authorising anything the client does without a signed-in session.
+ *
+ * **The session is asserted on the token claims, not on `user`.** Measured 2026-08-22 against
+ * the target instance: the request context matcho evaluates for a v2 (`atv: 2`) JWT access
+ * token carries the token's claims under `jwt` and a resolved `client`, but no `user` object.
+ * A policy keyed on `user: "present?"` therefore never matches and every `/fhir` request comes
+ * back `403 forbidden`, however correct the rest of the rule is. Bisected by applying single
+ * matcho keys against one real user token: `uri` alone, `client: { id }` alone, `link` alone
+ * and `jwt: { sub: "present?" }` each authorised the request; `user: "present?"` did not.
+ * `jwt.sub` is the user identity in a v2 token - Aidbox sets it to the `User` id - so it says
+ * the same thing the `user` key was meant to say, and `jwt.scope` additionally requires the
+ * token to have been issued through an authorisation flow that granted scopes.
  * @returns the `AccessPolicy` body to `PUT` at `/AccessPolicy/smart-forms-health-links-policy`
  * @example
  * buildLaunchPolicy();
@@ -393,7 +408,7 @@ export function buildLaunchPolicy(): AidboxResource {
     engine: "matcho",
     matcho: {
       client: { id: LAUNCH_CLIENT_ID },
-      user: "present?",
+      jwt: { sub: "present?", scope: "present?" },
       uri: "#^/fhir(/.*)?$",
     },
     link: [{ resourceType: "Client", id: LAUNCH_CLIENT_ID }],
@@ -467,11 +482,46 @@ export function buildDemoPatient(): AidboxResource {
 }
 
 /**
+ * Build the demo practitioner the e2e user stands for.
+ *
+ * This exists so the launch discloses a requester display name. Measured 2026-08-22 against
+ * the target instance: with no `User.fhirUser` link the ID token carries no `fhirUser` claim
+ * at all, so nothing names the person behind the session and `Task.requester.display` (FR-009)
+ * would have nothing but a configured fallback to fall back to. With the link in place the ID
+ * token carries `fhirUser: "<aidbox>/Practitioner/prac-demo"`, which the BFF resolves to this
+ * resource's `name[0].text`.
+ * @returns the `Practitioner` body to `PUT` at `/fhir/Practitioner/prac-demo`
+ * @example
+ * buildDemoPractitioner();
+ */
+export function buildDemoPractitioner(): AidboxResource {
+  const practitioner: Practitioner = {
+    resourceType: "Practitioner",
+    id: DEMO_PRACTITIONER_ID,
+    active: true,
+    name: [
+      {
+        text: "Dr Alex Fielding",
+        family: "Fielding",
+        given: ["Alex"],
+        prefix: ["Dr"],
+      },
+    ],
+  };
+
+  return { ...practitioner };
+}
+
+/**
  * Build the Aidbox user the Playwright suite logs in as (contract section 6).
  *
  * The password arrives from the environment and is written verbatim so Aidbox can hash it.
  * It is listed as an opaque field by `planSetup`, because Aidbox returns the hash rather than
  * the value and comparing the two would make every run look like a change.
+ *
+ * `fhirUser` points at {@link buildDemoPractitioner}, which is what makes the launch disclose
+ * a display name for the requester. `planSetup` writes the practitioner immediately before
+ * this user so the link never dangles.
  * @param options the user's id, email and password
  * @param options.id the fixed resource id
  * @param options.email the login email
@@ -490,6 +540,10 @@ export function buildE2eUser(options: {
     id: options.id,
     email: options.email,
     password: options.password,
+    fhirUser: {
+      resourceType: "Practitioner",
+      id: DEMO_PRACTITIONER_ID,
+    },
   };
 }
 
@@ -556,6 +610,12 @@ export function planSetup(options: SetupOptions): PlannedResource[] {
       label: "demo patient",
       path: `/fhir/Patient/${DEMO_PATIENT_ID}`,
       body: buildDemoPatient(),
+      opaqueFields: [],
+    },
+    {
+      label: "demo practitioner",
+      path: `/fhir/Practitioner/${DEMO_PRACTITIONER_ID}`,
+      body: buildDemoPractitioner(),
       opaqueFields: [],
     },
     {

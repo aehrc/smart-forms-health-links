@@ -21,9 +21,10 @@
  * **The ID token is decoded, not verified.** The token response arrives in the body of a
  * TLS-protected request that this process made directly to the issuer's own token endpoint, and
  * whose client authentication proves who is asking; OpenID Connect Core section 3.1.3.7 allows
- * a client to skip signature validation in exactly that situation. The only thing taken from
- * the claims is a display string for `Task.requester.display` - nothing is authorised on the
- * basis of them - so an unverified decode is the appropriate amount of work here.
+ * a client to skip signature validation in exactly that situation. The only things taken from
+ * the claims are a display string for `Task.requester.display` and the `fhirUser` reference a
+ * name can be resolved from - nothing is authorised on the basis of them - so an unverified
+ * decode is the appropriate amount of work here.
  * @author John Grimes
  */
 
@@ -44,8 +45,17 @@ export interface LaunchTokenResponse {
   readonly refreshToken: string | null;
   /** The launch context patient, when the grant carried one. */
   readonly patientId: string | null;
-  /** A display name for the signed-in user, when one can be derived. */
+  /**
+   * A display name for the signed-in user taken from the ID token's claims, when it carried
+   * one. Only a fallback: {@link module:server/smart/requesterDisplay} prefers the name on the
+   * resource {@link LaunchTokenResponse.fhirUser} points at.
+   */
   readonly userDisplay: string | null;
+  /**
+   * The `fhirUser` (or deprecated `profile`) reference the launch disclosed, verbatim. Never
+   * requested as given - see `resolveRequesterDisplay`.
+   */
+  readonly fhirUser: string | null;
 }
 
 /** Arguments for a code exchange. */
@@ -136,28 +146,73 @@ function decodeIdTokenClaims(
 }
 
 /**
- * Derive the display name to record for `Task.requester.display`.
- *
- * The candidates are tried in decreasing order of how much like a person's name they are: the
- * ID token's `name`, then `preferred_username`, then the `fhirUser` reference from either the
- * claims or the token response body.
- * @param payload the parsed token response
- * @returns the display name, or null when the launch disclosed nothing usable
+ * The first of the candidates that is a non-empty string.
+ * @param candidates values in decreasing order of preference
+ * @returns the first usable string, or null when there is none
  */
-function readUserDisplay(payload: Record<string, unknown>): string | null {
-  const claims = decodeIdTokenClaims(payload.id_token) ?? {};
-  const candidates = [
-    claims.name,
-    claims.preferred_username,
-    claims.fhirUser,
-    payload.fhirUser,
-  ];
+function firstString(candidates: readonly unknown[]): string | null {
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.length > 0) {
       return candidate;
     }
   }
   return null;
+}
+
+/**
+ * Read the launch context patient, but only when the launch actually granted patient context.
+ *
+ * The `patient` field of a token response means nothing on its own: it is `launch/patient`
+ * (SMART App Launch section "Scopes for requesting context data") that asks for the context,
+ * and this app only ever requests that scope for an EHR launch - a standalone launch has no
+ * EHR context to be given and lets the requester choose the patient instead.
+ *
+ * Measured against Aidbox 2026-08-22: a standalone launch, whose granted scope is
+ * `openid fhirUser launch online_access user/*.cruds`, nonetheless answers
+ * `"patient": "prac-demo"` - the id of the signed-in user's own `fhirUser`, a `Practitioner`.
+ * Taking that at face value would put a practitioner in `Task.for`. The granted scope is
+ * therefore checked first, and a response that states no scope at all is not treated as having
+ * granted context: SMART requires `scope` in an access token response.
+ * @param payload the parsed token response
+ * @returns the patient id, or null when no patient context was granted
+ */
+function readPatientContext(payload: Record<string, unknown>): string | null {
+  const granted =
+    typeof payload.scope === "string" ? payload.scope.split(/\s+/) : [];
+  if (!granted.includes("launch/patient")) {
+    return null;
+  }
+  return typeof payload.patient === "string" && payload.patient.length > 0
+    ? payload.patient
+    : null;
+}
+
+/**
+ * Derive a display name for the signed-in user from the launch's own claims.
+ *
+ * `name` is a person's name and `preferred_username` usually is, so both are usable as
+ * `Task.requester.display` (FR-009). A `fhirUser` reference is not: it is a URL, which is why
+ * it is read separately by {@link readFhirUser} and resolved to a name instead.
+ * @param payload the parsed token response
+ * @returns the display name, or null when the claims disclosed none
+ */
+function readClaimDisplay(payload: Record<string, unknown>): string | null {
+  const claims = decodeIdTokenClaims(payload.id_token) ?? {};
+  return firstString([claims.name, claims.preferred_username]);
+}
+
+/**
+ * Read the reference to the FHIR resource that represents the signed-in user.
+ *
+ * SMART App Launch puts it in the ID token's `fhirUser` claim and names `profile` as its
+ * deprecated synonym; some servers also repeat it in the token response body. All three are
+ * accepted, and none is dereferenced here.
+ * @param payload the parsed token response
+ * @returns the reference as given, or null when the launch disclosed none
+ */
+function readFhirUser(payload: Record<string, unknown>): string | null {
+  const claims = decodeIdTokenClaims(payload.id_token) ?? {};
+  return firstString([claims.fhirUser, claims.profile, payload.fhirUser]);
 }
 
 /**
@@ -228,11 +283,9 @@ async function postGrant(
       payload.refresh_token.length > 0
         ? payload.refresh_token
         : null,
-    patientId:
-      typeof payload.patient === "string" && payload.patient.length > 0
-        ? payload.patient
-        : null,
-    userDisplay: readUserDisplay(payload),
+    patientId: readPatientContext(payload),
+    userDisplay: readClaimDisplay(payload),
+    fhirUser: readFhirUser(payload),
   };
 }
 

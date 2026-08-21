@@ -43,6 +43,7 @@ import {
 } from "../sessions";
 import { exchangeAuthorizationCode } from "./confidentialClient";
 import { discoverSmartConfiguration } from "./discovery";
+import { resolveRequesterDisplay } from "./requesterDisplay";
 
 import type { FastifyPluginCallback, FastifyReply } from "fastify";
 
@@ -368,13 +369,23 @@ export const launchRoutes: FastifyPluginCallback = (
           verifier: pending.verifier,
         });
 
+        // The name is worth a request but not the launch: a lookup that fails leaves the
+        // session with whatever the claims said, or with nothing.
+        const userDisplay = await resolveRequesterDisplay({
+          fhirBase: registration.issuer,
+          accessToken: token.accessToken,
+          fhirUser: token.fhirUser,
+          claimDisplay: token.userDisplay,
+          log: request.log,
+        });
+
         const session = activateSession(db, {
           id: pending.id,
           accessToken: token.accessToken,
           accessTokenExpiresAt: Math.floor(Date.now() / 1000) + token.expiresIn,
           refreshToken: token.refreshToken,
           patientId: token.patientId,
-          userDisplay: token.userDisplay,
+          userDisplay,
         });
         reply.setCookie(
           SESSION_COOKIE_NAME,

@@ -25,12 +25,14 @@ import {
   BACKEND_CLIENT_ID,
   BACKEND_POLICY_ID,
   DEMO_PATIENT_ID,
+  DEMO_PRACTITIONER_ID,
   LAUNCH_CLIENT_ID,
   LAUNCH_POLICY_ID,
   applyToServer,
   buildBackendClient,
   buildBackendPolicy,
   buildDemoPatient,
+  buildDemoPractitioner,
   buildE2eUser,
   buildLaunchClient,
   buildLaunchPolicy,
@@ -256,7 +258,7 @@ describe("backend services client body", () => {
 describe("access policies", () => {
   // Contract section 3. `engine: allow` is prohibited by the research decision, and the
   // policy must be linked so it is only evaluated for its own client.
-  it("scopes the launch policy to the launch client's authenticated user", () => {
+  it("scopes the launch policy to a signed-in user of the launch client", () => {
     const policy = buildLaunchPolicy();
 
     expect(policy.id).toBe(LAUNCH_POLICY_ID);
@@ -266,9 +268,21 @@ describe("access policies", () => {
     ]);
     expect(policy.matcho).toEqual({
       client: { id: LAUNCH_CLIENT_ID },
-      user: "present?",
+      jwt: { sub: "present?", scope: "present?" },
       uri: "#^/fhir(/.*)?$",
     });
+  });
+
+  // Measured 2026-08-22 against the target instance: for a v2 (`atv: 2`) JWT access token,
+  // the request context matcho sees carries the token's claims under `jwt` and a resolved
+  // `client`, but no `user` object at all. A policy keyed on `user` therefore never matches
+  // and the whole FHIR API stays forbidden. The session assertion has to be made on the
+  // claims instead, which is what `jwt.sub` does.
+  it("asserts the signed-in user through the token claims, never through `user`", () => {
+    const matcho = buildLaunchPolicy().matcho as Record<string, unknown>;
+
+    expect(matcho.user).toBeUndefined();
+    expect(matcho.jwt).toEqual({ sub: "present?", scope: "present?" });
   });
 
   // The backend client may run a transaction, create the response the transaction carries,
@@ -330,9 +344,28 @@ describe("demo data and e2e prerequisites", () => {
     expect(patient.name).toEqual([{ family: "Citizen", given: ["Jane"] }]);
   });
 
+  // FR-009 needs a requester display, and the launch only discloses one when the Aidbox
+  // `User` points at a FHIR resource that has a name. Proven against the target instance
+  // 2026-08-22: with no `fhirUser` link the ID token carries no `fhirUser` claim at all.
+  it("builds the demo practitioner the e2e user stands for", () => {
+    const practitioner = buildDemoPractitioner();
+
+    expect(practitioner.resourceType).toBe("Practitioner");
+    expect(practitioner.id).toBe(DEMO_PRACTITIONER_ID);
+    expect(practitioner.name).toEqual([
+      {
+        text: "Dr Alex Fielding",
+        family: "Fielding",
+        given: ["Alex"],
+        prefix: ["Dr"],
+      },
+    ]);
+  });
+
   // Contract section 6. The password comes from the environment; the resource carries it so
-  // Aidbox can hash it, but nothing else may.
-  it("builds the e2e user from supplied credentials", () => {
+  // Aidbox can hash it, but nothing else may. `fhirUser` is what makes the launch disclose a
+  // display name, so it is written with the user rather than left to be set by hand.
+  it("builds the e2e user from supplied credentials, linked to the practitioner", () => {
     const user = buildE2eUser({
       id: "e2e-demo",
       email: "e2e-demo@example.org",
@@ -344,6 +377,7 @@ describe("demo data and e2e prerequisites", () => {
       id: "e2e-demo",
       email: "e2e-demo@example.org",
       password: "s3cret",
+      fhirUser: { resourceType: "Practitioner", id: DEMO_PRACTITIONER_ID },
     });
   });
 });
@@ -363,8 +397,18 @@ describe("setup plan", () => {
       "/fhir/Questionnaire/AdultSepsisScreening",
       "/fhir/Questionnaire/GPChronicConditionManagementPlan",
       `/fhir/Patient/${DEMO_PATIENT_ID}`,
+      `/fhir/Practitioner/${DEMO_PRACTITIONER_ID}`,
       "/User/e2e-demo",
     ]);
+  });
+
+  // The `User.fhirUser` link would dangle if the practitioner were written after it.
+  it("writes the practitioner before the user that points at it", () => {
+    const paths = planSetup(setupOptions()).map((entry) => entry.path);
+
+    expect(paths.indexOf(`/fhir/Practitioner/${DEMO_PRACTITIONER_ID}`)).toBe(
+      paths.indexOf("/User/e2e-demo") - 1,
+    );
   });
 
   // Aidbox does not echo these back, so change detection has to skip them or every run would

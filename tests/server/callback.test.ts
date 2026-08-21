@@ -54,6 +54,19 @@ const ACCESS_TOKEN = "launch-access-token-must-not-leak";
 /** The refresh token the exchange returns. Must never be echoed or logged. */
 const REFRESH_TOKEN = "launch-refresh-token-must-not-leak";
 
+/**
+ * The `fhirUser` reference the ID token carries, in the absolute form Aidbox uses: the server's
+ * own origin rather than its FHIR base.
+ */
+const FHIR_USER_CLAIM = "https://ehr.example.org/Practitioner/prac-1";
+
+/**
+ * Where the BFF must look that reference up: the registered FHIR base, not the origin the
+ * claim named. Proven necessary against the target instance 2026-08-22, where the claim's own
+ * URL is outside the launch client's access policy and answers 403.
+ */
+const FHIR_USER_URL = `${ISSUER}/Practitioner/prac-1`;
+
 /** An active row as the tests read it back. */
 interface StoredActive {
   id: string;
@@ -103,8 +116,31 @@ function tokenResponseBody(
     id_token: idToken({
       sub: "practitioner-1",
       name: "Dr Jane Smith",
-      fhirUser: `${ISSUER}/Practitioner/prac-1`,
+      fhirUser: FHIR_USER_CLAIM,
     }),
+    ...overrides,
+  };
+}
+
+/**
+ * A `Practitioner` as the issuer's FHIR API would return it.
+ * @param overrides fields to add or replace
+ * @returns the resource body
+ */
+function practitionerResource(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    resourceType: "Practitioner",
+    id: "prac-1",
+    name: [
+      {
+        text: "Dr Alex Fielding",
+        family: "Fielding",
+        given: ["Alex"],
+        prefix: ["Dr"],
+      },
+    ],
     ...overrides,
   };
 }
@@ -127,11 +163,15 @@ describe("GET /auth/callback", () => {
   let fetchMock: Mock<typeof fetch>;
   let tokenResponse: Record<string, unknown>;
   let tokenStatus: number;
+  let fhirUserResponse: Record<string, unknown>;
+  let fhirUserStatus: number;
 
   beforeEach(() => {
     harness = createHarness();
     tokenResponse = tokenResponseBody();
     tokenStatus = 200;
+    fhirUserResponse = practitionerResource();
+    fhirUserStatus = 200;
     fetchMock = vi.fn<typeof fetch>();
     fetchMock.mockImplementation((input) => {
       const url = urlOf(input);
@@ -143,6 +183,9 @@ describe("GET /auth/callback", () => {
       }
       if (url === TOKEN_ENDPOINT || url === AWKWARD_TOKEN_ENDPOINT) {
         return Promise.resolve(jsonResponse(tokenResponse, tokenStatus));
+      }
+      if (url === FHIR_USER_URL) {
+        return Promise.resolve(jsonResponse(fhirUserResponse, fhirUserStatus));
       }
       throw new Error(`unexpected request to ${url}`);
     });
@@ -245,7 +288,10 @@ describe("GET /auth/callback", () => {
       expect(rows[0].accessTokenExpiresAt).toBeLessThanOrEqual(now + 3600);
     });
 
-    it("captures the launch context patient and a display name for the requester", async () => {
+    // FR-009. The display is what `Task.requester.display` will carry, so a human name is
+    // worth one extra request: the `fhirUser` the launch discloses is resolved against the
+    // registered FHIR base and its `name` is preferred over any claim.
+    it("captures the launch context patient and the fhirUser's human name", async () => {
       openPending();
 
       await harness.server.inject({
@@ -255,14 +301,131 @@ describe("GET /auth/callback", () => {
 
       const rows = storedSessions();
       expect(rows[0].patientId).toBe("pt-1");
+      expect(rows[0].userDisplay).toBe("Dr Alex Fielding");
+    });
+
+    // The claim names the authorisation server's own origin, which on the target instance is
+    // outside the launch client's access policy. The reference is therefore reduced to
+    // `ResourceType/id` and resolved against the issuer we already trust, with the launch's
+    // own access token - never fetched as the absolute URL the claim supplied.
+    it("resolves the fhirUser against the registered FHIR base with the launch token", async () => {
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      const call = fetchMock.mock.calls.find(([input]) =>
+        urlOf(input).endsWith("/Practitioner/prac-1"),
+      );
+      expect(call).toBeDefined();
+      expect(urlOf((call as Parameters<typeof fetch>)[0])).toBe(FHIR_USER_URL);
+      const init = (call as Parameters<typeof fetch>)[1];
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        `Bearer ${ACCESS_TOKEN}`,
+      );
+      // The claim's own absolute URL is never requested.
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => urlOf(input) === FHIR_USER_CLAIM,
+        ),
+      ).toBe(false);
+    });
+
+    // `name.text` is the server's own rendering of the name and is preferred, but plenty of
+    // servers only populate the parts.
+    it("composes given and family names when the resource carries no name text", async () => {
+      fhirUserResponse = practitionerResource({
+        name: [{ family: "Fielding", given: ["Alex", "Jo"] }],
+      });
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      expect(storedSessions()[0].userDisplay).toBe("Alex Jo Fielding");
+    });
+
+    // SMART App Launch names `profile` as the deprecated synonym of `fhirUser`, so a server
+    // that only sends the older claim still gets a resolved name.
+    it("accepts the deprecated profile claim as the fhirUser reference", async () => {
+      tokenResponse = tokenResponseBody({
+        id_token: idToken({ sub: "practitioner-1", profile: FHIR_USER_CLAIM }),
+      });
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      expect(storedSessions()[0].userDisplay).toBe("Dr Alex Fielding");
+    });
+
+    it("falls back to the ID token name claim when the fhirUser cannot be read", async () => {
+      fhirUserStatus = 403;
+      fhirUserResponse = { resourceType: "OperationOutcome" };
+      openPending();
+
+      const response = await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      // The launch still completes: a missing display is a degraded session, not a failed one.
+      expect(response.statusCode).toBe(302);
+      const rows = storedSessions();
+      expect(rows[0].status).toBe("active");
       expect(rows[0].userDisplay).toBe("Dr Jane Smith");
     });
 
-    it("falls back to the fhirUser claim when the ID token carries no name", async () => {
+    it("completes the launch when the fhirUser request itself fails", async () => {
+      fetchMock.mockImplementation((input) => {
+        const url = urlOf(input);
+        if (url === `${ISSUER}/.well-known/smart-configuration`) {
+          return Promise.resolve(jsonResponse(SMART_CONFIGURATION));
+        }
+        if (url === TOKEN_ENDPOINT) {
+          return Promise.resolve(jsonResponse(tokenResponse, tokenStatus));
+        }
+        return Promise.reject(new Error("connect ECONNREFUSED"));
+      });
+      openPending();
+
+      const response = await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe("/");
+      const rows = storedSessions();
+      expect(rows[0].status).toBe("active");
+      expect(rows[0].userDisplay).toBe("Dr Jane Smith");
+      // Nothing about the failed lookup may carry the token that was used for it.
+      expect(harness.logLines.join("\n")).not.toContain(ACCESS_TOKEN);
+    });
+
+    it("falls back to the ID token name when the resource has no name at all", async () => {
+      fhirUserResponse = practitionerResource({ name: undefined });
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      expect(storedSessions()[0].userDisplay).toBe("Dr Jane Smith");
+    });
+
+    it("uses preferred_username when there is no name and no fhirUser", async () => {
       tokenResponse = tokenResponseBody({
         id_token: idToken({
           sub: "practitioner-1",
-          fhirUser: `${ISSUER}/Practitioner/prac-1`,
+          preferred_username: "a.fielding",
         }),
       });
       openPending();
@@ -272,9 +435,37 @@ describe("GET /auth/callback", () => {
         url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
       });
 
-      expect(storedSessions()[0].userDisplay).toBe(
-        `${ISSUER}/Practitioner/prac-1`,
-      );
+      expect(storedSessions()[0].userDisplay).toBe("a.fielding");
+      // With nothing to resolve, no lookup is attempted.
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          urlOf(input).includes("/Practitioner/"),
+        ),
+      ).toBe(false);
+    });
+
+    // A reference that is not `ResourceType/id` shaped is not a FHIR reference, and following
+    // it would let an issuer point the BFF at a URL of its choosing.
+    it("ignores a fhirUser reference that does not name a resource", async () => {
+      tokenResponse = tokenResponseBody({
+        id_token: idToken({
+          sub: "practitioner-1",
+          fhirUser: "https://attacker.example/internal/metadata",
+        }),
+      });
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      expect(storedSessions()[0].userDisplay).toBeNull();
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          urlOf(input).startsWith("https://attacker.example"),
+        ),
+      ).toBe(false);
     });
 
     it("stores no patient and no display when the launch carried neither", async () => {
@@ -294,6 +485,46 @@ describe("GET /auth/callback", () => {
       expect(rows[0].patientId).toBeNull();
       expect(rows[0].userDisplay).toBeNull();
       expect(rows[0].refreshToken).toBeNull();
+    });
+
+    // A standalone launch omits `launch/patient`, because there is no EHR context to be
+    // granted - the requester picks the patient in the app. Aidbox nonetheless reports a
+    // `patient` in that case, set to the id of the signed-in user's own `fhirUser`
+    // (measured 2026-08-22: a standalone launch as `e2e-demo` reports
+    // `"patient": "prac-demo"`, which is a Practitioner). Storing that would put a
+    // practitioner in `Task.for`, so the context is only taken when the scope that asks for
+    // it was actually granted.
+    it("ignores a reported patient when launch/patient was not granted", async () => {
+      tokenResponse = tokenResponseBody({
+        scope: "openid fhirUser launch online_access user/*.cruds",
+        patient: "prac-1",
+      });
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      const rows = storedSessions();
+      expect(rows[0].patientId).toBeNull();
+      // The rest of the launch is unaffected.
+      expect(rows[0].status).toBe("active");
+      expect(rows[0].userDisplay).toBe("Dr Alex Fielding");
+    });
+
+    // SMART App Launch requires `scope` in the access token response, so a response without
+    // one has not stated that patient context was granted.
+    it("ignores a reported patient when the response states no scope", async () => {
+      tokenResponse = tokenResponseBody({ scope: undefined, patient: "pt-1" });
+      openPending();
+
+      await harness.server.inject({
+        method: "GET",
+        url: `/auth/callback?code=${CODE}&state=${encodeURIComponent(STATE)}`,
+      });
+
+      expect(storedSessions()[0].patientId).toBeNull();
     });
 
     it("authenticates with client_secret_basic and keeps the secret out of the body", async () => {
