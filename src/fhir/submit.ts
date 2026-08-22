@@ -7,10 +7,16 @@ import type {
 } from "fhir/r4";
 
 import {
+  completedTask,
+  isFinishedTaskStatus,
+  taskIfMatch,
+} from "@/fhir/taskCompletion";
+import {
   classifyProxyResponse,
   isSessionEnded,
   sessionEndedError,
 } from "@/lib/session";
+import { parseServerTaskUrl } from "@/link/replyDescriptor";
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -98,15 +104,53 @@ export const NO_DESTINATION_MESSAGE =
   "sdc-questionnaire-endpoint extension, and no launched server was supplied to fall back on. " +
   "Re-launching from the clinical system supplies one.";
 
+/** The launched server the reviewer is signed in to, as `GET /api/session` describes it. */
+export interface LaunchedServer {
+  /** Its FHIR base URL. */
+  readonly issuer: string;
+  /** Its human-readable name, from the deployment's registry. */
+  readonly label: string;
+}
+
+/** What happened to the request's own Task on the launched server. */
+export interface PublishedTaskOutcome {
+  /**
+   * Which of the four things happened.
+   *
+   * `completed` - the published Task was read and moved to `completed`, with these answers as its
+   * output, so `/requests` now shows the request as answered.
+   * `skipped` - there was no Task on the launched server for these answers to complete, which is
+   * the ordinary case for a link this deployment did not mint. Not a failure.
+   * `unchanged` - the Task exists but the clinic has already decided it. Left exactly as it was.
+   * `failed` - the completion was attempted and refused. The answers are still stored.
+   */
+  readonly kind: "completed" | "skipped" | "unchanged" | "failed";
+  /** What happened, in words a reviewer can act on. Always populated. */
+  readonly detail: string;
+  /** Id of the Task that was completed, when one was. */
+  readonly taskId?: string;
+}
+
 export interface SubmitResult {
   serverUrl: string;
   /** Server-assigned id of the created QuestionnaireResponse. */
   responseId?: string;
-  /** Server-assigned id of the created Task, when one was submitted. */
-  taskId?: string;
   /** Server-assigned id of the created Provenance, when one accompanied the response. */
   provenanceId?: string;
   error?: string;
+}
+
+/** Everything an acceptance did: the answers written, and what became of the request. */
+export interface SubmitOutcome {
+  /** One result per destination the answers were written to. */
+  readonly results: SubmitResult[];
+  /**
+   * What became of the request Task on the launched server.
+   *
+   * One outcome rather than one per destination, because there is one Task: it lives on the server
+   * the reviewer launched from, whatever the answers' destinations turn out to be.
+   */
+  readonly task: PublishedTaskOutcome;
 }
 
 function trimTrailingSlash(url: string): string {
@@ -189,7 +233,7 @@ function describeFailure(response: Response, body: unknown): string {
  */
 async function createResource(
   serverUrl: string,
-  resource: QuestionnaireResponse | Task | Provenance,
+  resource: QuestionnaireResponse | Provenance,
 ): Promise<string> {
   const response = await fetch(
     `${trimTrailingSlash(serverUrl)}/${resource.resourceType}`,
@@ -234,76 +278,400 @@ async function createResource(
 
 export interface SubmitOptions {
   response: QuestionnaireResponse;
-  /** Round-tripped from the request; its `output` is rewired to the real response id. */
+  /**
+   * The Task that came back with the answers.
+   *
+   * Read, never copied. Its `invitation-server-task-url` extension is the address of the
+   * *request's own* Task on the launched server, and completing that one is what closes the
+   * request on `/requests`. Creating a second Task here would leave the published one waiting
+   * for answers forever, which is exactly the bug FR-011 describes.
+   */
   task?: Task;
-  /** Who asserted the answers, when the filler said. Its `target` is rewired like the Task's. */
+  /** Who asserted the answers, when the filler said. Its `target` is rewired to the real id. */
   provenance?: Provenance;
   questionnaire?: Questionnaire;
   /** Fallback destination when the form declares none. See {@link ResolveDestinationsOptions}. */
   responseServerUrl?: string | null;
+  /**
+   * The server the reviewer launched from, when there is a session.
+   *
+   * The requester's own session authority is what completes the request Task - this is the
+   * fallback channel, so there is no grant involved: the clinician has scanned the link and
+   * pressed accept. Absent it, the Task leg is skipped and said to be skipped.
+   */
+  launchedServer?: LaunchedServer | null;
 }
 
 /**
- * Submit a reviewed response, plus its correlating Task and any attribution that came with it.
+ * A Task path within a FHIR base: the only suffix this app will address through the proxy.
  *
- * Order matters: the QuestionnaireResponse is created first so the Task's `output` and the
- * Provenance's `target` can reference its real server id rather than the `urn:uuid` that was only
- * meaningful inside the transported Bundle.
+ * Narrow on purpose. The URL comes off a link that anybody may have produced, and the proxy
+ * presents the session's authority to whatever it is given, so "somewhere inside the launched
+ * server's FHIR base" is not a tight enough constraint to spend that authority on.
+ */
+const TASK_PATH = /^Task\/[\w.-]{1,64}$/;
+
+/**
+ * What to call the launched server when telling the reviewer what happened to their request.
+ * @param launched the server, as the session describes it
+ * @returns its registry label, or its host when the deployment gave it no label
+ */
+function serverName(launched: LaunchedServer): string {
+  if (launched.label.trim() !== "") {
+    return launched.label;
+  }
+
+  try {
+    return new URL(launched.issuer).host;
+  } catch {
+    return launched.issuer;
+  }
+}
+
+/**
+ * The Task's path relative to the launched server's FHIR base, when it is inside it.
  *
- * Neither companion resource failing fails the submission. The clinical content is the response;
- * losing the correlation or attribution record is a reporting problem, not a data-loss one, and
- * re-submitting the response to fix it would duplicate it. They are reported rather than swallowed so
- * the gap is visible.
+ * Containment within the base rather than a bare origin comparison, because the path is about to
+ * be sent through the proxy, which resolves suffixes against exactly that base and refuses
+ * anything outside it. Requiring the same thing here means a URL that passes is a URL the proxy
+ * will accept, and a URL that fails is reported to the reviewer rather than turned into a 400.
+ * @param serverTaskUrl the absolute URL the returned Task named
+ * @param issuer the launched server's FHIR base
+ * @returns the suffix, e.g. `Task/t-1`, or undefined when the URL is not a Task inside that base
+ * @example
+ * taskPathOnLaunchedServer("https://ehr.test/fhir/Task/t-1", "https://ehr.test/fhir"); // "Task/t-1"
+ */
+function taskPathOnLaunchedServer(
+  serverTaskUrl: string,
+  issuer: string,
+): string | undefined {
+  const base = `${trimTrailingSlash(issuer)}/`;
+  if (!serverTaskUrl.startsWith(base)) {
+    return undefined;
+  }
+
+  const suffix = serverTaskUrl.slice(base.length);
+  return TASK_PATH.test(suffix) ? suffix : undefined;
+}
+
+/** Either a Task this acceptance may complete, or the reason it is completing none. */
+type TaskPlan =
+  | {
+      readonly kind: "complete";
+      readonly taskPath: string;
+      readonly launchedServer: LaunchedServer;
+    }
+  | { readonly kind: "skip"; readonly outcome: PublishedTaskOutcome };
+
+/**
+ * Decide whether these answers name a request Task this session may complete.
  *
- * A lost session is the one failure that is not reported as a per-destination error but raised.
+ * Every "no" is an ordinary outcome rather than a failure. A link this deployment did not mint
+ * names no Task, or names one on somebody else's server, and the answers are still worth storing -
+ * the reviewer is simply told that no request was closed.
+ * @param options the submission, for its Task and its session
+ * @returns the Task to complete, or the outcome to report instead
+ */
+function planTaskCompletion(options: SubmitOptions): TaskPlan {
+  if (!options.task) {
+    return {
+      kind: "skip",
+      outcome: {
+        kind: "skipped",
+        detail:
+          "No request Task came back with these answers, so there was no request to mark " +
+          "completed.",
+      },
+    };
+  }
+
+  const serverTaskUrl = parseServerTaskUrl(options.task);
+  if (serverTaskUrl === undefined) {
+    return {
+      kind: "skip",
+      outcome: {
+        kind: "skipped",
+        detail:
+          "These answers name no request on any server, so no request was marked completed. " +
+          "That is normal for a link this deployment did not mint.",
+      },
+    };
+  }
+
+  const launchedServer = options.launchedServer ?? undefined;
+  if (launchedServer === undefined) {
+    return {
+      kind: "skip",
+      outcome: {
+        kind: "skipped",
+        detail:
+          `These answers name a request at ${serverTaskUrl}, but this session has no launched ` +
+          "server to reach it through, so no request was marked completed.",
+      },
+    };
+  }
+
+  const taskPath = taskPathOnLaunchedServer(
+    serverTaskUrl,
+    launchedServer.issuer,
+  );
+  if (taskPath === undefined) {
+    return {
+      kind: "skip",
+      outcome: {
+        kind: "skipped",
+        detail:
+          `The request these answers came back for is at ${serverTaskUrl}, which is not on ` +
+          `${serverName(launchedServer)}, so no request was marked completed there.`,
+      },
+    };
+  }
+
+  return { kind: "complete", taskPath, launchedServer };
+}
+
+/**
+ * Complete the request's published Task: read it, then `PUT` the version just read.
+ *
+ * Conditional on that version, and never over a Task the clinic has already decided (FR-022).
+ * Both are the same rule the direct send follows, and the write is the same shape, so a request
+ * answered by link and a request answered by direct send leave the same trace.
+ *
+ * No outcome here is thrown, including a lost session: the answers are already stored by the time
+ * this runs, so a re-launch prompt would replace a report of a successful write with a login
+ * screen. Everything that can go wrong is reported as what it is.
+ * @param options the proxy base, the server, the Task's path and the answers to point at
+ * @param options.proxyBase the session proxy's FHIR base
+ * @param options.launchedServer the server the reviewer launched from
+ * @param options.taskPath the Task's path within that server's FHIR base
+ * @param options.responseReference reference to the answers as they were stored
+ * @returns what happened to the Task
+ */
+async function completeRequestTask(options: {
+  readonly proxyBase: string;
+  readonly launchedServer: LaunchedServer;
+  readonly taskPath: string;
+  readonly responseReference: string;
+}): Promise<PublishedTaskOutcome> {
+  const { proxyBase, launchedServer, taskPath, responseReference } = options;
+  const name = serverName(launchedServer);
+  const base = trimTrailingSlash(proxyBase);
+
+  /*
+   * `no-store`, because the `If-Match` below is derived from *this* read. Left to the browser's
+   * HTTP cache, a second visit to the same Task URL becomes a revalidation, and then the body in
+   * hand describes a version the server may have moved past - which turns a conditional update
+   * into a guess. Aidbox makes it worse than stale: it answers any conditional GET with a 500
+   * while still sending an ETag and `Cache-Control: no-cache`, so the read fails outright.
+   */
+  let read: Response;
+  try {
+    read = await fetch(`${base}/${taskPath}`, {
+      headers: { Accept: FHIR_JSON },
+      cache: "no-store",
+    });
+  } catch {
+    return {
+      kind: "failed",
+      detail: `${name} could not be reached, so the request there was left as it is.`,
+    };
+  }
+
+  const readBody: unknown = await read.json().catch(() => {
+    return;
+  });
+  const readOutcome = classifyProxyResponse(read.status, readBody);
+  if (readOutcome === "session-ended") {
+    return {
+      kind: "failed",
+      detail:
+        "The session ended before the request could be marked completed, so it was left as it " +
+        "is. The answers are stored.",
+    };
+  }
+  if (readOutcome === "failed") {
+    return {
+      kind: "failed",
+      detail:
+        `The request could not be read on ${name} - ${describeFailure(read, readBody)} - so it ` +
+        "was left as it is.",
+    };
+  }
+
+  const task = readBody as Task | undefined;
+  if (task?.resourceType !== "Task" || typeof task.id !== "string") {
+    return {
+      kind: "failed",
+      detail: `${name} returned no Task at ${taskPath}, so no request was marked completed.`,
+    };
+  }
+
+  if (isFinishedTaskStatus(task.status)) {
+    return {
+      kind: "unchanged",
+      taskId: task.id,
+      detail:
+        `The request on ${name} is already ${task.status}, so it was left exactly as it is - ` +
+        "these answers did not change it.",
+    };
+  }
+
+  const ifMatch = taskIfMatch(task, read.headers.get("ETag"));
+  if (ifMatch === undefined) {
+    return {
+      kind: "failed",
+      detail:
+        `${name} did not say which version of the request it returned, so the request was left ` +
+        "as it is rather than overwritten blindly.",
+    };
+  }
+
+  let written: Response;
+  try {
+    written = await fetch(`${base}/Task/${task.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": FHIR_JSON,
+        Accept: FHIR_JSON,
+        "If-Match": ifMatch,
+      },
+      body: JSON.stringify(completedTask(task, responseReference)),
+    });
+  } catch {
+    return {
+      kind: "failed",
+      detail: `${name} could not be reached, so the request there was left as it is.`,
+    };
+  }
+
+  /*
+   * The conditional lost. Somebody else changed the Task between the read and the write, and
+   * whatever they did is more recent than this decision - so the honest report is that nothing
+   * here changed it.
+   */
+  if (written.status === 409 || written.status === 412) {
+    return {
+      kind: "unchanged",
+      taskId: task.id,
+      detail:
+        `The request on ${name} changed while these answers were being reviewed, so it was left ` +
+        "as it is. Check its state there.",
+    };
+  }
+
+  const writtenBody: unknown = await written.json().catch(() => {
+    return;
+  });
+  if (classifyProxyResponse(written.status, writtenBody) !== "ok") {
+    return {
+      kind: "failed",
+      detail:
+        `The request on ${name} could not be marked completed - ` +
+        `${describeFailure(written, writtenBody)}. The answers are stored.`,
+    };
+  }
+
+  return {
+    kind: "completed",
+    taskId: task.id,
+    detail: `The request on ${name} is now marked completed, with these answers as its output.`,
+  };
+}
+
+/**
+ * Close the request these answers came back for, or say why none was closed.
+ *
+ * Runs after the response writes, because the Task's `output` has to name the answers by the id
+ * the server actually assigned. Only the copy written to the launched server will do: a response
+ * that went to an endpoint the form declared is not addressable from a Task on the launched
+ * server, and pointing at it would leave a dangling reference where a completion should be.
+ * @param options the submission
+ * @param results what the response writes produced
+ * @returns what happened to the request Task
+ */
+async function settleRequestTask(
+  options: SubmitOptions,
+  results: SubmitResult[],
+): Promise<PublishedTaskOutcome> {
+  const plan = planTaskCompletion(options);
+  if (plan.kind === "skip") {
+    return plan.outcome;
+  }
+
+  const name = serverName(plan.launchedServer);
+  const proxyBase = options.responseServerUrl ?? undefined;
+  const written =
+    proxyBase === undefined
+      ? undefined
+      : results.find((result) => result.serverUrl === proxyBase);
+
+  if (proxyBase === undefined || written === undefined) {
+    return {
+      kind: "skipped",
+      detail:
+        `These answers went to the endpoint this form declares rather than to ${name}, so the ` +
+        `request on ${name} was left as it is.`,
+    };
+  }
+  if (written.responseId === undefined) {
+    return {
+      kind: "skipped",
+      detail: `The answers were not saved to ${name}, so the request there was left as it is.`,
+    };
+  }
+
+  return completeRequestTask({
+    proxyBase,
+    launchedServer: plan.launchedServer,
+    taskPath: plan.taskPath,
+    responseReference: `QuestionnaireResponse/${written.responseId}`,
+  });
+}
+
+/**
+ * Submit a reviewed response, its attribution, and the completion of the request it answers.
+ *
+ * Order matters: the QuestionnaireResponse is created first so the Provenance's `target` and the
+ * request Task's `output` can reference its real server id rather than the `urn:uuid` that was
+ * only meaningful inside the transported Bundle.
+ *
+ * Neither the attribution nor the completion failing fails the submission. The clinical content is
+ * the response; losing the attribution record or leaving the request open is a reporting problem,
+ * not a data-loss one, and re-submitting the response to fix it would duplicate it. Both are
+ * reported rather than swallowed so the gap is visible to the person who accepted the answers.
+ *
+ * A lost session during the *response* write is the one failure that is not reported but raised.
  * Nothing was written and nothing will be until there is a session again, so the caller has to be
  * able to offer a re-launch rather than paint a red box beside the answers - and that decision is
  * made on the error's kind, which a `SubmitResult.error` string would have thrown away.
- * @param options the answers, their companions, and where to write them
- * @returns one result per destination
+ * @param options the answers, their companions, where to write them and which server this is
+ * @returns one result per destination, plus what became of the request Task
  * @throws {SessionEndedError} when the session behind the proxy has gone
  * @throws {Error} when no destination is configured
  * @example
- * const results = await submitResponse({ response, responseServerUrl: FHIR_PROXY_BASE });
+ * const outcome = await submitResponse({
+ *   response,
+ *   task,
+ *   responseServerUrl: FHIR_PROXY_BASE,
+ *   launchedServer: { issuer: session.issuer, label: session.issuerLabel },
+ * });
  */
 export async function submitResponse(
   options: SubmitOptions,
-): Promise<SubmitResult[]> {
+): Promise<SubmitOutcome> {
   const destinations = resolveDestinations(options);
 
   if (destinations.length === 0) {
     throw new Error(NO_DESTINATION_MESSAGE);
   }
 
-  return Promise.all(
+  const results = await Promise.all(
     destinations.map(async (serverUrl): Promise<SubmitResult> => {
       try {
         const responseId = await createResource(
           serverUrl,
           asNewResource(options.response),
         );
-        const responseReference = `QuestionnaireResponse/${responseId}`;
-
-        let taskId: string | undefined;
-        if (options.task) {
-          try {
-            const task = asNewResource<Task>({
-              ...options.task,
-              output: [
-                {
-                  type: { text: "questionnaire-response" },
-                  valueReference: { reference: responseReference },
-                },
-              ],
-            });
-            taskId = await createResource(serverUrl, task);
-          } catch (error) {
-            console.warn(
-              `Saved the response but could not save its Task to ${serverUrl}`,
-              error,
-            );
-          }
-        }
 
         let provenanceId: string | undefined;
         if (options.provenance) {
@@ -312,7 +680,7 @@ export async function submitResponse(
               ...options.provenance,
               // Targeted the response's `urn:uuid` inside the Bundle; that entry is gone, so point it
               // at what was actually created.
-              target: [{ reference: responseReference }],
+              target: [{ reference: `QuestionnaireResponse/${responseId}` }],
             });
             provenanceId = await createResource(serverUrl, provenance);
           } catch (error) {
@@ -323,7 +691,7 @@ export async function submitResponse(
           }
         }
 
-        return { serverUrl, responseId, taskId, provenanceId };
+        return { serverUrl, responseId, provenanceId };
       } catch (error) {
         if (isSessionEnded(error)) {
           throw error;
@@ -336,6 +704,8 @@ export async function submitResponse(
       }
     }),
   );
+
+  return { results, task: await settleRequestTask(options, results) };
 }
 
 /**

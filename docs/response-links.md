@@ -122,13 +122,13 @@ should reference the response's `fullUrl` - the response has no server id yet.
 R4 gives `QuestionnaireResponse` no way to reference a `Task`, so correlation runs from the Task
 outward. Echo the invitation's `Task` back if you can:
 
-| Field                     | What to do                                                                                                                                            |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `identifier`              | **Preserve verbatim.** This is the only key that survives the round trip, and the only thing that ties the answers to the request that asked for them |
-| `status`                  | `completed`                                                                                                                                           |
-| `output[].valueReference` | the response's `fullUrl`                                                                                                                              |
-| `focus`                   | **drop it** - it named a Questionnaire entry in a Bundle that no longer exists                                                                        |
-| `extension`               | **drop it** - echoing a reply descriptor back copies a write capability into whatever the answers travel on, possibly an unencrypted QR               |
+| Field                     | What to do                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `identifier`              | **Preserve verbatim.** This is the only key that survives the round trip, and the only thing that ties the answers to the request that asked for them                                                                                                                                                                                                                                             |
+| `status`                  | `completed`                                                                                                                                                                                                                                                                                                                                                                                       |
+| `output[].valueReference` | the response's `fullUrl`                                                                                                                                                                                                                                                                                                                                                                          |
+| `focus`                   | **drop it** - it named a Questionnaire entry in a Bundle that no longer exists                                                                                                                                                                                                                                                                                                                    |
+| `extension`               | **keep `invitation-server-task-url`, drop the rest.** The reply descriptor is a capability - echoing a slot URL and its token copies a write capability into whatever the answers travel on, possibly an unencrypted QR. The server task URL is an address the requester published and already holds, and it is how the requester finds the Task to complete when the answers come back as a link |
 
 Without a Task the answers are still perfectly reviewable; they just cannot be matched to a request
 automatically, and the reviewer is told so rather than left to wonder.
@@ -255,6 +255,15 @@ invitation copy names the server copy with one extension, so the filler can comp
 `valueUrl` is the published Task's absolute URL. **It must be on the grant's `aud` origin.** A
 filler that finds it anywhere else must skip the task leg entirely rather than present a bearer
 token off-origin - not even to see whether the fetch would have worked.
+
+The same extension does a second job on the way back. When the answers return as a link rather
+than a direct send, the requester reads it off the returned `Task`, checks the URL is inside the
+FHIR base of the server their own session launched from, and completes _that_ Task through the
+session proxy: read it, then `PUT` it `completed` with `If-Match` on the version just read. Same
+conditional write, same `output` shape, same rule about leaving a Task the clinic has already
+decided - so a request answered by link and one answered by direct send leave the same trace, and
+the sent-requests list is right either way. A returned link naming a Task on some other server, or
+naming none, stores the answers and closes nothing.
 
 ### The submission transaction
 

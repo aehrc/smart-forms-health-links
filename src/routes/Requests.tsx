@@ -28,10 +28,15 @@ import { taskCorrelationId } from "@/link/exchange";
  * browser - so a request sent from a colleague's machine was visible here and not collectable
  * here, and the list had to explain that.
  *
- * Nothing needs explaining now. Answers land directly on the launched server, so a request's
- * state is the state of its Task, and everybody signed in to that server sees the same thing.
- * There is no local key to hold, nothing to export between browsers, and nothing to poll: a
- * filler completing a form updates the Task, and this list reflects it.
+ * Nothing needs explaining now. A request's state is the state of its Task, and everybody signed
+ * in to that server sees the same thing. There is no local key to hold, nothing to export between
+ * browsers, and nothing to poll.
+ *
+ * Two things move a Task to `completed`, and both have to, or a row here would be wrong. A filler
+ * with a live grant completes it inside its own submission transaction. A filler who hands the
+ * answers back as a link instead has the request's Task completed by the clinician who accepts
+ * them, through the session proxy (`src/fhir/submit.ts`). The scan-back return is the fallback
+ * FR-028 keeps alive, so it has to close the request too.
  * @author John Grimes
  */
 
@@ -108,10 +113,10 @@ export default function Requests() {
       </div>
 
       <Alert title="Answers arrive on the server">
-        A completed form is written straight to {gate.session.issuerLabel} by
-        the person answering it, so there is nothing here to collect and nothing
-        to poll. A request shows as completed once its answers have landed -
-        look for them under{" "}
+        Answers reach {gate.session.issuerLabel} either written straight there
+        by the person answering, or handed back as a link and accepted here - so
+        there is nothing to collect and nothing to poll. Either way a request
+        shows as completed once its answers have landed, and they appear under{" "}
         <RouterLink to="/responses" className="underline">
           Responses
         </RouterLink>

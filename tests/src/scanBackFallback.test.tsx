@@ -340,20 +340,24 @@ describe("the requester accepts the answers", () => {
    * FR-007: the write happens with the session's authority, which the browser does not hold. So
    * every request goes to the BFF's proxy rather than to the launched server directly, and no
    * request carries an Authorization header of its own.
+   *
+   * The request Task here names no server-side URL, which is the third-party case: the answers and
+   * their attribution are written, and no Task is touched. Completing a published Task is covered
+   * by `publishedTaskCompletion.test.ts`.
    */
-  it("writes the response, its task and its provenance through the session proxy", async () => {
+  it("writes the response and its provenance through the session proxy", async () => {
     accepting();
 
-    const results = await submitResponse({
+    const outcome = await submitResponse({
       response: ANSWERS,
       task: { ...REQUEST_TASK, status: "completed" },
       provenance: PROVENANCE,
       responseServerUrl: FHIR_PROXY_BASE,
     });
 
-    expect(results[0]?.responseId).toBe("created-1");
-    expect(results[0]?.taskId).toBe("created-1");
-    expect(results[0]?.provenanceId).toBe("created-1");
+    expect(outcome.results[0]?.responseId).toBe("created-1");
+    expect(outcome.results[0]?.provenanceId).toBe("created-1");
+    expect(outcome.task.kind).toBe("skipped");
 
     const requested = fetchMock.mock.calls.map(([url, init]) => [
       urlOf(url),
@@ -361,7 +365,6 @@ describe("the requester accepts the answers", () => {
     ]);
     expect(requested).toEqual([
       [`${FHIR_PROXY_BASE}/QuestionnaireResponse`, "POST"],
-      [`${FHIR_PROXY_BASE}/Task`, "POST"],
       [`${FHIR_PROXY_BASE}/Provenance`, "POST"],
     ]);
     for (const [, init] of fetchMock.mock.calls) {
@@ -412,12 +415,12 @@ describe("the requester accepts the answers", () => {
       ),
     );
 
-    const results = await submitResponse({
+    const outcome = await submitResponse({
       response: ANSWERS,
       responseServerUrl: FHIR_PROXY_BASE,
     });
 
-    expect(results[0]?.error).toMatch(/access denied by policy/i);
-    expect(results[0]?.responseId).toBeUndefined();
+    expect(outcome.results[0]?.error).toMatch(/access denied by policy/i);
+    expect(outcome.results[0]?.responseId).toBeUndefined();
   });
 });

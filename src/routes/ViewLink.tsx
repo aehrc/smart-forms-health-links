@@ -34,7 +34,7 @@ import {
   type OutstandingRequest,
 } from "@/lib/requestStore";
 import { findRequestForTask } from "@/lib/sentRequests";
-import { FHIR_PROXY_BASE } from "@/lib/session";
+import { FHIR_PROXY_BASE, useSession } from "@/lib/session";
 import {
   PasscodeRequiredError,
   decodingCodec,
@@ -77,6 +77,13 @@ import { LINK_CODECS } from "@/link/registry";
  * ({@link suppressesOtherChannels}). FR-026 requires a terminal state that suppresses all further
  * sends, and the honest way to do that is to stop offering them rather than to disable them.
  *
+ * That applies to a send this browser did not make. An invitation reopened after its answers are
+ * already stored reaches the same terminal state, because {@link useDirectSend} asks the
+ * destination about the published Task when the link is opened - so what a filler sees is the
+ * accepted state rather than a second empty form (spec edge case: "the same invitation opened
+ * after the response was already sent"). While that question is outstanding the form renders as
+ * usual and only the send affordance waits.
+ *
  * A grant that could not be read is simply absent, so nothing here changes: no panel, and the
  * form and the scan-back return exactly as before (FR-020).
  */
@@ -103,7 +110,12 @@ type Opened = { warnings?: string[]; label?: string } & (
 async function openLink(
   fragment: string,
   formsServerUrl: string,
-  options: { passcode?: string; signal?: AbortSignal } = {},
+  options: {
+    passcode?: string;
+    signal?: AbortSignal;
+    /** What to call the server in anything the user reads; defaults to a neutral description. */
+    serverName?: string;
+  } = {},
 ): Promise<Opened> {
   const codec = decodingCodec(fragment, LINK_CODECS);
   const content = await codec.decode(fragment, { passcode: options.passcode });
@@ -174,7 +186,9 @@ async function openLink(
 
     return {
       ...base,
-      questionnaireError: `These answers cite ${canonical}, which ${formsServerUrl} does not hold.`,
+      questionnaireError:
+        `These answers cite ${canonical}, which ` +
+        `${options.serverName ?? "the launched server"} does not hold.`,
     };
   }
 }
@@ -207,6 +221,16 @@ export default function ViewLink() {
   });
   const passcode = attempt.fragment === fragment ? attempt.passcode : undefined;
 
+  /*
+   * What to call the server in the one message that names it. Deliberately *not* part of the
+   * query key: a session resolving after the link has opened would re-run the open, and a second
+   * manifest fetch means a second minted token for no reason. An anonymous filler has no session
+   * and gets the neutral wording.
+   */
+  const session = useSession();
+  const serverName =
+    session.kind === "active" ? session.session.issuerLabel : undefined;
+
   const {
     data: opened,
     isPending,
@@ -219,7 +243,7 @@ export default function ViewLink() {
      * unresolvable Questionnaire degrades the display rather than failing the open.
      */
     queryFn: ({ signal }) =>
-      openLink(fragment, FHIR_PROXY_BASE, { passcode, signal }),
+      openLink(fragment, FHIR_PROXY_BASE, { passcode, signal, serverName }),
     enabled: fragment !== "",
     retry: false,
   });

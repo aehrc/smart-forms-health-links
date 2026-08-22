@@ -2,6 +2,7 @@ import { collectionBundle, findInBundle } from "./codec";
 import {
   buildReplyDescriptorExtension,
   buildServerTaskUrlExtension,
+  isServerTaskUrlExtension,
   type ReplyDescriptor,
 } from "./replyDescriptor";
 
@@ -238,6 +239,10 @@ export function buildResponseBundle(
     };
   }
 
+  const serverTaskAddress = (requestTask.extension ?? []).filter((candidate) =>
+    isServerTaskUrlExtension(candidate),
+  );
+
   const task: Task = {
     ...requestTask,
     status: "completed",
@@ -249,11 +254,21 @@ export function buildResponseBundle(
      */
     focus: undefined,
     /*
-     * The request's extensions are the *requester's* return-channel instructions - a reply slot URL,
-     * and possibly a token authorising a write to it. Echoing them back serves no purpose and would
-     * copy a capability into whatever transport the answers travel on, including an unencrypted QR.
+     * The request's extensions are sorted rather than dropped wholesale, because the two kinds
+     * are not alike.
+     *
+     * A reply descriptor is a *capability*: a slot URL and possibly a token authorising a write
+     * to it. Echoing that back serves no purpose and would copy a capability into whatever
+     * transport the answers travel on, including an unencrypted QR.
+     *
+     * `invitation-server-task-url` is an *address* - the request's own Task on the requester's
+     * server, which the requester published and already knows. It comes back because it is how
+     * the requester finds the Task to complete when the answers return as a link rather than
+     * through a direct send (FR-011). Without it the request stays "awaiting answers" forever
+     * on a list that derives entirely from those Tasks. Nothing is disclosed by returning it:
+     * reaching that URL takes the requester's own session, which whoever is reviewing has.
      */
-    extension: undefined,
+    extension: serverTaskAddress.length > 0 ? serverTaskAddress : undefined,
     output: [
       {
         type: RESPONSE_OUTPUT_TYPE,

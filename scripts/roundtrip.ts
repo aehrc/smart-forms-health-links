@@ -1542,8 +1542,23 @@ const postedProvenance = posted.find((entry) =>
 
 check(
   "write/responseCreated",
-  submitted[0]?.responseId !== undefined,
-  submitted[0]?.error,
+  submitted.results[0]?.responseId !== undefined,
+  submitted.results[0]?.error,
+);
+/*
+ * This reply's Task names no `invitation-server-task-url`, so there is no published request for
+ * the write to complete - and the answers are stored anyway. That is the third-party case, and it
+ * is reported rather than silently skipped.
+ */
+check(
+  "write/noPublishedTaskToComplete",
+  submitted.task.kind === "skipped" && submitted.task.detail.length > 0,
+  submitted.task.detail,
+);
+check(
+  "write/noStrayTaskCreated",
+  !posted.some((entry) => entry.url.endsWith("/Task")),
+  "a POSTed Task copy would leave the published request awaiting answers forever",
 );
 check(
   "write/securityLabelPreserved",
@@ -1558,11 +1573,14 @@ check(
   postedResponse?.meta?.lastUpdated === undefined,
 );
 check("write/idStripped", postedResponse?.id === undefined);
-check("write/provenanceCreated", submitted[0]?.provenanceId !== undefined);
+check(
+  "write/provenanceCreated",
+  submitted.results[0]?.provenanceId !== undefined,
+);
 check(
   "write/provenanceRetargetedToRealId",
   postedProvenance?.target?.[0]?.reference ===
-    `QuestionnaireResponse/${submitted[0]?.responseId}`,
+    `QuestionnaireResponse/${submitted.results[0]?.responseId}`,
   postedProvenance?.target?.[0]?.reference,
 );
 check(

@@ -236,19 +236,39 @@ export function buildServerTaskUrlExtension(taskUrl: string): Extension {
 }
 
 /**
+ * Whether an extension is a usable `invitation-server-task-url`.
+ *
+ * Both the identifier and the value are checked, because a recognised url carrying something that
+ * is not an absolute `http(s)` URL is not an address anyone can use. Exported so callers that
+ * carry the extension around - the return leg keeps it while dropping the reply descriptor - can
+ * select it without re-deriving what counts.
+ * @param extension the candidate extension
+ * @returns true when it names a Task by absolute URL under either recognised identifier
+ * @example
+ * const kept = (task.extension ?? []).filter(isServerTaskUrlExtension);
+ */
+export function isServerTaskUrlExtension(extension: Extension): boolean {
+  if (!SERVER_TASK_URL_URLS.has(extension.url)) {
+    return false;
+  }
+
+  const value = extension.valueUrl ?? extension.valueString;
+  return typeof value === "string" && /^https?:\/\//i.test(value);
+}
+
+/**
  * Read the absolute URL of the invitation's Task on the requester's server (channel B).
  *
  * Required to be absolute and `http(s)`: a relative reference would be resolved against whatever base
  * the filler happens to be using, which is nothing to do with the requester's server.
+ * @param task the Task to read it off, when there is one
+ * @returns the absolute Task URL, or undefined when the Task names none
  */
 export function parseServerTaskUrl(task: Task | undefined): string | undefined {
   const extension = task?.extension?.find((candidate) =>
-    SERVER_TASK_URL_URLS.has(candidate.url),
+    isServerTaskUrlExtension(candidate),
   );
-  const value = extension?.valueUrl ?? extension?.valueString;
-  return typeof value === "string" && /^https?:\/\//i.test(value)
-    ? value
-    : undefined;
+  return extension?.valueUrl ?? extension?.valueString;
 }
 
 /** The return channels a request offers, for UI that has to explain what is and is not possible. */
