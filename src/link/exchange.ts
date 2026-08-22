@@ -17,15 +17,15 @@ import type {
 /**
  * The two payloads that travel between a requester and a form filler.
  *
- * **Request**  `Bundle{Questionnaire, Task}` — "please fill this in"
- * **Response** `Bundle{QuestionnaireResponse, Task}` — "here are the answers"
+ * **Request**  `Bundle{Questionnaire, Task}` - "please fill this in"
+ * **Response** `Bundle{QuestionnaireResponse, Task}` - "here are the answers"
  *
  * ## Why the Task, and why it points the way it does
  *
  * R4 gives QuestionnaireResponse no way to reference a Task: `basedOn` accepts only
  * `CarePlan|ServiceRequest`, `partOf` only `Observation|Procedure`, and `identifier` is `0..1`.
- * Correlation therefore has to run from the Task outward — `Task.focus` at the Questionnaire and
- * `Task.output.valueReference` at the QuestionnaireResponse — with the Task itself round-tripping
+ * Correlation therefore has to run from the Task outward (`Task.focus` at the Questionnaire and
+ * `Task.output.valueReference` at the QuestionnaireResponse) with the Task itself round-tripping
  * inside the Bundle. No extensions needed.
  *
  * Within a Bundle those references use `urn:uuid:` against sibling `fullUrl`s, which is why
@@ -73,7 +73,7 @@ export interface ResponsePayload {
    * Who asserted the answers, when the filler said.
    *
    * Present on encrypted-channel replies and absent from a plain link. It is attribution rather than
-   * clinical content, so nothing depends on it — but it must be written when it is there, because it is
+   * clinical content, so nothing depends on it - but it must be written when it is there, because it is
    * the record of the answers having come from outside.
    */
   provenance?: Provenance;
@@ -85,7 +85,7 @@ export interface BuildRequestOptions {
   /**
    * Who the form is for, in words.
    *
-   * Carried separately because a filler generally cannot resolve `subjectReference` — it references a
+   * Carried separately because a filler generally cannot resolve `subjectReference` - it references a
    * server the filler has no access to. A name is the only part of "who is this for" that survives the
    * trip, and it is what lets a filler warn that a form names someone other than the person holding
    * the device.
@@ -223,7 +223,7 @@ export function parseRequestBundle(bundle: Bundle): RequestPayload {
 /**
  * Build the "here are the answers" payload.
  *
- * The Questionnaire is intentionally *not* included — the requester already has it, and re-sending
+ * The Questionnaire is intentionally *not* included - the requester already has it, and re-sending
  * hundreds of kilobytes would push the payload past what a QR code can carry on the return leg.
  */
 export function buildResponseBundle(
@@ -249,7 +249,7 @@ export function buildResponseBundle(
      */
     focus: undefined,
     /*
-     * The request's extensions are the *requester's* return-channel instructions — a reply slot URL,
+     * The request's extensions are the *requester's* return-channel instructions - a reply slot URL,
      * and possibly a token authorising a write to it. Echoing them back serves no purpose and would
      * copy a capability into whatever transport the answers travel on, including an unencrypted QR.
      */
@@ -279,7 +279,7 @@ export function buildResponseBundle(
  * sent the invitation. Refusing to render answers we are holding, over a field we can supply
  * ourselves, would be unhelpful.
  *
- * Returns `undefined` when neither knows — the caller decides whether that is fatal, because it is
+ * Returns `undefined` when neither knows - the caller decides whether that is fatal, because it is
  * not always: answers can still be reviewed as a raw table without their form definition.
  */
 export function responseCanonical(
@@ -356,7 +356,7 @@ export function buildReplyBundle(
 
   const { bundle } = buildResponseBundle(attributed, options.requestTask);
   // `buildResponseBundle` always puts the response first, and its `fullUrl` is what a Provenance has
-  // to target — the response has no server id yet.
+  // to target - the response has no server id yet.
   const responseUuid = bundle.entry?.[0]?.fullUrl;
 
   const patientReference =
@@ -411,7 +411,7 @@ export function isRequestBundle(bundle: Bundle): boolean {
   );
 }
 
-/** The Task's business identifier — the key a requester matches a returned response against. */
+/** The Task's business identifier - the key a requester matches a returned response against. */
 export function taskCorrelationId(task: Task | undefined): string | undefined {
   return task?.identifier?.find((identifier) => identifier.value)?.value;
 }
@@ -419,7 +419,7 @@ export function taskCorrelationId(task: Task | undefined): string | undefined {
 /**
  * Canonical URL with version suffix, matching how QuestionnaireResponse.questionnaire is written.
  *
- * `undefined` for a Questionnaire with no `url` — legal FHIR, and not something callers can fix, so
+ * `undefined` for a Questionnaire with no `url` - legal FHIR, and not something callers can fix, so
  * they get to decide whether it matters. {@link canonicalOf} is the variant for callers that cannot
  * proceed without one.
  */
@@ -442,17 +442,6 @@ function canonicalOf(questionnaire: Questionnaire): string {
   }
 
   return canonical;
-}
-
-/**
- * The canonical the filler should record on the response, preferring what the Task carried so the
- * request and the response agree even if the filler resolved the form some other way.
- */
-export function canonicalFromRequest(payload: RequestPayload): string {
-  const fromInput = payload.task.input?.find(
-    (input) => input.valueCanonical,
-  )?.valueCanonical;
-  return fromInput ?? canonicalOf(payload.questionnaire);
 }
 
 export { questionnaireCanonical } from "./codec";

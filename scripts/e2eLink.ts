@@ -1,11 +1,17 @@
 /**
- * End-to-end check of the link flow against the live forms server, minus the UI:
+ * End-to-end check of the return link, minus the UI:
  *
  *   search -> pick a form -> build a response -> encode a link -> decode it
  *          -> resolve the Questionnaire back from its canonical
  *
- * This is the path that actually has to hold for a scanned link to open, and every step of it
+ * This is the path that has to hold for a scanned `sfhl:/` link to open, and every step of it
  * except the rendering is exercised here.
+ *
+ * The reads run against a public catalogue rather than against a launched server, because a
+ * command-line process has no SMART launch and therefore no session to proxy through. In the app
+ * these same functions are called with `FHIR_PROXY_BASE`, so what is proved here is the codec and
+ * canonical-resolution behaviour, not the transport in front of it. The session-gated paths are
+ * covered by `tests/server/**` offline and by the Playwright suite against Aidbox.
  *
  *   npm run check:e2e
  */
@@ -27,20 +33,21 @@ import { chooseErrorCorrectionLevel } from "../src/link/qrCapacity";
 
 import type { QuestionnaireResponse } from "fhir/r4";
 
+/** Read-only catalogue the form comes from. Never written to. */
 const FORMS_SERVER = "https://smartforms.csiro.au/api/fhir";
 const BASE_URL = "https://links.example.org";
 
 let failures = 0;
 function check(name: string, condition: boolean, detail = "") {
   console.log(
-    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` - ${detail}` : ""}`,
   );
   if (!condition) {
     failures++;
   }
 }
 
-console.log(`forms server: ${FORMS_SERVER}\n`);
+console.log(`forms server (read only): ${FORMS_SERVER}\n`);
 
 // 1. Search, as the form list does.
 const questionnaires = await searchQuestionnaires(FORMS_SERVER, "", 100);
@@ -54,7 +61,7 @@ check(
   questionnaires.every((q) => (q.item?.length ?? 0) > 0),
 );
 
-// 2. Pick the first form that has a canonical url — that is what a link needs.
+// 2. Pick the first form that has a canonical url - that is what a link needs.
 const picked = questionnaires.find((q) => !!q.url && !!q.id);
 if (!picked) {
   console.error(
@@ -112,7 +119,7 @@ check(
 );
 check("label survives the round trip", decoded.label === defaultLabel(byId));
 
-// 7. Resolve the questionnaire back from the canonical — the step that makes a scanned link open.
+// 7. Resolve the questionnaire back from the canonical - the step that makes a scanned link open.
 const canonical = questionnaireCanonical(decodedResponse);
 const resolved = await fetchQuestionnaireByCanonical(FORMS_SERVER, canonical);
 check(

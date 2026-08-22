@@ -94,7 +94,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
   /*
    * Patient reconciliation. A response from a third-party filler names a patient in *that* app's terms
-   * — Platypus sends its own local vault key — and a server enforcing referential integrity rejects the
+   * (Platypus sends its own local vault key) and a server enforcing referential integrity rejects the
    * entire write with `HAPI-1094`. Probing first turns a confusing failure after the fact into a
    * question the reviewer can actually answer.
    */
@@ -190,7 +190,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     };
   }
 
-  /** Apply a patient to the answers — from the picker, from the matched request, or typed in. */
+  /** Apply a patient to the answers - from the picker, from the matched request, or typed in. */
   function chooseSubject(reference: string, display?: string) {
     setSubjectOverride(reference);
     setSubjectOverrideDisplay(display ?? "");
@@ -201,8 +201,8 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const hasReconciliation = clearSubject || subjectOverride.trim() !== "";
   /*
    * Two ways a response arrives unfiled, and both end at the same question. Either it names a patient
-   * the destination server does not hold — normal for a third-party filler, and a write that will be
-   * rejected — or it names nobody at all, which no server objects to and which quietly files answers
+   * the destination server does not hold (normal for a third-party filler, and a write that will be
+   * rejected) or it names nobody at all, which no server objects to and which quietly files answers
    * against no one. The second is the more dangerous of the two, so it gets asked about just as loudly.
    */
   const needsSubject =
@@ -252,7 +252,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const unmatchedNote = correlationId ? (
     <>
       {" "}
-      Request <span className="font-mono text-xs">{correlationId}</span> — not
+      Request <span className="font-mono text-xs">{correlationId}</span> - not
       one this browser sent, so there is no local record to match it against.
     </>
   ) : (
@@ -263,7 +263,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const configuredSourceNote = questionnaire
     ? "From app configuration; this questionnaire does not declare an endpoint."
     : "From app configuration. The form definition could not be resolved, so its " +
-      "sdc-questionnaire-endpoint — if it declares one — was not consulted.";
+      "sdc-questionnaire-endpoint, if it declares one, was not consulted.";
 
   return (
     <div className="space-y-4">
@@ -321,7 +321,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               aria-hidden
             />
             These answers are labelled{" "}
-            <span className="font-mono text-xs">PATAST</span> — recorded by the
+            <span className="font-mono text-xs">PATAST</span> - recorded by the
             person themselves rather than by a clinician.
           </span>
           <p className="mt-1">
@@ -352,7 +352,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               <span className="font-mono text-xs">{originalSubject}</span>,
               which <span className="font-mono text-xs">{searchServer}</span>{" "}
               does not hold. A filler identifies the patient in its own terms,
-              so this is expected for answers from another app — but the write
+              so this is expected for answers from another app - but the write
               will be rejected until it is reconciled.
             </p>
           ) : (
@@ -397,7 +397,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               {/*
                * Searched on the destination server rather than on `responseServerUrl`, because a
                * questionnaire declaring its own sdc-questionnaire-endpoint sends the write somewhere
-               * else — and a reference is only worth anything on the server it will be stored on.
+               * else - and a reference is only worth anything on the server it will be stored on.
                */}
               <PatientPicker
                 serverUrl={searchServer}
@@ -436,7 +436,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             {subjectOverrideDisplay === "" ? null : (
               <p className="text-xs">
                 Will be filed against <strong>{subjectOverrideDisplay}</strong>{" "}
-                — <span className="font-mono">{subjectOverride}</span>.
+                - <span className="font-mono">{subjectOverride}</span>.
               </p>
             )}
 
@@ -457,7 +457,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 <span>
                   Save without a subject instead. The answers will be stored{" "}
                   <strong>with no record of who they are about</strong>, which
-                  is rarely what you want — matching the patient is a clinical
+                  is rarely what you want - matching the patient is a clinical
                   decision, not a technical one.
                 </span>
               </label>
@@ -528,7 +528,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           <ul className="space-y-0.5">
             {failed.map((result) => (
               <li key={result.serverUrl} className="text-xs">
-                <span className="font-mono">{result.serverUrl}</span> —{" "}
+                <span className="font-mono">{result.serverUrl}</span> -{" "}
                 {result.error}
               </li>
             ))}
@@ -560,7 +560,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             <p>
               {questionnaireError ??
                 "The form these answers were given against could not be found."}{" "}
-              That is common for answers from another app — a response cites
+              That is common for answers from another app - a response cites
               whatever canonical the app that wrote it used. The answers are
               shown as stored instead, and can still be saved: they are the
               clinical content, and the definition is presentation.

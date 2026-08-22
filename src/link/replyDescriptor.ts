@@ -3,26 +3,26 @@ import { isReplyPublicJwk, type ReplyPublicJwk } from "./replyCrypto";
 import type { Extension, Task } from "fhir/r4";
 
 /**
- * How a filler sends answers back — the two return channels, as `Task` extensions.
+ * How a filler sends answers back - the two return channels, as `Task` extensions.
  *
  * SMART Health Links are strictly one-directional: neither the
  * [SHL spec](https://docs.smarthealthit.org/smart-health-links/spec/) nor the HL7
  * links-specification defines a submission channel, and neither mentions questionnaires at all. A
  * browser filler can work around that by publishing its own link for the requester to scan, which is
- * what `bespokeCodec` exists for. A native app cannot — it has no viewer to hand back — so a request
+ * what `bespokeCodec` exists for. A native app cannot (it has no viewer to hand back), so a request
  * has to *say* where answers may go.
  *
  * Two channels, because they fail in different places:
  *
- * **Channel B — `invitation-server-task-url`.** Plain FHIR. The request names a `Task` on the
+ * **Channel B - `invitation-server-task-url`.** Plain FHIR. The request names a `Task` on the
  * requester's own server and the Questionnaire carries `sdc-questionnaire-endpoint`; the filler does
- * an ordinary `POST /QuestionnaireResponse`. Nothing new is invented — this is SDC's Form Receiver
- * model — but the answers land on the server *unreviewed*, and the endpoint must accept writes from a
+ * an ordinary `POST /QuestionnaireResponse`. Nothing new is invented (this is SDC's Form Receiver
+ * model), but the answers land on the server *unreviewed*, and the endpoint must accept writes from a
  * party holding nothing but a link.
  *
- * **Channel C — `shl-reply-descriptor`.** The request names a reply slot and a public key; the filler
+ * **Channel C - `shl-reply-descriptor`.** The request names a reply slot and a public key; the filler
  * encrypts to that key and parks the ciphertext. The requester polls, decrypts, shows a human, and
- * only then writes. Review-before-write survives, and the slot host never sees plaintext — the same
+ * only then writes. Review-before-write survives, and the slot host never sees plaintext - the same
  * untrusted-host posture SHL already assumes for the outbound payload.
  *
  * ## Why the public key, and not a shared one
@@ -35,7 +35,7 @@ import type { Extension, Task } from "fhir/r4";
  * ## Both extensions live only inside the encrypted payload
  *
  * Never in the `shlink:` string. Inspecting a link without its key reveals no slot, no token and no
- * key — `check:e2e-shl` asserts this rather than trusting it.
+ * key - `check:e2e-shl` asserts this rather than trusting it.
  */
 
 /** Where these extensions are defined. See `docs/shl-form-reply-channel.md`. */
@@ -71,7 +71,7 @@ const SERVER_TASK_URL_URLS = new Set([
 /**
  * How the filler delivers the ciphertext.
  *
- * `PUT` is a single unconditional write to `replyUrl` — no handshake, so any file host will do,
+ * `PUT` is a single unconditional write to `replyUrl` - no handshake, so any file host will do,
  * including a FHIR `Binary` on a server nobody trusts. That is what makes the descriptor
  * host-neutral rather than an interface to one relay.
  *
@@ -93,7 +93,7 @@ export interface ReplyDescriptor {
    * Capability to write to the slot, when the host gates writes.
    *
    * Never the capability to *read* one: a leaked invitation must not be able to collect the answers.
-   * Absent for a plain FHIR slot, which has no such concept — the honest cost of that is recorded in
+   * Absent for a plain FHIR slot, which has no such concept - the honest cost of that is recorded in
    * the README.
    */
   replyToken?: string;
@@ -140,8 +140,8 @@ export function buildReplyDescriptorExtension(
 /**
  * Read the reply descriptor off a Task.
  *
- * Tolerant on purpose: anything missing or malformed yields `undefined` — "this request offers no
- * encrypted reply channel" — rather than throwing. A filler that cannot send answers back is a
+ * Tolerant on purpose: anything missing or malformed yields `undefined` ("this request offers no
+ * encrypted reply channel") rather than throwing. A filler that cannot send answers back is a
  * degraded experience; a filler that cannot open the form at all because one extension was wrong is a
  * broken one.
  */
@@ -196,7 +196,7 @@ export function parseReplyDescriptor(
  * Work out how to deliver, for descriptors that predate `replyMethod`.
  *
  * Platypus's descriptor has no such field and always means its grant flow, and it always carries a
- * token — so an untyped descriptor *with* a token is a relay, and one without is a plain write. We
+ * token - so an untyped descriptor *with* a token is a relay, and one without is a plain write. We
  * always emit `replyMethod` explicitly, so this guess only ever applies to someone else's descriptor.
  */
 function resolveReplyMethod(

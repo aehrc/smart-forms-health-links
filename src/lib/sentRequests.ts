@@ -4,24 +4,34 @@ import { isExpired, type OutstandingRequest } from "@/lib/requestStore";
 import { taskCorrelationId } from "@/link/exchange";
 
 /**
- * One view over two half-answers to "what have I sent?".
+ * Joining a published request `Task` to a record of the request that produced it.
  *
- * Neither source is sufficient alone, and the reason is structural rather than incidental:
+ * `/requests` no longer needs this. It lists the request Tasks on the launched server and nothing
+ * else, because answers now land on that server and everybody signed in to it sees the same state.
+ * What is left in use here is {@link findRequestForTask}, which `/view` calls to tie a scanned
+ * reply back to the request that asked for it.
  *
- *  - **The EHR knows every request**, because each one publishes a `Task` — but deliberately not the
- *    reply slot or the key, so a listed Task cannot be collected from.
- *  - **This browser knows the keys**, because a reply key is generated at mint time and stored nowhere
- *    else — but only for requests *it* created.
+ * The merge below is the shape the list used to have, and the reason it had it is worth keeping
+ * written down:
  *
- * So a request sent from a colleague's machine is visible here and not collectable here, and saying so
- * plainly is better than either hiding it or offering a Check button that could never work.
+ *  - **The EHR knew every request**, because each one publishes a `Task` - but deliberately not the
+ *    reply slot or the key, so a listed Task could not be collected from.
+ *  - **One browser knew the keys**, because a reply key was generated at mint time and stored
+ *    nowhere else - but only for the requests it had created itself.
  *
- * `Task.identifier` is the join. It is the one correlation key that survives everywhere: `urn:uuid`
- * references inside a Bundle do not, and the two copies of the Task have different server ids.
+ * So a request sent from a colleague's machine was visible and not collectable, and the list had to
+ * say so rather than offer a Check button that could never work. Minting moved to the server
+ * precisely to remove that split. `check:roundtrip` still asserts the join, which is why it is
+ * still here and why it is pure.
+ *
+ * `Task.identifier` is the join in both designs. It is the one correlation key that survives
+ * everywhere: `urn:uuid` references inside a Bundle do not, and the two copies of the Task have
+ * different server ids.
+ * @author John Grimes
  */
 
 export type SentRequestOrigin =
-  /** Local record and published Task agree — the normal case. */
+  /** Local record and published Task agree - the normal case. */
   | "tracked"
   /** Created here but never published, so it is invisible to any other browser. */
   | "local-only"
@@ -29,7 +39,7 @@ export type SentRequestOrigin =
   | "server-only";
 
 export interface SentRequest {
-  /** Correlation id — `Task.identifier` value, shared by both copies. */
+  /** Correlation id - `Task.identifier` value, shared by both copies. */
   id: string;
   label: string;
   origin: SentRequestOrigin;
@@ -134,7 +144,7 @@ export function whyNotCollectable(request: SentRequest): string | undefined {
   }
 
   if (request.origin === "server-only") {
-    return "Sent from another browser. Its reply key is held there — import it to collect the answers here.";
+    return "Sent from another browser. Its reply key is held there - import it to collect the answers here.";
   }
 
   if (!request.local?.reply) {
@@ -151,7 +161,7 @@ export function whyNotCollectable(request: SentRequest): string | undefined {
  * that asked for them.
  *
  * The join is `Task.identifier`, the same key {@link mergeSentRequests} uses and the only one that
- * survives the round trip — `urn:uuid` references are relative to a Bundle that no longer exists by
+ * survives the round trip - `urn:uuid` references are relative to a Bundle that no longer exists by
  * the time answers come back, and the two copies of the Task have different server ids.
  *
  * No match is an ordinary outcome, not an error: a link from someone this browser never wrote to is

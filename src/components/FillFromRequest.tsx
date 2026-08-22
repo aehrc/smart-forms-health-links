@@ -188,7 +188,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
             slot.
           </span>
           <p className="mt-1">
-            Only they can read them — the answers were encrypted to their key
+            Only they can read them - the answers were encrypted to their key
             before leaving this device. This confirms delivery to the slot and
             nothing more: there is no signal available for whether they have
             collected it yet.

@@ -24,7 +24,7 @@ function bundleResources<T>(bundle: Bundle | undefined): T[] {
 /**
  * A Questionnaire is only renderable if it actually has items. A FHIR server may hold
  * sub-questionnaires and assembly roots that have none, and feeding those to the renderer
- * produces a blank form rather than an error — so filter them out at the source.
+ * produces a blank form rather than an error - so filter them out at the source.
  */
 export function isRenderableQuestionnaire(
   questionnaire: Questionnaire | undefined,

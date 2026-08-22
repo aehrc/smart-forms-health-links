@@ -1,7 +1,7 @@
 /**
  * ECDH-ES + A256GCM, for the encrypted reply channel.
  *
- * `src/link/jwe.ts` covers the *outbound* leg, where SHL mandates `alg: "dir"` — a symmetric key the
+ * `src/link/jwe.ts` covers the *outbound* leg, where SHL mandates `alg: "dir"` - a symmetric key the
  * link itself carries. That is exactly wrong for a reply: the invitation is a QR code, so anyone who
  * photographs it holds the symmetric key and could read the answers sent back. The reply is therefore
  * encrypted to a **public** key that travels in the invitation, while the private half never leaves
@@ -10,7 +10,7 @@
  *   `alg: "ECDH-ES"`, `enc: "A256GCM"`
  *
  * ECDH-ES in Direct Key Agreement mode (RFC 7518 §4.6): the agreed key *is* the content encryption
- * key, so — as with `dir` — the JWE's encrypted-key segment stays empty. The sender generates an
+ * key, so (as with `dir`) the JWE's encrypted-key segment stays empty. The sender generates an
  * ephemeral P-256 keypair per message and publishes the public half as `epk` in the protected header.
  *
  *   BASE64URL(protected header) . <empty> . BASE64URL(iv) . BASE64URL(ciphertext) . BASE64URL(tag)
@@ -39,7 +39,7 @@ const CURVE = "P-256";
 const ALG = "ECDH-ES";
 const ENC = "A256GCM";
 
-/** A256GCM content encryption key length, in bits — also Concat-KDF's `keydatalen`. */
+/** A256GCM content encryption key length, in bits - also Concat-KDF's `keydatalen`. */
 const CEK_BITS = 256;
 
 /** AES-GCM authentication tag length. */
@@ -114,7 +114,7 @@ export async function generateReplyKeyPair(): Promise<ReplyKeyPair> {
     );
   }
 
-  // Drop everything WebCrypto adds beyond the curve points — `key_ops`, `ext`, `alg` — so the JWK
+  // Drop everything WebCrypto adds beyond the curve points (`key_ops`, `ext`, `alg`) so the JWK
   // that goes into a descriptor and into storage is exactly the five fields the wire format defines.
   return {
     publicJwk: { kty: "EC", crv: CURVE, x: publicJwk.x, y: publicJwk.y },
@@ -176,7 +176,7 @@ function concat(...parts: Uint8Array[]): Uint8Array {
  * Concat KDF (NIST SP 800-56A §5.8.1) as JOSE applies it, per RFC 7518 §4.6.2.
  *
  * A256GCM needs 256 bits and SHA-256 produces exactly that, so this is a single round with the
- * counter fixed at 1 — no loop, and none of the truncation a longer key would require.
+ * counter fixed at 1 - no loop, and none of the truncation a longer key would require.
  *
  * `AlgorithmID` is the `enc` value in Direct Key Agreement mode (**not** `alg`), and `PartyUInfo` /
  * `PartyVInfo` are `apu` / `apv`, both absent here and so hashed as zero-length. Getting either wrong
@@ -198,7 +198,7 @@ async function concatKdf(sharedSecret: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(digest);
 }
 
-/** Agree on the content encryption key. Identical on both sides — that is the point of ECDH. */
+/** Agree on the content encryption key. Identical on both sides - that is the point of ECDH. */
 async function deriveCek(
   privateKey: CryptoKey,
   publicKey: CryptoKey,
@@ -232,7 +232,7 @@ interface ReplyHeader {
 /**
  * Encrypt a reply to the recipient's public key.
  *
- * The requester never needs this — it only ever decrypts — but a filler does, and this app is a
+ * The requester never needs this (it only ever decrypts), but a filler does, and this app is a
  * filler too (`FillFromRequest`). Keeping both halves here is also what lets `check:roundtrip` prove
  * compatibility with no phone in the loop.
  */
@@ -319,7 +319,7 @@ export async function decryptReplyJwe(
 
   if (encryptedKey !== "") {
     throw new Error(
-      "Reply JWE encrypted key segment must be empty — ECDH-ES here is Direct Key Agreement, so " +
+      "Reply JWE encrypted key segment must be empty - ECDH-ES here is Direct Key Agreement, so " +
         "the agreed key is the content encryption key and there is nothing to wrap.",
     );
   }

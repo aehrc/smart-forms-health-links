@@ -141,8 +141,8 @@ async function openLink(
   };
 
   /*
-   * The form is carried by reference, never by value — re-sending hundreds of kilobytes of
-   * Questionnaire would defeat the point — so it is resolved here, falling back to what the
+   * The form is carried by reference, never by value (re-sending hundreds of kilobytes of
+   * Questionnaire would defeat the point), so it is resolved here, falling back to what the
    * originating request recorded when the answers do not say.
    */
   const canonical = responseCanonical(
@@ -193,7 +193,7 @@ export default function ViewLink() {
    * hit, so correcting a typo back to a value already tried would silently do nothing.
    *
    * The fragment is recorded alongside it so a passcode never outlives the link it was typed for.
-   * Changing only the hash re-renders this component without remounting it, so state survives —
+   * Changing only the hash re-renders this component without remounting it, so state survives -
    * and carrying a passcode across would spend one of the *next* link's limited attempts on
    * something the user never entered for it, which is exactly what the `P` pre-empt exists to avoid.
    */

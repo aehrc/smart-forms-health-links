@@ -39,7 +39,7 @@ export interface Page<T> {
   /**
    * Server-reported match count, when it gave one.
    *
-   * `_total=accurate` is a request, not a guarantee — some servers decline it on large result sets, so
+   * `_total=accurate` is a request, not a guarantee - some servers decline it on large result sets, so
    * callers must handle its absence rather than rendering `undefined` as a number.
    */
   total?: number;
@@ -79,7 +79,7 @@ function identifierSummary(patient: Patient): string | undefined {
 }
 
 /**
- * The supporting line under a patient's name — gender, birth date, identifier.
+ * The supporting line under a patient's name - gender, birth date, identifier.
  *
  * Names collide, so picking the right patient from a search is rarely possible on the name alone.
  * Returns an empty string when the server holds none of it, which callers should render as nothing
@@ -98,7 +98,7 @@ export function describePatient(patient: Patient): string {
 export interface SearchResponsesOptions {
   /** Restrict to one patient, e.g. `Patient/pat-sf`. */
   subject?: string;
-  /** Restrict to one Questionnaire canonical. Version suffixes are stripped — see below. */
+  /** Restrict to one Questionnaire canonical. Version suffixes are stripped - see below. */
   questionnaire?: string;
   count?: number;
 }
@@ -128,7 +128,7 @@ export async function searchQuestionnaireResponses(
   if (options.questionnaire) {
     /*
      * Searched without the version suffix. The `questionnaire` search parameter matches the reference
-     * as stored, so `…/715|0.3.0-assembled` finds only responses that recorded that exact version —
+     * as stored, so `…/715|0.3.0-assembled` finds only responses that recorded that exact version -
      * which is rarely what someone filtering by form wants, since versions turn over.
      */
     params.set("questionnaire", options.questionnaire.split("|", 1)[0]);
@@ -143,17 +143,6 @@ export async function searchQuestionnaireResponses(
     resources: bundleResources<QuestionnaireResponse>(bundle),
     total: bundle.total,
   };
-}
-
-export async function fetchQuestionnaireResponse(
-  ehrServerUrl: string,
-  id: string,
-  signal?: AbortSignal,
-): Promise<QuestionnaireResponse> {
-  return fetchProxiedFhir<QuestionnaireResponse>(
-    `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse/${encodeURIComponent(id)}`,
-    signal,
-  );
 }
 
 /** Search patients by name, or list them when the search text is empty. */
@@ -193,12 +182,14 @@ export async function fetchPatient(
 }
 
 /**
- * List the request Tasks this app has published — every request sent, from any browser.
+ * List the request Tasks this app has published - every request sent, from any browser.
  *
- * Found by the tag `publishRequestTask` stamps rather than by shape, so this returns our requests and
- * not whatever else shares the server. What comes back is deliberately *not* enough to collect a reply:
- * the published Task carries no slot and no key, so the reply key held locally is what turns a listed
- * request into a readable one. See `src/lib/requestStore.ts`.
+ * Found by the tag `asPublishedTask` stamps rather than by shape, so this returns our
+ * requests and not whatever else shares the server. What comes back is deliberately *not* enough
+ * to open the invitation a listed request belongs to: the published copy drops the extensions and
+ * carries neither the manifest key nor the API grant, both of which exist only inside the sealed
+ * payload the filler fetches. Seeing that a request was sent and being able to read its contents
+ * are different permissions, and only the first is granted here.
  */
 export async function searchPublishedRequests(
   ehrServerUrl: string,

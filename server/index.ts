@@ -182,7 +182,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
 
   const fastify = Fastify({ logger: loggerConfiguration(options.logger) });
 
-  // Available to every route module registered below, including those added in later phases.
+  // Available to every route module registered below.
   fastify.decorate("appConfig", config);
   fastify.decorate("appDb", db);
 
@@ -213,17 +213,23 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   fastify.get("/.well-known/jwks.json", () => publicJwks(config.issuers));
 
   // ---------------------------------------------------------------------------------------
-  // Route registration seam.
+  // Route registration.
   //
-  // Each route module is a Fastify plugin reading `fastify.appConfig` and `fastify.appDb`.
-  // They are registered without `fastify-plugin`, so each gets its own encapsulated context:
-  // that is what lets the FHIR proxy replace the content type parsers for its own route
-  // without changing how the JSON API routes parse their bodies.
+  // Each module is a Fastify plugin reading `fastify.appConfig` and `fastify.appDb`. They are
+  // registered without `fastify-plugin`, so each gets its own encapsulated context: that is what
+  // lets the FHIR proxy replace the content type parsers for its own route without changing how
+  // the JSON API routes parse their bodies.
   //
-  // Later phases add:
+  // What each one adds, in the order below:
   //
-  //   - Phase 5 (US3): `server/api/relaySend.ts`   - POST /api/relay-send, only if Aidbox CORS
-  //                                                  cannot be configured
+  //   launchRoutes      GET  /launch            - EHR and standalone launch entry point
+  //                     GET  /auth/callback     - authorisation code exchange
+  //   sessionRoutes     GET  /api/session       - what the SPA is allowed to know about itself
+  //                     POST /api/logout        - drop the session row and its cookie
+  //                     GET  /api/issuers       - the registry a standalone picker may know
+  //   fhirProxyRoutes   ALL  /api/fhir/*        - the SPA's only route to the launched server
+  //   invitationRoutes  POST /api/invitations   - mint one, publish its Task, store the payload
+  //   manifestRoutes    POST /shl/:id           - the public SHL manifest
   //
   // Anything registered under a path outside RESERVED_PREFIXES must also be added there, or
   // the SPA rewrite will shadow its 404s.

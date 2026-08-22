@@ -123,7 +123,7 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
             The contents are encrypted (A256GCM) and hosted by this app; the
             link carries only a pointer and the decryption key, so nothing
             clinical travels in the QR code itself. Anyone holding the link can
-            open it and can fetch it more than once — there is no passcode —
+            open it and can fetch it more than once (there is no passcode),
             which is also what lets whoever fills the form return the answers
             directly.
           </Alert>

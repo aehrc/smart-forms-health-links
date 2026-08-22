@@ -114,7 +114,7 @@ export default function Scan() {
         <Alert tone="warning" title="Camera unavailable">
           <p>{cameraError}</p>
           <p className="mt-1">
-            Camera access needs a secure context — that means HTTPS, or
+            Camera access needs a secure context - that means HTTPS, or
             localhost. Opening the dev server by LAN IP from a phone will not
             work; use a tunnel, or paste the link below.
           </p>

@@ -24,7 +24,7 @@ export interface FormRendererProps {
  * `useBuildForm` + `RendererThemeProvider` + `BaseRenderer`, which is what this does.
  *
  * The renderer's questionnaire and response stores are module-level singletons, so the form must be
- * torn down on unmount — otherwise answers from the previous form leak into the next one.
+ * torn down on unmount - otherwise answers from the previous form leak into the next one.
  */
 export default function FormRenderer(props: FormRendererProps) {
   const {

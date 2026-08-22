@@ -8,7 +8,7 @@
  *
  *   BASE64URL(protected header) . <empty> . BASE64URL(iv) . BASE64URL(ciphertext) . BASE64URL(tag)
  *
- * The second segment is always empty — that is precisely what `dir` means: the content encryption
+ * The second segment is always empty - that is precisely what `dir` means: the content encryption
  * key IS the shared key, so there is no wrapped key to transmit.
  *
  * AES-GCM in WebCrypto returns ciphertext and tag concatenated, whereas JWE keeps them as separate
@@ -157,7 +157,7 @@ export async function encryptJwe(
 /**
  * Decrypt a JWE compact serialisation.
  *
- * Throws on a wrong key, a tampered payload, or an unsupported algorithm — AES-GCM authentication
+ * Throws on a wrong key, a tampered payload, or an unsupported algorithm - AES-GCM authentication
  * failure is indistinguishable from the former two, which is the point.
  */
 export async function decryptJwe(

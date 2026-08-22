@@ -13,14 +13,14 @@ import type { DecodeOptions, LinkCodec, LinkContent } from "./codec";
 import type { Bundle } from "fhir/r4";
 
 /**
- * SMART Health Links — https://docs.smarthealthit.org/smart-health-links/spec/
+ * SMART Health Links - https://docs.smarthealthit.org/smart-health-links/spec/
  *
  * The link carries no clinical data, only a pointer and a key:
  *
  *   shlink:/BASE64URL({"url": "...", "key": "...", "flag": "U", "label": "...", "exp": 123})
  *
- * presented either bare or, as here, in the fragment of a viewer URL —
- * `https://viewer.example.org/view#shlink:/...` — which is the form the spec itself uses.
+ * presented either bare or, as here, in the fragment of a viewer URL
+ * (`https://viewer.example.org/view#shlink:/...`), which is the form the spec itself uses.
  *
  * ## This codec only reads
  *
@@ -33,7 +33,7 @@ import type { Bundle } from "fhir/r4";
  *
  * ## What this codec reads
  *
- * Both hosting modes, because a link we read was probably not written by us — and, increasingly,
+ * Both hosting modes, because a link we read was probably not written by us - and, increasingly,
  * is* not: the primary return path is now a filler minting its own link and the requester scanning
  * it back. A filler that hosts its payload behind a proper manifest endpoint produces a `U`-less
  * link, and that has to work here. Concretely, reading is tolerant in four ways:
@@ -51,7 +51,7 @@ import type { Bundle } from "fhir/r4";
  *
  * SHL is strictly one-directional and defines no submission channel, so a returned
  * QuestionnaireResponse is never *written* anywhere by its sender. It is published; the receiving app
- * pulls it, presents it for human review, and only then writes to its own server — see
+ * pulls it, presents it for human review, and only then writes to its own server - see
  * `src/fhir/submit.ts`.
  */
 
@@ -132,7 +132,7 @@ async function fetchJwe(url: string): Promise<string> {
    *
    * ⚠️ KNOWN DEFECT: the spec also makes `recipient` *required* on this GET, and we send it only on
    * the manifest path below. Omitting it here is non-conformant and fails against a host that
-   * insists on it — and it is why the unopenable links described in `docs/u-flag-hosting.md` still
+   * insists on it - and it is why the unopenable links described in `docs/u-flag-hosting.md` still
    * work in our own viewer. Fix both halves together.
    */
   const response = await fetch(url);
@@ -270,7 +270,7 @@ function describeError(cause: unknown): string {
  * Read every FHIR file in a manifest and merge them into one Bundle.
  *
  * Failure policy is per-file: keep what decoded, note what did not, and throw only when *nothing*
- * did. One corrupt file in a five-file manifest must not hide the answers in the other four — but a
+ * did. One corrupt file in a five-file manifest must not hide the answers in the other four - but a
  * manifest where everything failed has to be an error, or the caller gets an empty Bundle and
  * reports "no answers" for what is really a broken link.
  *

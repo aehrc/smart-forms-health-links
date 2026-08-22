@@ -303,8 +303,22 @@ The grant a manifest hands out is short-lived on purpose. To watch it expire, re
 lifetime and re-run setup:
 
 ```bash
-GRANT_TTL_SECONDS=60 op run --env-file .env -- npm run setup:aidbox
+op run --env-file .env -- env GRANT_TTL_SECONDS=60 npm run setup:aidbox
 ```
+
+The `env` in the middle is load-bearing. `.env` sets `GRANT_TTL_SECONDS=3600` itself, and
+`op run --env-file` applies the file over the environment it was invoked with, so the obvious
+`GRANT_TTL_SECONDS=60 op run …` is silently overwritten back to 3600. Putting `env` inside the
+`op run` sets the variable after the file has been applied. Check it took, if you like:
+
+```bash
+op run --env-file .env -- env GRANT_TTL_SECONDS=60 sh -c 'echo $GRANT_TTL_SECONDS'
+```
+
+The value reaches Aidbox as the two clients' `access_token_expiration`, so it is the token
+endpoint that starts issuing one-minute tokens. The app clamps whatever it is given to the
+`grantTtlSeconds` in `config/issuers.json` and states the smaller of the two, so nothing needs
+restarting for a shorter lifetime to take effect - only for a longer one.
 
 Mint a link, open it in the private window, and wait out the minute before pressing send.
 
@@ -378,6 +392,15 @@ run - or reuses an app already listening on `APP_ORIGIN`, which is the usual cas
 `overmind start` is up. **Reuse takes the server process as it finds it**: if you have changed
 anything under `server/`, restart it before trusting a pass.
 
+One environment trap. `reuseExistingServer` is `!process.env.CI`
+(`e2e/playwright.config.ts:82`), so a shell with `CI` set - a CI job, or an agent session that
+exports it - will not reuse an app already on the port and will fail trying to bind it. Unset it
+for the run:
+
+```bash
+env -u CI op run --env-file .env -- npm run test:e2e
+```
+
 Four tests, run one at a time because they share one Aidbox instance:
 
 | Spec                           | Scenario | What it asserts                                                                                                                                                                                                                                                                                         |
@@ -402,6 +425,77 @@ The suite reads `SQLITE_PATH` directly, because proving that a refused launch cr
 means counting rows in the `sessions` table rather than trusting the absence of a cookie. That
 makes the suite a local-stack instrument; pointed at a deployment whose database it cannot see, the
 refusal spec is the one that will complain.
+
+## Validation record
+
+**Date:** 22 August 2026. **Instance:** `https://kuzfdswqmz.edge.aidbox.app`. **Commit:** branch
+`001-confidential-smart-app` at the completion of T053.
+
+| Scenario                            | How it was verified                                                                | Result                                                                                                                                                                           |
+| ----------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 - the full loop                   | `e2e/fullLoop.spec.ts`, re-run for this record                                     | Pass, 24.6s. One `PATAST` response carrying the typed answers, one `Provenance` naming `Patient/pt-demo`, the `Task` completed with the response as its `output`                 |
+| 2 - EHR launch with patient context | `e2e/ehrLaunch.spec.ts`, re-run for this record                                    | Pass, 8.9s. The launch patient pre-fills the subject as `Patient/pt-demo` / Jane Citizen, and both fields still take an edit                                                     |
+| 3 - sending twice                   | `e2e/fullLoop.spec.ts` (its second half), re-run for this record                   | Pass. After the replay the response count is still one                                                                                                                           |
+| 4 - the window closes               | By hand, during the feature's acceptance work. Not re-run for this record          | An expired grant offered no send at all and issued zero requests to the destination; the scan-back return worked, and the write went through the clinician's session             |
+| 5 - a refusal never claims delivery | By hand, during the feature's acceptance work. Not re-run for this record          | An authorisation refusal never claimed delivery: no state anywhere read as delivered, and the answers stayed on the device                                                       |
+| 6 - an unregistered issuer          | `e2e/refusal.spec.ts`, both tests, re-run for this record; and by hand with `curl` | Pass, 315ms and 421ms. By hand: `403`, no `Location`, no `Set-Cookie`, `https://example.org/fhir` named in the body, and `/api/issuers` still offering the one registered server |
+
+### What was run for this record, and what was not
+
+Scenarios 1, 2, 3 and 6 were re-run here, in one command, against a freshly built SPA and a
+server started from this branch:
+
+```bash
+env -u CI op run --env-file .env -- npm run test:e2e
+```
+
+```
+Running 4 tests using 1 worker
+
+  ✓  1 [chromium] › e2e/ehrLaunch.spec.ts:28:1 › an EHR launch pre-fills the launch patient as the subject, and it stays editable (8.9s)
+  ✓  2 [chromium] › e2e/fullLoop.spec.ts:55:1 › the full loop lands one labelled response, one provenance and a completed task (24.6s)
+  ✓  3 [chromium] › e2e/refusal.spec.ts:58:1 › an unregistered issuer is refused by name, with no redirect and no session (315ms)
+  ✓  4 [chromium] › e2e/refusal.spec.ts:91:1 › after a refusal the app still offers a registered server to launch from (421ms)
+
+  4 passed (35.3s)
+```
+
+Scenarios 4 and 5 were **not** re-run for this record, and this section should not be read as
+claiming otherwise. Both were exercised by hand against this instance during the feature's
+acceptance work, and the behaviour in the table above is what was observed then. Neither is
+automated, for the same reason in both cases: one needs a real wait against a re-registered token
+lifetime, and the other needs the Backend Services client deregistered and restored, which
+disturbs the instance every other scenario shares.
+
+What does hold for them here, offline and repeatably, is the logic underneath: 41 tests across
+`tests/src/grantExpiry.test.ts`, `tests/src/sendFailures.test.ts` and
+`tests/src/scanBackFallback.test.tsx` assert that an expired grant issues no request at all rather
+than a failing one, that a refused send says the answers were not accepted, and that the scan-back
+return is promoted to the primary action in both cases. Those are properties, not a demonstration;
+the walkthrough above is the demonstration, and it is why scenarios 4 and 5 are written out step by
+step rather than left to the suite.
+
+### The offline gates, same date
+
+| Gate                       | Result                                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------------------- |
+| `npm run typecheck`        | Clean                                                                                        |
+| `npm run lint`             | 0 errors, 220 warnings (all `jsdoc/*`)                                                       |
+| `npm run lint:duplication` | 139 duplicated lines of 19,173, 0.72%                                                        |
+| `npm run format:check`     | All matched files use Prettier code style                                                    |
+| `npm test`                 | 443 tests in 22 files, all passing                                                           |
+| `npm run test:coverage`    | Lines 87.77%, statements 87.84%, branches 83.27%, functions 89.36%, against an 80% threshold |
+| `npm run build`            | Clean                                                                                        |
+| `npm run build:server`     | Clean                                                                                        |
+| `npm run check:e2e`        | 11 checks, all passing, against the public forms catalogue                                   |
+| `npm run check:e2e-shl`    | 36 checks, all passing                                                                       |
+
+`npm run check:roundtrip` was **not** run, and cannot be run from this checkout. It imports three
+`QuestionnaireResponse` fixtures from a sibling `smart-forms` monorepo
+(`../../smart-forms/packages/sdc-template-extract/…`), and esbuild fails to resolve them before any
+assertion executes. That dependency predates this feature and is unchanged by it, so its absence is
+not a regression - but it does mean the assertions in `scripts/roundtrip.ts` are unverified in any
+checkout without that sibling directory, including CI.
 
 ## Known limitations
 

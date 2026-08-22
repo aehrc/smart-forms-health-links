@@ -5,7 +5,7 @@
  * pako/fflate. `deflate-raw` is supported in Chrome 80+, Safari 16.4+ and Firefox 113+.
  *
  * Measured against the real QuestionnaireResponse fixtures in the smart-forms repo, deflate-raw
- * plus base64url lands between 780 and 1455 bytes for responses of 1.8-7 KB raw — a ratio of
+ * plus base64url lands between 780 and 1455 bytes for responses of 1.8-7 KB raw - a ratio of
  * roughly 0.20-0.5, improving as responses get larger.
  */
 

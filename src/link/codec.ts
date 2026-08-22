@@ -10,12 +10,12 @@ import type {
  * The payload a link carries, independent of how it is transported.
  *
  * This is deliberately modelled on what a SMART Health Link carries: the content of an SHL
- * manifest file is `application/fhir+json` — a FHIR Bundle. Keeping the fragment-carried payload as
+ * manifest file is `application/fhir+json` - a FHIR Bundle. Keeping the fragment-carried payload as
  * a Bundle too means a transport change (fragment vs manifest + JWE) never touches the data model,
  * and the routes/UI stay untouched.
  *
  * A link this app *reads* was probably not written by it, so a payload is normalised into this
- * shape rather than required to arrive in it — see {@link asBundle} and {@link mergeBundles}.
+ * shape rather than required to arrive in it - see {@link asBundle} and {@link mergeBundles}.
  */
 export interface LinkContent {
   /** A `collection` Bundle. Typically a QuestionnaireResponse, often with a Task or Provenance. */
@@ -124,7 +124,7 @@ export type LinkCodecId = "bespoke" | "shl";
  * itself uses (`https://viewer.example.org#shlink:/eyJ1cmwi...`). Two consequences worth knowing:
  *
  *  1. The fragment is never sent in an HTTP request, so response data never leaves the device.
- *  2. The fragment is therefore unavailable for routing — this app must use path-based routing.
+ *  2. The fragment is therefore unavailable for routing - this app must use path-based routing.
  */
 export interface LinkCodec {
   readonly id: LinkCodecId;
@@ -147,7 +147,7 @@ export interface LinkCodec {
 
   /**
    * `options` is optional so a codec that needs nothing can declare `decode(link)` and stay
-   * assignable here — which is what keeps the passcode addition from rippling into every codec.
+   * assignable here - which is what keeps the passcode addition from rippling into every codec.
    */
   decode(linkOrFragment: string, options?: DecodeOptions): Promise<LinkContent>;
 }
@@ -187,7 +187,7 @@ export function extractFragment(linkOrFragment: string): string {
  * Build a `collection` Bundle.
  *
  * Entries carry a `fullUrl` so resources inside the Bundle can reference each other with
- * `urn:uuid:` — which is how a Task points at the QuestionnaireResponse it produced, given that
+ * `urn:uuid:` - which is how a Task points at the QuestionnaireResponse it produced, given that
  * QuestionnaireResponse cannot reference a Task in the other direction. See `exchange.ts`.
  */
 export function collectionBundle(
@@ -203,7 +203,7 @@ export function collectionBundle(
 }
 
 /**
- * Build a `collection` Bundle around a QuestionnaireResponse — the simplest link payload.
+ * Build a `collection` Bundle around a QuestionnaireResponse - the simplest link payload.
  */
 export function bundleResponse(
   questionnaireResponse: QuestionnaireResponse,
@@ -215,7 +215,7 @@ export function bundleResponse(
  * Normalise a decoded FHIR resource into a Bundle.
  *
  * A Bundle passes through; anything else is wrapped. This exists because an SHL manifest file is
- * `application/fhir+json` — *any* FHIR resource, not necessarily a Bundle — and a filler that parks
+ * `application/fhir+json` (*any* FHIR resource, not necessarily a Bundle) and a filler that parks
  * a bare `QuestionnaireResponse` there has done nothing wrong. Insisting on a Bundle would make a
  * perfectly ordinary link unopenable, so tolerate the shape and let the rest of the app go on
  * working in Bundles.
@@ -229,7 +229,7 @@ export function asBundle(resource: FhirResource): Bundle {
 /**
  * Parse decrypted payload text into a Bundle, tolerating a bare resource.
  *
- * `what` names the payload in error messages ("link payload", "reply") — the only difference
+ * `what` names the payload in error messages ("link payload", "reply") - the only difference
  * between the two call sites, which is why there is one implementation.
  */
 export function bundleFromJson(text: string, what = "link payload"): Bundle {
@@ -254,8 +254,8 @@ export function bundleFromJson(text: string, what = "link payload"): Bundle {
 /**
  * Concatenate Bundles into one `collection`, dropping entries whose `fullUrl` was already seen.
  *
- * An SHL manifest may split its content across files — the QuestionnaireResponse in one, the
- * Provenance attributing it in another — and those are one payload, not a choice between them.
+ * An SHL manifest may split its content across files (the QuestionnaireResponse in one, the
+ * Provenance attributing it in another) and those are one payload, not a choice between them.
  * De-duplication is by `fullUrl` only: entries without one are always kept, because two resources
  * that decline to identify themselves cannot be shown to be the same resource.
  */

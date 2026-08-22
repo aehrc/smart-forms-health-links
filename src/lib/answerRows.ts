@@ -4,7 +4,7 @@ import type { QuestionnaireResponse } from "fhir/r4";
  * Flatten a QuestionnaireResponse's answer tree into displayable rows.
  *
  * This is the last-resort reading of a response: what it says, without the Questionnaire that
- * defines how it should look. That case is ordinary rather than exceptional — a response cites
+ * defines how it should look. That case is ordinary rather than exceptional - a response cites
  * whatever canonical the app that wrote it used, and on a shared server that is frequently a form
  * this deployment's catalogue does not hold. Answers are the clinical content; the definition is
  * presentation, so losing the latter must not cost the former.
@@ -31,7 +31,7 @@ type Answer = NonNullable<
  *
  * The value is found by the `value[x]` naming convention rather than by "whatever field is left
  * over". An answer is a `BackboneElement`, so it may also carry `id`, `extension`,
- * `modifierExtension` and `item` — and a leftover-field search picks whichever of those the sending
+ * `modifierExtension` and `item` - and a leftover-field search picks whichever of those the sending
  * app happened to serialise first. That makes the rendered answer depend on a foreign app's JSON key
  * order, which fails intermittently rather than reproducibly.
  *

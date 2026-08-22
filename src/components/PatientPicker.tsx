@@ -16,8 +16,8 @@ import { cn } from "@/lib/utils";
 /**
  * Search a FHIR server for a patient, inline.
  *
- * The same question gets asked at both ends of the round trip — who is this form *for* when a request
- * goes out, and who are these answers *about* when they come back — and both were previously answered
+ * The same question gets asked at both ends of the round trip (who is this form *for* when a request
+ * goes out, and who are these answers *about* when they come back) and both were previously answered
  * by typing `Patient/123` into a text box from memory. This is that box, replaced with a search.
  *
  * Inline rather than a route, which matters more on the return leg than it looks: a scanned response
@@ -32,7 +32,7 @@ import { cn } from "@/lib/utils";
  */
 
 export interface ChosenPatient {
-  /** Relative, e.g. `Patient/123` — it only means anything against `serverUrl`. */
+  /** Relative, e.g. `Patient/123` - it only means anything against `serverUrl`. */
   reference: string;
   display: string;
   patient: Patient;
@@ -109,7 +109,7 @@ export default function PatientPicker(props: PatientPickerProps) {
 
       {error ? (
         <p className="text-xs text-red-700 dark:text-red-400">
-          Could not search {serverUrl} —{" "}
+          Could not search {serverUrl} -{" "}
           {error instanceof Error ? error.message : String(error)}
         </p>
       ) : null}
@@ -177,7 +177,7 @@ export default function PatientPicker(props: PatientPickerProps) {
 
       {more ? (
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Showing {patients.length} of {page?.total} — narrow the search to see
+          Showing {patients.length} of {page?.total} - narrow the search to see
           the rest.
         </p>
       ) : null}

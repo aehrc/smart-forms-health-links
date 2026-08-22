@@ -6,7 +6,7 @@
  *   npm run check:roundtrip
  *
  * The fixture imports below reach into a sibling checkout of aehrc/smart-forms. That is the only
- * coupling between the two repos and it is dev-only — if the checkout is missing or moved, this
+ * coupling between the two repos and it is dev-only - if the checkout is missing or moved, this
  * script fails to bundle but the app itself is unaffected.
  */
 import {
@@ -119,7 +119,7 @@ function check(name: string, condition: boolean, detail = "") {
     failures++;
   }
   console.log(
-    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` - ${detail}` : ""}`,
   );
 }
 
@@ -239,7 +239,7 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// JWE (alg=dir, enc=A256GCM) — the crypto layer SMART Health Links requires.
+// JWE (alg=dir, enc=A256GCM) - the crypto layer SMART Health Links requires.
 // ---------------------------------------------------------------------------
 
 console.log("\nJWE\n");
@@ -265,7 +265,7 @@ check(
 const jweDecrypted = await decryptJwe(compact, jweKey);
 check("jwe/roundTrip", decodeUtf8(jweDecrypted) === decodeUtf8(jwePlaintext));
 
-// A wrong key must fail, not return garbage — this is the whole security property.
+// A wrong key must fail, not return garbage - this is the whole security property.
 let wrongKeyRejected = false;
 try {
   await decryptJwe(compact, generateKey());
@@ -295,7 +295,7 @@ try {
 check("jwe/tamperRejected", tamperRejected);
 
 // ---------------------------------------------------------------------------
-// SHL codec against an in-memory host — no network, no hosting tier.
+// SHL codec against an in-memory host - no network, no hosting tier.
 //
 // This app no longer mints SMART Health Links from the browser: a requester's invitation is
 // minted, published and hosted by the BFF (`POST /api/invitations`), and the third-party blob
@@ -505,7 +505,7 @@ const foreignResponse: QuestionnaireResponse = {
   ],
 };
 
-// A bare resource, not a Bundle — an entirely ordinary `application/fhir+json` payload.
+// A bare resource, not a Bundle - an entirely ordinary `application/fhir+json` payload.
 const bare = await hostShl(foreignResponse, foreignKey, { flag: "U" });
 const bareDecoded = await shlCodec.decode(bare.link);
 check(
@@ -835,7 +835,7 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// Reply crypto (ECDH-ES + A256GCM) — channel C.
+// Reply crypto (ECDH-ES + A256GCM) - channel C.
 //
 // Cross-checked against an independent `node:crypto` implementation in BOTH directions, rather than
 // only round-tripping against itself. A self-consistent implementation of the wrong Concat-KDF passes
@@ -1097,7 +1097,7 @@ check(
 check("reply/looksLikeReplyJwe:rejectsEmpty", !looksLikeReplyJwe(""));
 
 // ---------------------------------------------------------------------------
-// Reply descriptor — build, parse, and tolerance of Platypus's own identifiers.
+// Reply descriptor - build, parse, and tolerance of Platypus's own identifiers.
 // ---------------------------------------------------------------------------
 
 console.log("\nreply descriptor\n");
@@ -1248,7 +1248,7 @@ check("descriptor/unexpiredIsUsable", !isReplyDescriptorExpired(descriptor));
 // `apps/mobile/lib/shl-invitation.ts` (`taskTargetsQuestionnaire`) so a change to how our Task names
 // its Questionnaire cannot silently stop a third party recognising our invitations. Without this the
 // failure mode is invisible from here: the form still opens, it just loses its Task, its addressing and
-// every return channel — degrading to a form nobody can send back.
+// every return channel - degrading to a form nobody can send back.
 // ---------------------------------------------------------------------------
 
 console.log("\nplatypus detection contract\n");
@@ -1405,7 +1405,7 @@ check(
 /*
  * The negative case, without which the positive ones above prove nothing: a `focus.type` of
  * 'Questionnaire' alongside a `urn:uuid` reference must NOT be detectable. This is the exact
- * half-change that looks like a tidy-up — "the focus is a Questionnaire, so say so" — and silently
+ * half-change that looks like a tidy-up ("the focus is a Questionnaire, so say so") and silently
  * costs every third-party filler its Task. It is asserted as a failure so that anyone who reintroduces
  * it sees why, rather than discovering it from a connectathon.
  */
@@ -1430,7 +1430,7 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// Reply bundle — the wire shape a third-party filler sends back.
+// Reply bundle - the wire shape a third-party filler sends back.
 // ---------------------------------------------------------------------------
 
 console.log("\nreply bundle\n");
@@ -1598,10 +1598,10 @@ check(
 check(
   "write/catalogueQuestionnaireUntouched",
   declaredEndpoints(detectionQuestionnaire).length === 0,
-  "the forms server copy must never be mutated",
+  "the copy on the launched server must never be mutated",
 );
 check(
-  "write/declaredEndpointOutranksConfig",
+  "write/declaredEndpointOutranksLaunchedServer",
   resolveDestinations({
     questionnaire: declared,
     responseServerUrl: "https://other.test/fhir",
@@ -1611,7 +1611,7 @@ check(
 globalThis.fetch = realFetch;
 
 // ---------------------------------------------------------------------------
-// The published request Task — the copy that lands on the EHR so sent requests can be listed back.
+// The published request Task - the copy that lands on the EHR so sent requests can be listed back.
 //
 // It differs from the invitation copy in three ways, and one of them is a hard server constraint rather
 // than a preference, so it is asserted rather than assumed.
@@ -1623,11 +1623,11 @@ const published = asPublishedTask(detectionTask);
 
 /*
  * The load-bearing one. The invitation names the Questionnaire by canonical because that is the only
- * form of the reference a filler can still use once the Bundle is taken apart — but `Task.focus` is a
+ * form of the reference a filler can still use once the Bundle is taken apart - but `Task.focus` is a
  * `Reference`, and a FHIR server will not store a canonical there:
  *
- *   HAPI-0506: Invalid resource reference found at path[Task.focus] — Resource type is unknown or not
- *              supported on this server — http://example.org/Questionnaire/detection|1.2
+ *   HAPI-0506: Invalid resource reference found at path[Task.focus] - Resource type is unknown or not
+ *              supported on this server - http://example.org/Questionnaire/detection|1.2
  *
  * So the published copy drops `focus` and relies on `input[].valueCanonical`, which is a `canonical`
  * and stores fine. Reinstating `focus` here makes every request creation fail with a 400.
@@ -1754,7 +1754,7 @@ check(
 check(
   "merge/labelRecoveredFromDescription",
   foreignRow?.label === "Physical Therapy",
-  `showing the raw description would read as a form named 'Complete "…"' — got ${foreignRow?.label}`,
+  `showing the raw description would read as a form named 'Complete "…"' - got ${foreignRow?.label}`,
 );
 check(
   "merge/newestFirst",
@@ -1780,10 +1780,10 @@ const unidentified = mergeSentRequests(
 check("merge/dropsUnidentifiableTasks", unidentified.length === 0);
 
 /*
- * Publishing a Task and offering channel B are different things, and the stored record has to keep them
- * apart. A Task is published for tracking whenever `publishRequestTasks` is on, so `serverTaskUrl` alone
- * does not mean a filler may write there — treating it that way made the UI warn that answers could
- * arrive unreviewed on requests where they could not.
+ * Publishing a Task and offering channel B are different things, and a stored record has to keep
+ * them apart. Every request publishes a Task for tracking, so `serverTaskUrl` alone does not mean a
+ * filler may write there - treating it that way made the UI warn that answers could arrive
+ * unreviewed on requests where they could not.
  */
 const trackedOnly = mergeSentRequests(
   [
@@ -1890,7 +1890,7 @@ check(
     ...correlationBack.response,
     questionnaire: undefined,
   }) === undefined,
-  "not fatal — answers can still be read as a raw table",
+  "not fatal - answers can still be read as a raw table",
 );
 
 // ---------------------------------------------------------------------------
@@ -2017,7 +2017,7 @@ check(
 /*
  * An answer is a BackboneElement, so it may carry `id`, `extension` and `modifierExtension` beside
  * its `value[x]`. Picking "whatever field is left over" makes the rendered answer depend on the
- * sending app's JSON key order — which fails intermittently rather than reproducibly, and this is
+ * sending app's JSON key order - which fails intermittently rather than reproducibly, and this is
  * the only rendering available when the Questionnaire cannot be resolved.
  */
 const backboneRows = flattenAnswers({

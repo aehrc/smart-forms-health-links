@@ -16,15 +16,20 @@ import {
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
  *
  * This is the step that makes the whole design stay within spec. SMART Health Links define no
- * submission channel, so nothing is ever *pushed* to us — a filler publishes, this app pulls,
+ * submission channel, so nothing is ever *pushed* to us - a filler publishes, this app pulls,
  * a human reviews, and only then does this run. The write is an ordinary FHIR `create` performed by
  * the requester against its own server, which is precisely SDC's Form Receiver model.
  *
  * Destination resolution, in order:
- *   1. `sdc-questionnaire-endpoint` on the Questionnaire — the standard, form-authored answer
- *   2. `responseServerUrl` from config
+ *   1. `sdc-questionnaire-endpoint` on the Questionnaire - the standard, form-authored answer
+ *   2. the server the requester launched from, reached through the BFF proxy
  *
- * There is no third step. `formsServerUrl` is a read-only catalogue and is never a write target.
+ * There is no third step, and no configuration in either: a destination is either declared by the
+ * form or it is the clinical system the reviewer is signed in to. It used to come from a
+ * `responseServerUrl` key in `config.json`, chosen alongside a separate read-only forms catalogue
+ * that was deliberately never a write target. Both are gone. There is one server now, and the
+ * session decides which one it is (FR-004).
+ * @author John Grimes
  */
 
 /**
@@ -55,19 +60,27 @@ export function declaredEndpoints(
 
 export interface ResolveDestinationsOptions {
   questionnaire?: Questionnaire;
+  /**
+   * Base URL to write to when the form declares no endpoint of its own.
+   *
+   * Still named for the configuration key it used to come from, because that is what it still
+   * means to a caller: "the server that receives responses". Every caller in the app now passes
+   * `FHIR_PROXY_BASE`, so the value is the launched server rather than anything a browser could be
+   * pointed at.
+   */
   responseServerUrl?: string | null;
 }
 
 /**
- * Work out where the response should go. Empty means "not configured".
+ * Work out where the response should go. Empty means the caller nominated nowhere.
  *
  * Returns every declared endpoint when the Questionnaire names them, because the SDC extension says
  * the response goes to all of them, not just the first.
  *
- * There is deliberately **no fallback to the forms server**. That server is a read-only catalogue:
- * smart-forms only ever reads Questionnaires from it and writes responses to its SMART launch server
- * instead. Defaulting here would quietly push patient data into a shared reference library, so an
- * unset destination is an error the user sees rather than a guess.
+ * A form-declared endpoint outranks the launched server deliberately: the form's author has said
+ * where its answers belong, and that instruction travels with the form to whoever fills it. The
+ * launched server is the fallback, and there is no fallback after it - guessing a destination would
+ * mean pushing patient data at a server nobody nominated.
  */
 export function resolveDestinations(
   options: ResolveDestinationsOptions,
@@ -81,9 +94,9 @@ export function resolveDestinations(
 }
 
 export const NO_DESTINATION_MESSAGE =
-  "No destination is configured for completed responses. Set `responseServerUrl` in config.json, " +
-  "or give the Questionnaire an sdc-questionnaire-endpoint extension. It deliberately does not " +
-  "default to the forms server, which is a read-only catalogue.";
+  "There is nowhere to write these answers. The Questionnaire declares no " +
+  "sdc-questionnaire-endpoint extension, and no launched server was supplied to fall back on. " +
+  "Re-launching from the clinical system supplies one.";
 
 export interface SubmitResult {
   serverUrl: string;
@@ -226,6 +239,7 @@ export interface SubmitOptions {
   /** Who asserted the answers, when the filler said. Its `target` is rewired like the Task's. */
   provenance?: Provenance;
   questionnaire?: Questionnaire;
+  /** Fallback destination when the form declares none. See {@link ResolveDestinationsOptions}. */
   responseServerUrl?: string | null;
 }
 
@@ -328,7 +342,7 @@ export async function submitResponse(
  * Whether a reference resolves on the server the response is about to be written to.
  *
  * Worth checking before offering to save. A response from a third-party filler names a patient in
- * that* app's terms — Platypus sends its own vault key — and a server enforcing referential integrity
+ * that* app's terms (Platypus sends its own vault key) and a server enforcing referential integrity
  * rejects the whole write with `HAPI-1094`. Finding that out before the reviewer clicks Accept turns a
  * confusing failure into a question they can answer.
  *
@@ -361,14 +375,17 @@ export async function referenceResolves(
 }
 
 /**
- * Add `sdc-questionnaire-endpoint` to a copy of a Questionnaire — the outbound half of channel B.
+ * Add `sdc-questionnaire-endpoint` to a copy of a Questionnaire - the outbound half of channel B.
  *
  * This is the SDC-standard way to say "send answers here", and the same extension
  * {@link declaredEndpoints} already honours on the way back in. Using it rather than inventing a field
  * means any SDC-aware filler already knows where to look.
  *
- * Only ever applied to the embedded copy inside a request payload. The catalogue Questionnaire on the
- * forms server is never modified — that server is read-only.
+ * Only ever applied to the embedded copy inside a request payload. The Questionnaire held by the
+ * launched server is never modified: this app reads that catalogue and never writes to it. Nothing
+ * in the app calls this now that a manifest carries the grant instead; `check:roundtrip` asserts
+ * its shape, because the extension is still the interop-standard way for a third-party producer to
+ * tell us where its answers go.
  */
 export function declareResponseEndpoint(
   questionnaire: Questionnaire,

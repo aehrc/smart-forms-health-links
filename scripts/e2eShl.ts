@@ -85,7 +85,7 @@ function check(name: string, condition: boolean, detail = "") {
     failures++;
   }
   console.log(
-    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` - ${detail}` : ""}`,
   );
 }
 
