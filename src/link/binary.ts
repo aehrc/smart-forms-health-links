@@ -21,9 +21,7 @@ async function streamThrough(
   transform: CompressionStream | DecompressionStream,
 ): Promise<Uint8Array> {
   // `Blob.stream()` avoids having to hand-feed the writable side of the transform.
-  const stream = new Blob([bytes as BlobPart])
-    .stream()
-    .pipeThrough(transform as ReadableWritablePair);
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(transform);
   const buffer = await new Response(stream).arrayBuffer();
   return new Uint8Array(buffer);
 }
@@ -50,10 +48,10 @@ export async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
 
 export function toBase64Url(bytes: Uint8Array): string {
   let binary = "";
-  // Chunked to stay well clear of the argument-count limit on String.fromCharCode.
+  // Chunked to stay well clear of the argument-count limit on String.fromCodePoint.
   const chunkSize = 0x80_00;
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    binary += String.fromCodePoint(...bytes.subarray(i, i + chunkSize));
   }
 
   return btoa(binary)
@@ -68,13 +66,11 @@ export function fromBase64Url(value: string): Uint8Array {
     .replaceAll("_", "/")
     .padEnd(Math.ceil(value.length / 4) * 4, "=");
 
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-
-  return bytes;
+  // Every code unit `atob` produces is a byte, so reading code points index-wise is exact.
+  return Uint8Array.from(
+    atob(padded),
+    (character) => character.codePointAt(0) ?? 0,
+  );
 }
 
 export function encodeUtf8(text: string): Uint8Array {

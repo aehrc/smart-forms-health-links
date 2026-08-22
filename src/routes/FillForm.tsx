@@ -11,7 +11,7 @@ import {
   fetchQuestionnaireById,
   isRenderableQuestionnaire,
 } from "@/fhir/formsServer";
-import { useConfig } from "@/lib/ConfigContext";
+import { useConfig } from "@/lib/configContextValue";
 import { FHIR_PROXY_BASE } from "@/lib/session";
 import { canCreateHealthLinks, createResponseLink } from "@/link/createLink";
 
@@ -97,7 +97,9 @@ export default function FillForm() {
           {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
         </h1>
         <Button
-          onClick={handleCreateLink}
+          onClick={() => {
+            void handleCreateLink();
+          }}
           disabled={isCreating || !canHost}
           title={
             canHost ? undefined : "Link creation is not available in this build"

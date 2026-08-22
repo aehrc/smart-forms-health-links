@@ -37,24 +37,39 @@ function codecIdOf(link: string): "bespoke" | "shl" | "unknown" {
 export default function ShareLinkPanel(props: ShareLinkPanelProps) {
   const { link, kind = "response" } = props;
 
-  const [qr, setQr] = useState<QrResult | null>(null);
-  const [qrError, setQrError] = useState<string | null>(null);
+  const [qrState, setQrState] = useState<{
+    link: string;
+    qr: QrResult | null;
+    error: string | null;
+  }>({ link, qr: null, error: null });
   const [copied, setCopied] = useState(false);
+
+  /*
+   * Derived during render rather than reset inside the effect: a QR belonging to the previous link
+   * must never be shown against this one, and state discarded here never reaches the screen. The
+   * alternative - clearing it in the effect body - paints the old QR once first.
+   */
+  const current =
+    qrState.link === link ? qrState : { link, qr: null, error: null };
+  const qr = current.qr;
+  const qrError = current.error;
 
   useEffect(() => {
     let cancelled = false;
-    setQr(null);
-    setQrError(null);
 
     renderQr(link)
       .then((result) => {
         if (!cancelled) {
-          setQr(result);
+          setQrState({ link, qr: result, error: null });
         }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setQrError(error instanceof Error ? error.message : String(error));
+          setQrState({
+            link,
+            qr: null,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       });
 
@@ -71,6 +86,23 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
 
   const byteLength = linkByteLength(link);
   const codecId = codecIdOf(link);
+
+  // What stands in for the QR: the reason it could not be built, or that it is still building.
+  const qrFallback = qrError ? (
+    <div className="w-full sm:w-80">
+      <Alert tone="warning" title="Too large to scan">
+        {qrError}
+        <p className="mt-1">
+          {byteLength} bytes, {MAX_QR_BYTES} maximum.
+        </p>
+      </Alert>
+    </div>
+  ) : (
+    <p className="flex h-80 w-80 items-center justify-center gap-2 rounded-md border border-slate-200 dark:border-slate-800 text-sm text-slate-500 dark:text-slate-400">
+      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+      Building QR…
+    </p>
+  );
 
   return (
     <Card>
@@ -118,20 +150,8 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
                   {qr.level}
                 </p>
               </>
-            ) : qrError ? (
-              <div className="w-full sm:w-80">
-                <Alert tone="warning" title="Too large to scan">
-                  {qrError}
-                  <p className="mt-1">
-                    {byteLength} bytes, {MAX_QR_BYTES} maximum.
-                  </p>
-                </Alert>
-              </div>
             ) : (
-              <p className="flex h-80 w-80 items-center justify-center gap-2 rounded-md border border-slate-200 dark:border-slate-800 text-sm text-slate-500 dark:text-slate-400">
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                Building QR…
-              </p>
+              qrFallback
             )}
           </div>
 
@@ -150,7 +170,13 @@ export default function ShareLinkPanel(props: ShareLinkPanelProps) {
               onFocus={(event) => event.currentTarget.select()}
               className="w-full resize-none rounded-md border border-slate-300 bg-slate-50 p-2 font-mono text-xs break-all dark:border-slate-700 dark:bg-slate-950"
             />
-            <Button onClick={copyLink} variant="outline" size="sm">
+            <Button
+              onClick={() => {
+                void copyLink();
+              }}
+              variant="outline"
+              size="sm"
+            >
               {copied ? (
                 <Check className="h-4 w-4" aria-hidden />
               ) : (

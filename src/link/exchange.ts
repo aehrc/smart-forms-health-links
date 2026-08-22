@@ -339,7 +339,8 @@ export function buildReplyBundle(
   response: QuestionnaireResponse,
   options: BuildReplyOptions = {},
 ): { bundle: Bundle; provenance?: Provenance } {
-  const { id: _id, ...withoutLocalId } = response;
+  const withoutLocalId = { ...response };
+  delete withoutLocalId.id;
 
   const attributed: QuestionnaireResponse = {
     ...withoutLocalId,

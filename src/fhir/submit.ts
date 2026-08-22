@@ -108,22 +108,21 @@ function trimTrailingSlash(url: string): string {
  * content, not the sender's server's bookkeeping.
  */
 function asNewResource<T extends { id?: string; meta?: Meta }>(resource: T): T {
-  const { id: _id, meta, ...rest } = resource;
+  const rest = { ...resource };
+  delete rest.id;
+  delete rest.meta;
 
+  const { meta } = resource;
   if (!meta) {
-    return rest as T;
+    return rest;
   }
 
-  const {
-    versionId: _versionId,
-    lastUpdated: _lastUpdated,
-    source: _source,
-    ...keptMeta
-  } = meta;
+  const keptMeta = { ...meta };
+  delete keptMeta.versionId;
+  delete keptMeta.lastUpdated;
+  delete keptMeta.source;
 
-  return (
-    Object.keys(keptMeta).length > 0 ? { ...rest, meta: keptMeta } : rest
-  ) as T;
+  return Object.keys(keptMeta).length > 0 ? { ...rest, meta: keptMeta } : rest;
 }
 
 interface OperationOutcome {
@@ -399,7 +398,9 @@ export async function publishRequestTask(
 
 /** The server-storable form of a request Task. Exported so `check:roundtrip` can assert its shape. */
 export function asPublishedTask(task: Task): Task {
-  const { focus: _focus, extension: _extension, ...rest } = task;
+  const rest = { ...task };
+  delete rest.focus;
+  delete rest.extension;
 
   return {
     ...rest,

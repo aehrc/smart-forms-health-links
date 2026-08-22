@@ -25,7 +25,7 @@ import {
   searchQuestionnaireResponses,
 } from "@/fhir/ehrServer";
 import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
-import { useConfig } from "@/lib/ConfigContext";
+import { useConfig } from "@/lib/configContextValue";
 import { FHIR_PROXY_BASE, useRequesterGate } from "@/lib/session";
 
 /**

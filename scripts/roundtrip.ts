@@ -36,16 +36,12 @@ import {
   isAppConfig,
   type AppConfig,
 } from "../src/lib/config";
-import { bespokeCodec } from "../src/link/bespokeCodec";
 import {
-  PasscodeRequiredError,
-  bundleResponse,
-  encodingCodec,
-  extractFragment,
-  responseFromBundle,
-} from "../src/link/codec";
-import { shlCodec } from "../src/link/shlCodec";
-import { chooseErrorCorrectionLevel } from "../src/link/qrCapacity";
+  findRequestForTask,
+  mergeSentRequests,
+  whyNotCollectable,
+} from "../src/lib/sentRequests";
+import { bespokeCodec } from "../src/link/bespokeCodec";
 import {
   decodeUtf8,
   encodeUtf8,
@@ -53,11 +49,28 @@ import {
   toBase64Url,
 } from "../src/link/binary";
 import {
+  PasscodeRequiredError,
+  bundleResponse,
+  encodingCodec,
+  extractFragment,
+  responseFromBundle,
+} from "../src/link/codec";
+import {
+  buildReplyBundle,
+  buildRequestBundle,
+  isRequestBundle,
+  parseResponseBundle,
+  responseCanonical,
+  taskCorrelationId,
+} from "../src/link/exchange";
+import { buildInvitationBundle } from "../src/link/invitationBundle";
+import {
   decryptJwe,
   encryptJwe,
   generateKey,
   keyToBase64Url,
 } from "../src/link/jwe";
+import { chooseErrorCorrectionLevel } from "../src/link/qrCapacity";
 import {
   decryptReplyJwe,
   encryptReplyJwe,
@@ -72,20 +85,7 @@ import {
   parseReplyDescriptor,
   parseServerTaskUrl,
 } from "../src/link/replyDescriptor";
-import {
-  buildReplyBundle,
-  buildRequestBundle,
-  isRequestBundle,
-  parseResponseBundle,
-  responseCanonical,
-  taskCorrelationId,
-} from "../src/link/exchange";
-import { buildInvitationBundle } from "../src/link/invitationBundle";
-import {
-  findRequestForTask,
-  mergeSentRequests,
-  whyNotCollectable,
-} from "../src/lib/sentRequests";
+import { shlCodec } from "../src/link/shlCodec";
 
 import type { OutstandingRequest } from "../src/lib/requestStore";
 import type {
@@ -278,7 +278,7 @@ check("jwe/wrongKeyRejected", wrongKeyRejected);
 let tamperRejected = false;
 try {
   const bytes = fromBase64Url(jweSegments[3]);
-  bytes[0] ^= 0xff;
+  bytes[0] ^= 0b1111_1111;
   await decryptJwe(
     [
       jweSegments[0],
@@ -330,18 +330,26 @@ const store = {
   },
 };
 
+/**
+ * The URL a `fetch` argument names, in whichever of its three forms it arrived.
+ *
+ * @param input the first argument handed to `fetch`
+ * @returns the URL as a string
+ */
+function fetchUrl(input: string | URL | Request): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  return input instanceof URL ? input.href : input.url;
+}
+
 // The codec fetches its payload by URL; serve the in-memory store through a fetch shim.
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (
   input: string | URL | Request,
   init?: RequestInit,
 ) => {
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.href
-        : input.url;
+  const url = fetchUrl(input);
   const stored = store.get(url);
   if (stored) {
     return new Response(stored, { status: 200 });
@@ -526,12 +534,7 @@ globalThis.fetch = (async (
   input: string | URL | Request,
   init?: RequestInit,
 ) => {
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.href
-        : input.url;
+  const url = fetchUrl(input);
   if (url === MANIFEST_URL) {
     manifestCalls++;
     lastManifestBody = JSON.parse(String(init?.body ?? "{}"));
@@ -567,8 +570,10 @@ const manifestLink = `#shlink:/${toBase64Url(
 )}`;
 
 /** Encrypt `content` under the foreign key and host it, returning just the URL. */
-const hostFile = async (content: unknown) =>
-  (await hostShl(content, foreignKey)).url;
+const hostFile = async (content: unknown) => {
+  const hosted = await hostShl(content, foreignKey);
+  return hosted.url;
+};
 
 const foreignProvenance: Provenance = {
   resourceType: "Provenance",
@@ -629,10 +634,10 @@ manifestFiles = [
     location: await hostFile(bundleResponse(foreignResponse)),
   },
 ];
+const parameterisedRead = await shlCodec.decode(manifestLink);
 check(
   "foreign/manifestToleratesContentTypeParameters",
-  parseResponseBundle((await shlCodec.decode(manifestLink)).bundle).response !==
-    undefined,
+  parseResponseBundle(parameterisedRead.bundle).response !== undefined,
 );
 
 // One unreadable file must cost its own content, not the whole link.
@@ -689,9 +694,10 @@ manifestFiles = [
     location: await hostFile(manifestRequest.bundle),
   },
 ];
+const manifestRequestRead = await shlCodec.decode(manifestLink);
 check(
   "foreign/manifestRequestStillRoutesAsRequest",
-  isRequestBundle((await shlCodec.decode(manifestLink)).bundle),
+  isRequestBundle(manifestRequestRead.bundle),
 );
 
 // An embedded file needs no second fetch.
@@ -704,10 +710,10 @@ manifestFiles = [
     ),
   },
 ];
+const embeddedRead = await shlCodec.decode(manifestLink);
 check(
   "foreign/manifestReadsEmbedded",
-  parseResponseBundle((await shlCodec.decode(manifestLink)).bundle).response !==
-    undefined,
+  parseResponseBundle(embeddedRead.bundle).response !== undefined,
 );
 
 // ---------------------------------------------------------------------------
@@ -742,11 +748,12 @@ check(
   (passcodeError as PasscodeRequiredError)?.wasAttempted === true,
 );
 
+const passcodeRead = await shlCodec.decode(manifestLink, {
+  passcode: "letmein",
+});
 check(
   "passcode/correctPasscodeSucceeds",
-  parseResponseBundle(
-    (await shlCodec.decode(manifestLink, { passcode: "letmein" })).bundle,
-  ).response !== undefined,
+  parseResponseBundle(passcodeRead.bundle).response !== undefined,
 );
 check(
   "passcode/reachesTheManifestBody",
@@ -796,11 +803,10 @@ check(
   manifestCalls === callsBeforePreempt,
   "burning an attempt to learn what the payload already says would be inexcusable",
 );
+const pFlagRead = await shlCodec.decode(pFlagLink, { passcode: "letmein" });
 check(
   "passcode/pFlagOpensWhenSupplied",
-  parseResponseBundle(
-    (await shlCodec.decode(pFlagLink, { passcode: "letmein" })).bundle,
-  ).response !== undefined,
+  parseResponseBundle(pFlagRead.bundle).response !== undefined,
 );
 
 manifestPasscode = undefined;
@@ -811,11 +817,12 @@ const bespokeWithOptions = await bespokeCodec.encode(
   { bundle: bundleResponse(foreignResponse), label: "unaffected" },
   { baseUrl: BASE_URL },
 );
+const bespokeRead = await bespokeCodec.decode(bespokeWithOptions, {
+  passcode: "x",
+});
 check(
   "passcode/bespokeSignatureUnaffected",
-  responseFromBundle(
-    (await bespokeCodec.decode(bespokeWithOptions, { passcode: "x" })).bundle,
-  ).status === "completed",
+  responseFromBundle(bespokeRead.bundle).status === "completed",
 );
 
 // ---------------------------------------------------------------------------
@@ -926,7 +933,7 @@ function nodeDecryptReply(jwe: string, privateJwk: { d: string }): string {
 const replyKeys = await generateReplyKeyPair();
 check(
   "reply/publicJwkIsMinimal",
-  Object.keys(replyKeys.publicJwk).sort().join(",") === "crv,kty,x,y",
+  Object.keys(replyKeys.publicJwk).toSorted().join(",") === "crv,kty,x,y",
   Object.keys(replyKeys.publicJwk).join(","),
 );
 check("reply/curveIsP256", replyKeys.publicJwk.crv === "P-256");
@@ -1024,25 +1031,24 @@ async function replyRejects(
   key = replyKeys.privateJwk,
 ) {
   try {
-    await decryptReplyJwe((await mutate([...replySegments])).join("."), key);
+    const mutated = await mutate([...replySegments]);
+    await decryptReplyJwe(mutated.join("."), key);
     return false;
   } catch {
     return true;
   }
 }
 
+const otherReplyKeys = await generateReplyKeyPair();
 check(
   "reply/wrongKeyRejected",
-  await replyRejects(
-    (segments) => segments,
-    (await generateReplyKeyPair()).privateJwk,
-  ),
+  await replyRejects((segments) => segments, otherReplyKeys.privateJwk),
 );
 check(
   "reply/tamperedCiphertextRejected",
   await replyRejects((segments) => {
     const bytes = fromBase64Url(segments[3]);
-    bytes[0] ^= 0xff;
+    bytes[0] ^= 0b1111_1111;
     segments[3] = toBase64Url(bytes);
     return segments;
   }),
@@ -1051,7 +1057,8 @@ check(
   "reply/tamperedEpkRejected",
   await replyRejects(async (segments) => {
     const header = JSON.parse(decodeUtf8(fromBase64Url(segments[0])));
-    header.epk = (await generateReplyKeyPair()).publicJwk;
+    const epkKeys = await generateReplyKeyPair();
+    header.epk = epkKeys.publicJwk;
     segments[0] = toBase64Url(encodeUtf8(JSON.stringify(header)));
     return segments;
   }),
@@ -1483,12 +1490,7 @@ globalThis.fetch = (async (
   input: string | URL | Request,
   init?: RequestInit,
 ) => {
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.href
-        : input.url;
+  const url = fetchUrl(input);
   if (init?.method === "POST") {
     posted.push({ url, body: JSON.parse(String(init.body)) });
     return Response.json(

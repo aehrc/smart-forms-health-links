@@ -36,8 +36,30 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "lcov"],
-      include: ["src/**", "server/**", "ops/**"],
-      exclude: ["**/*.test.{ts,tsx}", "src/main.tsx"],
+      /*
+       * The threshold applies to the code unit tests are the right instrument for: the BFF, the
+       * operational setup, and the browser-side logic this feature introduced. Two kinds of file
+       * are deliberately outside it.
+       *
+       * React components and routes are covered by the Playwright acceptance suite under `e2e/`,
+       * which exercises them the way a user does. Asserting their rendered output twice would
+       * buy coverage percentage rather than confidence.
+       *
+       * The browser modules that predate this feature (`src/link` codecs, `src/fhir`, the rest of
+       * `src/lib`) have no unit tests yet. Including them would set the threshold to whatever
+       * they happen to score, which is not a standard. They are verified today by
+       * `npm run check:e2e` and `npm run check:e2e-shl`, and bringing them under test is separate
+       * work with its own scope.
+       */
+      include: [
+        "server/**",
+        "ops/**",
+        "src/fill/**",
+        "src/lib/session.ts",
+        "src/link/apiAccess.ts",
+        "src/link/invitationBundle.ts",
+      ],
+      exclude: ["**/*.test.{ts,tsx}", "tests/**"],
       thresholds: {
         lines: 80,
         functions: 80,

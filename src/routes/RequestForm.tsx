@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Inbox, Loader2, Send } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Link as RouterLink,
   useParams,
@@ -27,7 +27,7 @@ import {
   fetchQuestionnaireById,
   isRenderableQuestionnaire,
 } from "@/fhir/formsServer";
-import { useConfig } from "@/lib/ConfigContext";
+import { useConfig } from "@/lib/configContextValue";
 import { FHIR_PROXY_BASE, useRequesterGate } from "@/lib/session";
 import { createRequestLink, type CreatedRequest } from "@/link/createLink";
 
@@ -60,10 +60,10 @@ export default function RequestForm() {
   const [params] = useSearchParams();
   const config = useConfig();
 
-  const [subject, setSubject] = useState("");
-  const [subjectDisplay, setSubjectDisplay] = useState("");
+  const [editedSubject, setEditedSubject] = useState<string | null>(null);
+  const [editedDisplay, setEditedDisplay] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedRequest | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const [error, setError] = useState<Error | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
   const {
@@ -94,37 +94,20 @@ export default function RequestForm() {
   });
 
   /*
-   * Pre-fill, then get out of the way. Applied as an effect keyed on the resolved patient so it
-   * runs once per launch context, and guarded on the field still being untouched so it never
-   * overwrites a choice already made.
-   */
-  useEffect(() => {
-    if (launchPatient?.id === undefined) {
-      return;
-    }
-    setSubject((current) =>
-      current === "" ? `Patient/${launchPatient.id}` : current,
-    );
-    setSubjectDisplay((current) =>
-      current === "" ? patientDisplay(launchPatient) : current,
-    );
-  }, [launchPatient]);
-
-  /*
-   * The patient picker navigates back here with the chosen patient in the query string. Applied via an
-   * effect rather than as initial state so returning from the picker updates the fields on a route that
-   * is already mounted.
+   * Pre-fill, then get out of the way. The picker navigates back here with its choice in the query
+   * string, and an EHR launch names a patient of its own; both are defaults, so they are resolved
+   * during render in order of specificity rather than written back into state. Anything the user
+   * typed or chose is held separately and always wins, and the launch context resolving late
+   * cannot overwrite it.
    */
   const pickedSubject = params.get("subject");
   const pickedDisplay = params.get("subjectDisplay");
-  useEffect(() => {
-    if (pickedSubject) {
-      setSubject(pickedSubject);
-    }
-    if (pickedDisplay) {
-      setSubjectDisplay(pickedDisplay);
-    }
-  }, [pickedSubject, pickedDisplay]);
+  const launchSubject =
+    launchPatient?.id === undefined ? "" : `Patient/${launchPatient.id}`;
+  const launchDisplay =
+    launchPatient?.id === undefined ? "" : patientDisplay(launchPatient);
+  const subject = editedSubject ?? pickedSubject ?? launchSubject;
+  const subjectDisplay = editedDisplay ?? pickedDisplay ?? launchDisplay;
 
   /** Mint the link, or explain why nothing was created. */
   async function handleCreate() {
@@ -144,7 +127,16 @@ export default function RequestForm() {
       );
     } catch (error_) {
       setCreated(null);
-      setError(error_);
+      /*
+       * Anything that is not already an Error is wrapped rather than stringified: `String()` on an
+       * arbitrary thrown object yields "[object Object]", which tells the reader nothing, and the
+       * original value is still reachable through `cause`.
+       */
+      setError(
+        error_ instanceof Error
+          ? error_
+          : new Error("The request could not be created.", { cause: error_ }),
+      );
     } finally {
       setIsCreating(false);
     }
@@ -216,8 +208,8 @@ export default function RequestForm() {
                 subject.trim() === "" ? undefined : subject.trim()
               }
               onChoose={(chosen) => {
-                setSubject(chosen.reference);
-                setSubjectDisplay(chosen.display);
+                setEditedSubject(chosen.reference);
+                setEditedDisplay(chosen.display);
               }}
               label="Search patients to address this request to"
             />
@@ -229,13 +221,13 @@ export default function RequestForm() {
             </p>
             <Input
               value={subject}
-              onChange={(event) => setSubject(event.target.value)}
+              onChange={(event) => setEditedSubject(event.target.value)}
               placeholder="Patient/123"
               aria-label="Subject reference"
             />
             <Input
               value={subjectDisplay}
-              onChange={(event) => setSubjectDisplay(event.target.value)}
+              onChange={(event) => setEditedDisplay(event.target.value)}
               placeholder="Jane Citizen"
               aria-label="Subject name"
             />
@@ -252,7 +244,12 @@ export default function RequestForm() {
             , which also shows what each one has already answered.
           </p>
 
-          <Button onClick={handleCreate} disabled={isCreating}>
+          <Button
+            onClick={() => {
+              void handleCreate();
+            }}
+            disabled={isCreating}
+          >
             {isCreating ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (
@@ -289,7 +286,7 @@ export default function RequestForm() {
 
       {error ? (
         <Alert tone="error" title="Could not create the request">
-          {error instanceof Error ? error.message : String(error)}
+          {error.message}
         </Alert>
       ) : null}
 

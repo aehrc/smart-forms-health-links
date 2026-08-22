@@ -49,9 +49,19 @@ function answerValue(answer: Answer): string {
   const value =
     key === undefined ? undefined : (answer as Record<string, unknown>)[key];
 
-  return typeof value === "object" && value !== null
-    ? JSON.stringify(value)
-    : String(value ?? "");
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
 }
 
 export function flattenAnswers(response: QuestionnaireResponse): AnswerRow[] {

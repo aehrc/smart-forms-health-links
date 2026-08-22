@@ -133,7 +133,7 @@ export function listRequests(): OutstandingRequest[] {
 
   return parsed
     .filter(isOutstandingRequest)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 function write(requests: OutstandingRequest[]): void {

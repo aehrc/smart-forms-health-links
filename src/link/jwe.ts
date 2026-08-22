@@ -89,6 +89,13 @@ function encodeProtectedHeader(contentType?: string): string {
   return toBase64Url(new TextEncoder().encode(JSON.stringify(header)));
 }
 
+/** The members of a JWE protected header that this decoder acts on. */
+interface JweHeader {
+  alg?: string;
+  enc?: string;
+  zip?: string;
+}
+
 /** How a payload is sealed. */
 export interface EncryptJweOptions {
   /**
@@ -166,11 +173,11 @@ export async function decryptJwe(
 
   const [protectedHeader, encryptedKey, iv, ciphertext, tag] = segments;
 
-  let header: { alg?: string; enc?: string; zip?: string };
+  let header: JweHeader;
   try {
     header = JSON.parse(
       new TextDecoder().decode(fromBase64Url(protectedHeader)),
-    );
+    ) as JweHeader;
   } catch (error) {
     throw new Error("JWE protected header is not valid base64url JSON.", {
       cause: error,

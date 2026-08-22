@@ -303,7 +303,7 @@ export async function decryptReplyJwe(
   try {
     header = JSON.parse(
       new TextDecoder().decode(fromBase64Url(protectedHeader)),
-    );
+    ) as ReplyHeader;
   } catch (error) {
     throw new Error("Reply JWE protected header is not valid base64url JSON.", {
       cause: error,

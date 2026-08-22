@@ -65,7 +65,7 @@ export default function Scan() {
           }
 
           controls?.stop();
-          navigate({ pathname: "/view", hash });
+          void navigate({ pathname: "/view", hash });
         },
       )
       .then((scannerControls) => {
@@ -96,7 +96,7 @@ export default function Scan() {
       return;
     }
 
-    navigate({ pathname: "/view", hash });
+    void navigate({ pathname: "/view", hash });
   }
 
   return (

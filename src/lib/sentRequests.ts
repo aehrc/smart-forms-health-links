@@ -122,7 +122,7 @@ export function mergeSentRequests(
     });
   }
 
-  return [...byId.values()].sort((left, right) =>
+  return [...byId.values()].toSorted((left, right) =>
     (right.createdAt ?? "").localeCompare(left.createdAt ?? ""),
   );
 }

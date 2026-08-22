@@ -23,7 +23,7 @@ import {
   submitResponse,
   type SubmitResult,
 } from "@/fhir/submit";
-import { useConfig } from "@/lib/ConfigContext";
+import { useConfig } from "@/lib/configContextValue";
 // TODO(phase-5): T045 finishes the proxy write path. Responses are already written through
 // `/api/fhir` here, but `src/fhir/submit.ts` still uses a bare `fetch`, so a session that has
 // expired mid-review surfaces as a plain FHIR error rather than as a re-launch prompt.
@@ -95,9 +95,11 @@ export default function ReviewResponse(props: ReviewResponseProps) {
    * entire write with `HAPI-1094`. Probing first turns a confusing failure after the fact into a
    * question the reviewer can actually answer.
    */
-  const [subjectCheck, setSubjectCheck] = useState<
-    "unknown" | "checking" | "resolves" | "missing"
-  >("unknown");
+  const [probe, setProbe] = useState<{
+    destination: string;
+    reference: string;
+    result: "resolves" | "missing" | "unknown";
+  } | null>(null);
   const [subjectOverride, setSubjectOverride] = useState("");
   /** Name of the patient chosen, when one was chosen rather than typed. Empty for a hand-typed reference. */
   const [subjectOverrideDisplay, setSubjectOverrideDisplay] = useState("");
@@ -112,39 +114,56 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const canSave = destinations.length > 0;
 
   const originalSubject = response.subject?.reference;
+  // Probed against the first destination only. With several, the reviewer is told which one failed by
+  // the write itself; guessing at a reconciliation that satisfies all of them is not this step's job.
+  const probeDestination = destinations.at(0);
+
+  /*
+   * Derived during render: a result is only reported against the exact subject and destination it was
+   * obtained for, so a stale answer can never be shown, and "nothing to probe" needs no state at all.
+   */
+  let subjectCheck: "unknown" | "checking" | "resolves" | "missing" = "unknown";
+  if (originalSubject && probeDestination !== undefined) {
+    subjectCheck =
+      probe?.destination === probeDestination &&
+      probe.reference === originalSubject
+        ? probe.result
+        : "checking";
+  }
 
   useEffect(() => {
-    if (!originalSubject || destinations.length === 0) {
-      setSubjectCheck("unknown");
+    if (!originalSubject || probeDestination === undefined) {
       return;
     }
 
     let cancelled = false;
-    setSubjectCheck("checking");
+    const probed = {
+      destination: probeDestination,
+      reference: originalSubject,
+    };
 
-    // Probed against the first destination only. With several, the reviewer is told which one failed by
-    // the write itself; guessing at a reconciliation that satisfies all of them is not this step's job.
-    referenceResolves(destinations[0], originalSubject)
+    referenceResolves(probeDestination, originalSubject)
       .then((resolves) => {
         if (!cancelled) {
-          setSubjectCheck(resolves ? "resolves" : "missing");
+          setProbe({ ...probed, result: resolves ? "resolves" : "missing" });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setSubjectCheck("unknown");
+          setProbe({ ...probed, result: "unknown" });
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [originalSubject, destinations.join("|")]);
+  }, [originalSubject, probeDestination]);
 
   /** The response as it will actually be written, with any reconciliation applied. */
   function reconciledResponse(): QuestionnaireResponse {
     if (clearSubject) {
-      const { subject: _subject, ...rest } = response;
+      const rest = { ...response };
+      delete rest.subject;
       return rest;
     }
 
@@ -212,6 +231,22 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const saved = results?.filter((result) => result.responseId) ?? [];
   const failed = results?.filter((result) => result.error) ?? [];
   const correlationId = taskCorrelationId(task);
+  /* Why these answers could not be tied to a request this browser sent. */
+  const unmatchedNote = correlationId ? (
+    <>
+      {" "}
+      Request <span className="font-mono text-xs">{correlationId}</span> — not
+      one this browser sent, so there is no local record to match it against.
+    </>
+  ) : (
+    " No Task accompanied these answers, so they cannot be matched to a request."
+  );
+
+  /* Where the destinations came from, when the questionnaire itself did not declare them. */
+  const configuredSourceNote = questionnaire
+    ? "From app configuration; this questionnaire does not declare an endpoint."
+    : "From app configuration. The form definition could not be resolved, so its " +
+      "sdc-questionnaire-endpoint — if it declares one — was not consulted.";
 
   return (
     <div className="space-y-4">
@@ -237,23 +272,17 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 , sent {new Date(matchedRequest.createdAt).toLocaleDateString()}
                 .
               </>
-            ) : correlationId ? (
-              <>
-                {" "}
-                Request{" "}
-                <span className="font-mono text-xs">{correlationId}</span> — not
-                one this browser sent, so there is no local record to match it
-                against.
-              </>
             ) : (
-              " No Task accompanied these answers, so they cannot be matched to a request."
+              unmatchedNote
             )}
           </p>
         </div>
 
         {results === null ? (
           <Button
-            onClick={handleAccept}
+            onClick={() => {
+              void handleAccept();
+            }}
             disabled={isSaving || !canSave}
             className="ml-auto"
           >
@@ -441,10 +470,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           <p className="mt-1">
             {isFormDeclared
               ? "Declared by the questionnaire itself via sdc-questionnaire-endpoint."
-              : questionnaire
-                ? "From app configuration; this questionnaire does not declare an endpoint."
-                : "From app configuration. The form definition could not be resolved, so its " +
-                  "sdc-questionnaire-endpoint — if it declares one — was not consulted."}
+              : configuredSourceNote}
           </p>
         </Alert>
       ) : null}
@@ -452,25 +478,30 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       {saved.length > 0 ? (
         <Alert title="Saved">
           <ul className="space-y-0.5">
-            {saved.map((result) => (
-              <li key={result.serverUrl} className="flex items-center gap-1.5">
-                <CheckCircle2
-                  className="h-3.5 w-3.5 text-green-600 dark:text-green-400"
-                  aria-hidden
-                />
-                <span className="font-mono text-xs">
-                  QuestionnaireResponse/{result.responseId}
-                  {result.taskId
-                    ? ` · Task/${result.taskId}`
-                    : " · Task not saved"}
-                  {provenance
-                    ? result.provenanceId
-                      ? ` · Provenance/${result.provenanceId}`
-                      : " · Provenance not saved"
-                    : ""}
-                </span>
-              </li>
-            ))}
+            {saved.map((result) => {
+              const provenanceNote = result.provenanceId
+                ? ` · Provenance/${result.provenanceId}`
+                : " · Provenance not saved";
+
+              return (
+                <li
+                  key={result.serverUrl}
+                  className="flex items-center gap-1.5"
+                >
+                  <CheckCircle2
+                    className="h-3.5 w-3.5 text-green-600 dark:text-green-400"
+                    aria-hidden
+                  />
+                  <span className="font-mono text-xs">
+                    QuestionnaireResponse/{result.responseId}
+                    {result.taskId
+                      ? ` · Task/${result.taskId}`
+                      : " · Task not saved"}
+                    {provenance ? provenanceNote : ""}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </Alert>
       ) : null}
