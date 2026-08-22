@@ -1021,6 +1021,13 @@ Not covered by any of these:
   answers against nobody, permanently, so it is asked about just as loudly. On the direct-send path
   the grant decides this: no `patient` in the grant means no subject on the response, rather than a
   filler-local reference that would mean nothing on the destination.
+- **The request's own patient is the shortcut, and it comes off the returned Task.** The Task that
+  comes back with the answers _is_ the requester's own invitation Task, so its `for` still names the
+  patient on the requester's own server - which is exactly the answer the reviewer would otherwise
+  search for. `ReviewResponse` offers it as one click, and only when it differs from what the
+  answers already say. This used to be looked up in a browser-local record of the mint, which made
+  the shortcut appear for requests sent from _this_ browser and nowhere else; minting is a server
+  operation now (FR-011), so the Task is both the only record and the better one.
 - **The scan-back path never writes without review.** `ReviewResponse` renders read-only on purpose:
   editing another party's answers before committing them would blur who recorded what and make the
   response's `author`/`source` describe a document that no longer exists.

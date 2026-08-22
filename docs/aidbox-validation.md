@@ -487,7 +487,7 @@ automated, for the same reason in both cases: one needs a real wait against a re
 lifetime, and the other needs the Backend Services client deregistered and restored, which
 disturbs the instance every other scenario shares.
 
-What does hold for them here, offline and repeatably, is the logic underneath: 41 tests across
+What does hold for them here, offline and repeatably, is the logic underneath: 45 tests across
 `tests/src/grantExpiry.test.ts`, `tests/src/sendFailures.test.ts` and
 `tests/src/scanBackFallback.test.tsx` assert that an expired grant issues no request at all rather
 than a failing one, that a refused send says the answers were not accepted, and that the scan-back
@@ -497,18 +497,18 @@ step rather than left to the suite.
 
 ### The offline gates, same date
 
-| Gate                       | Result                                                                                       |
-| -------------------------- | -------------------------------------------------------------------------------------------- |
-| `npm run typecheck`        | Clean                                                                                        |
-| `npm run lint`             | 0 errors, 222 warnings (all `jsdoc/*`)                                                       |
-| `npm run lint:duplication` | 139 duplicated lines of 20,028, 0.69%                                                        |
-| `npm run format:check`     | All matched files use Prettier code style                                                    |
-| `npm test`                 | 481 tests in 24 files, all passing                                                           |
-| `npm run test:coverage`    | Lines 88.07%, statements 88.13%, branches 83.23%, functions 89.28%, against an 80% threshold |
-| `npm run build`            | Clean                                                                                        |
-| `npm run build:server`     | Clean                                                                                        |
-| `npm run check:e2e`        | 10 checks, all passing, against the public forms catalogue                                   |
-| `npm run check:e2e-shl`    | 36 checks, all passing                                                                       |
+| Gate                       | Result                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `npm run typecheck`        | Clean                                                                                      |
+| `npm run lint`             | 0 errors, 211 warnings (all `jsdoc/*`)                                                     |
+| `npm run lint:duplication` | 139 duplicated lines of 19,600, 0.71%                                                      |
+| `npm run format:check`     | All matched files use Prettier code style                                                  |
+| `npm test`                 | 486 tests in 24 files, all passing                                                         |
+| `npm run test:coverage`    | Lines 88.33%, statements 88.4%, branches 83.23%, functions 90.3%, against an 80% threshold |
+| `npm run build`            | Clean                                                                                      |
+| `npm run build:server`     | Clean                                                                                      |
+| `npm run check:e2e`        | 10 checks, all passing, against the public forms catalogue                                 |
+| `npm run check:e2e-shl`    | 36 checks, all passing                                                                     |
 
 `npm run check:roundtrip` was **not** run, and cannot be run from this checkout. It imports three
 `QuestionnaireResponse` fixtures from a sibling `smart-forms` monorepo

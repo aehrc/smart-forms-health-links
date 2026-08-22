@@ -30,11 +30,6 @@ import {
 } from "../src/fhir/submit";
 import { flattenAnswers } from "../src/lib/answerRows";
 import { FALLBACK_CONFIG, isAppConfig } from "../src/lib/config";
-import {
-  findRequestForTask,
-  mergeSentRequests,
-  whyNotCollectable,
-} from "../src/lib/sentRequests";
 import { bespokeCodec } from "../src/link/bespokeCodec";
 import {
   decodeUtf8,
@@ -55,6 +50,8 @@ import {
   parseResponseBundle,
   responseCanonical,
   taskCorrelationId,
+  taskFormLabel,
+  taskQuestionnaireCanonical,
 } from "../src/link/exchange";
 import {
   SHL_REQUEST_TAG,
@@ -84,7 +81,6 @@ import {
 } from "../src/link/replyDescriptor";
 import { shlCodec } from "../src/link/shlCodec";
 
-import type { OutstandingRequest } from "../src/lib/requestStore";
 import type {
   Provenance,
   Questionnaire,
@@ -1684,7 +1680,7 @@ check(
 check(
   "published/correlationPreserved",
   taskCorrelationId(published) === taskCorrelationId(detectionTask),
-  "the identifier is the only join between a listed Task and the locally-held reply key",
+  "the identifier is the only join between a listed Task and the one that comes back",
 );
 check("published/addresseeKept", published.for?.display === "Jane Citizen");
 check(
@@ -1705,128 +1701,35 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// Joining the two halves of "what have I sent?".
-// ---------------------------------------------------------------------------
+// Naming the form a request asked for.
+//
+// `/requests` and the review screen both label a request from its Task and nothing else, so the
+// label has to be recoverable from the Task alone. This used to be one half of a merge with a
+// browser-local record of the mint; that record is gone, so the Task is the whole of it.
 
-console.log("\nsent-request merge\n");
-
-const localRecord = {
-  id: taskCorrelationId(detectionTask)!,
-  label: "Detection contract",
-  createdAt: "2026-08-04T02:00:00.000Z",
-  link: "https://links.example.org/view#shlink:/abc",
-  reply: { url: descriptor.replyUrl, privateJwk: replyKeys.privateJwk },
-};
-
-const foreignTask: Task = {
-  resourceType: "Task",
-  id: "server-99",
-  status: "requested",
-  intent: "order",
-  identifier: [
-    { system: "urn:ietf:rfc:3986", value: "urn:uuid:sent-elsewhere" },
-  ],
-  authoredOn: "2026-08-03T02:00:00.000Z",
-  description: 'Complete "Physical Therapy"',
-  requester: { display: "Another Practice" },
-  for: { display: "John Citizen" },
-};
-
-const merged = mergeSentRequests([localRecord], [published, foreignTask]);
+console.log("\nrequest labels\n");
 
 check(
-  "merge/producesOneRowPerRequest",
-  merged.length === 2,
-  `${merged.length} rows`,
-);
-
-const trackedRow = merged.find((row) => row.id === localRecord.id);
-check(
-  "merge/joinsOnIdentifier",
-  trackedRow?.origin === "tracked",
-  trackedRow?.origin,
-);
-check("merge/trackedRowIsCollectable", trackedRow?.collectable === true);
-check(
-  "merge/trackedRowKeepsLocalKey",
-  trackedRow?.local?.reply?.privateJwk.d === replyKeys.privateJwk.d,
-);
-check("merge/trackedRowGainsServerTask", trackedRow?.serverTask !== undefined);
-
-const foreignRow = merged.find((row) => row.id === "urn:uuid:sent-elsewhere");
-check(
-  "merge/foreignRowIsServerOnly",
-  foreignRow?.origin === "server-only",
-  foreignRow?.origin,
+  "label/recoveredFromDescription",
+  taskFormLabel({
+    ...published,
+    description: 'Complete "Physical Therapy"',
+  }) === "Physical Therapy",
+  "showing the raw description would read as a form named 'Complete \"…\"'",
 );
 check(
-  "merge/foreignRowNotCollectable",
-  foreignRow?.collectable === false,
-  "offering a Check button that cannot work would be worse than saying why",
+  "label/fallsBackToCanonical",
+  taskFormLabel({ ...published, description: undefined }) === "detection",
+  "input[].valueCanonical is what survives on a returned Task, so it is the fallback",
 );
 check(
-  "merge/foreignRowExplainsWhy",
-  whyNotCollectable(foreignRow!)?.includes("another browser") === true,
-  whyNotCollectable(foreignRow!),
-);
-check(
-  "merge/labelRecoveredFromDescription",
-  foreignRow?.label === "Physical Therapy",
-  `showing the raw description would read as a form named 'Complete "…"' - got ${foreignRow?.label}`,
-);
-check(
-  "merge/newestFirst",
-  merged[0]?.id === localRecord.id,
-  "sorted by createdAt descending",
-);
-
-// An unpublished local record must still appear, flagged as invisible elsewhere.
-const localOnly = mergeSentRequests([localRecord], []);
-check(
-  "merge/localOnlyRowKept",
-  localOnly[0]?.origin === "local-only",
-  localOnly[0]?.origin,
-);
-check("merge/localOnlyStillCollectable", localOnly[0]?.collectable === true);
-
-// A Task with no identifier cannot be joined to anything, and is dropped rather than shown as a
-// mystery row that no action applies to.
-const unidentified = mergeSentRequests(
-  [],
-  [{ ...foreignTask, identifier: undefined }],
-);
-check("merge/dropsUnidentifiableTasks", unidentified.length === 0);
-
-/*
- * Publishing a Task and offering channel B are different things, and a stored record has to keep
- * them apart. Every request publishes a Task for tracking, so `serverTaskUrl` alone does not mean a
- * filler may write there - treating it that way made the UI warn that answers could arrive
- * unreviewed on requests where they could not.
- */
-const trackedOnly = mergeSentRequests(
-  [
-    {
-      ...localRecord,
-      serverTaskUrl: "https://ehr.test/fhir/Task/1",
-      serverReturnOffered: false,
-    },
-  ],
-  [],
-);
-check(
-  "merge/publishedIsNotDirectWrite",
-  trackedOnly[0]?.local?.serverTaskUrl !== undefined &&
-    trackedOnly[0]?.local?.serverReturnOffered === false,
-  "a published Task is for tracking; only serverReturnOffered means answers can bypass review",
-);
-
-// Expiry removes collectability without removing the row.
-const expiredLocal = mergeSentRequests([{ ...localRecord, expiresAt: 1 }], []);
-check("merge/expiredIsNotCollectable", expiredLocal[0]?.collectable === false);
-check(
-  "merge/expiredExplainsWhy",
-  whyNotCollectable(expiredLocal[0])?.includes("expired") === true,
-  whyNotCollectable(expiredLocal[0]),
+  "label/undefinedWhenTaskSaysNothing",
+  taskFormLabel({
+    resourceType: "Task",
+    status: "requested",
+    intent: "order",
+  }) === undefined,
+  "a placeholder here would beat the questionnaire title a caller may already have",
 );
 
 // ---------------------------------------------------------------------------
@@ -1845,16 +1748,12 @@ const correlationRequest = buildRequestBundle(
     url: "http://example.org/Questionnaire/correlate",
     title: "Correlation",
   },
-  { requestId: "urn:uuid:correlate-me", subjectDisplay: "Jane Citizen" },
+  {
+    requestId: "urn:uuid:correlate-me",
+    subjectReference: "Patient/pt-1",
+    subjectDisplay: "Jane Citizen",
+  },
 );
-
-const correlationLocal: OutstandingRequest = {
-  id: taskCorrelationId(correlationRequest.task)!,
-  label: "Correlation",
-  questionnaireCanonical: "http://example.org/Questionnaire/correlate",
-  createdAt: "2026-08-04T02:00:00.000Z",
-  link: "https://links.example.org/view#shlink:/abc",
-};
 
 // The filler answers, echoing the Task back the way `buildReplyBundle` does.
 const correlationReply = buildReplyBundle(
@@ -1869,22 +1768,22 @@ const correlationReply = buildReplyBundle(
 
 const correlationBack = parseResponseBundle(correlationReply.bundle);
 check(
-  "correlate/joinsOnTaskIdentifier",
-  findRequestForTask([correlationLocal], correlationBack.task)?.id ===
-    correlationLocal.id,
+  "correlate/identifierSurvivesRoundTrip",
+  taskCorrelationId(correlationBack.task) ===
+    taskCorrelationId(correlationRequest.task),
   "the identifier is the only correlation key that survives a round trip through a third-party app",
 );
+/*
+ * The returned Task is the requester's own invitation Task come back, so `for` still names the
+ * patient on the requester's own server. That is what the review screen offers as a one-click
+ * reconciliation when the answers themselves name nobody - which is the normal case for an
+ * anonymous filler, and it used to be answered from a browser-local record of the mint.
+ */
 check(
-  "correlate/noTaskNoMatch",
-  findRequestForTask([correlationLocal]) === undefined,
-);
-check(
-  "correlate/unknownIdNoMatch",
-  findRequestForTask(
-    [{ ...correlationLocal, id: "urn:uuid:something-else" }],
-    correlationBack.task,
-  ) === undefined,
-  "a link from a request this browser never sent is reviewable, not matchable",
+  "correlate/addresseeSurvivesRoundTrip",
+  correlationBack.task?.for?.reference === "Patient/pt-1" &&
+    correlationBack.task?.for?.display === "Jane Citizen",
+  JSON.stringify(correlationBack.task?.for),
 );
 
 check(
@@ -1895,12 +1794,12 @@ check(
   ) === "http://example.org/Questionnaire/correlate",
 );
 check(
-  "correlate/canonicalFallsBackToStored",
+  "correlate/canonicalFallsBackToTask",
   responseCanonical(
     { ...correlationBack.response, questionnaire: undefined },
-    correlationLocal.questionnaireCanonical,
-  ) === correlationLocal.questionnaireCanonical,
-  "a filler that dropped the canonical still answered a form whose identity we recorded",
+    taskQuestionnaireCanonical(correlationBack.task),
+  ) === "http://example.org/Questionnaire/correlate",
+  "a filler that dropped the canonical still answered a form the returned Task names",
 );
 check(
   "correlate/canonicalUndefinedWhenNeitherKnows",

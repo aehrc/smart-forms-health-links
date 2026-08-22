@@ -95,8 +95,10 @@ export function isReplyPrivateJwk(value: unknown): value is ReplyPrivateJwk {
 /**
  * Generate a reply keypair.
  *
- * Extractable on purpose: the private half has to be persisted alongside the outstanding request, or
- * a reply arriving days later could not be opened. See `src/lib/requestStore.ts`.
+ * Extractable on purpose: a reply channel is only useful if the private half can be kept somewhere
+ * for as long as the reply may take to arrive, which a non-extractable `CryptoKey` rules out. This
+ * app no longer mints such channels itself - it writes to channels other producers declare (see
+ * {@link encryptReplyJwe}) - so nothing here persists a private half today.
  */
 export async function generateReplyKeyPair(): Promise<ReplyKeyPair> {
   const pair = await crypto.subtle.generateKey(

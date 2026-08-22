@@ -432,6 +432,58 @@ export function taskCorrelationId(task: Task | undefined): string | undefined {
 }
 
 /**
+ * Which form a Task was asking for, as a canonical URL.
+ *
+ * `input[].valueCanonical` first, because that is the copy built to survive: {@link
+ * buildResponseBundle} drops `focus` on the return leg - it would dangle once the Questionnaire is
+ * gone from the Bundle - so a returned Task carries the canonical in `input` and nowhere else. The
+ * `focus` fallback is for a Task on the outbound leg, or one another producer built. A producer
+ * that put a Bundle-relative `urn:uuid` there yields exactly that, which resolves against no
+ * server - the honest outcome, and reported as one rather than guessed at.
+ * @param task the Task, in either direction, or undefined
+ * @returns the canonical, or undefined when the Task names no form
+ * @example
+ * taskQuestionnaireCanonical(returned); // "http://example.org/Questionnaire/q-715|1.0.0"
+ */
+export function taskQuestionnaireCanonical(
+  task: Task | undefined,
+): string | undefined {
+  return (
+    task?.input?.find((input) => input.valueCanonical)?.valueCanonical ??
+    task?.focus?.reference
+  );
+}
+
+/**
+ * The form a Task was asking for, as something to show a person.
+ *
+ * {@link buildRequestBundle} writes `Complete "<title>"` into `description`, so the title is
+ * recovered from it rather than showing the instruction as though it were a form name. Failing
+ * that, the canonical's last path segment is a worse name but still a name.
+ *
+ * `undefined` rather than a placeholder when the Task says nothing, because what to show instead
+ * differs by surface: a list row needs a label, and a review screen already has the questionnaire's
+ * own title to fall back on.
+ * @param task the request Task, in either direction
+ * @returns the best label the Task itself supports, or undefined when it supports none
+ * @example
+ * taskFormLabel({ description: 'Complete "Adult sepsis screening"' }); // "Adult sepsis screening"
+ */
+export function taskFormLabel(task: Task | undefined): string | undefined {
+  const description = task?.description;
+  if (description) {
+    return /"([^"]+)"/.exec(description)?.[1] ?? description;
+  }
+
+  const canonical = taskQuestionnaireCanonical(task);
+  if (canonical === undefined) {
+    return undefined;
+  }
+
+  return canonical.split("|", 1)[0].split("/").findLast(Boolean) ?? canonical;
+}
+
+/**
  * Canonical URL with version suffix, matching how QuestionnaireResponse.questionnaire is written.
  *
  * `undefined` for a Questionnaire with no `url` - legal FHIR, and not something callers can fix, so

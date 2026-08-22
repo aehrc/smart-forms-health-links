@@ -108,7 +108,14 @@ export interface SubmissionTransactionOptions {
   readonly recorded?: string;
 }
 
-/** Where a direct send is up to. See `data-model.md`, "Send states". */
+/**
+ * Where a direct send is up to.
+ *
+ * `checking` is the state while the destination is asked whether the published task already
+ * carries a response, which is how a reopened invitation whose answers already landed reaches
+ * `sent` without a second send. The send affordance is withheld while checking, and a task that
+ * cannot be read resolves to `idle`, so a destination that will not answer never blocks the form.
+ */
 export type SendState =
   "idle" | "checking" | "expired" | "sending" | "sent" | "refused" | "failed";
 

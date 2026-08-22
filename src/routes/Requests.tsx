@@ -17,7 +17,7 @@ import {
 import { Loading } from "@/components/ui/loading";
 import { searchPublishedRequests } from "@/fhir/ehrServer";
 import { FHIR_PROXY_BASE, useRequesterGate } from "@/lib/session";
-import { taskCorrelationId } from "@/link/exchange";
+import { taskCorrelationId, taskFormLabel } from "@/link/exchange";
 
 /**
  * Requests this organisation has sent, and what has come back.
@@ -42,31 +42,6 @@ import { taskCorrelationId } from "@/link/exchange";
 
 /** Rows fetched at once. */
 const PAGE_SIZE = 50;
-
-/**
- * The form a Task was asking for, as a label.
- *
- * `buildRequestBundle` writes `Complete "<title>"` into `description`, so the title is recovered
- * from it rather than showing the instruction as though it were a form name.
- * @param task the published request Task
- * @returns the best available label for it
- */
-function requestLabel(task: Task): string {
-  const description = task.description;
-  if (description) {
-    const quoted = /"([^"]+)"/.exec(description);
-    return quoted?.[1] ?? description;
-  }
-
-  const canonical =
-    task.input?.find((input) => input.valueCanonical)?.valueCanonical ??
-    task.focus?.reference;
-  if (canonical) {
-    return canonical.split("|", 1)[0].split("/").findLast(Boolean) ?? canonical;
-  }
-
-  return "Requested form";
-}
 
 /**
  * The sent-requests list.
@@ -161,7 +136,9 @@ function RequestRow({ task }: Readonly<{ task: Task }>) {
       <CardHeader>
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">{requestLabel(task)}</CardTitle>
+            <CardTitle className="text-base">
+              {taskFormLabel(task) ?? "Requested form"}
+            </CardTitle>
             <CardDescription>
               {task.authoredOn
                 ? `Sent ${new Date(task.authoredOn).toLocaleString()}`

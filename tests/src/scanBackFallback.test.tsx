@@ -27,6 +27,7 @@
  * @author John Grimes
  */
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Blob as NodeBlob } from "node:buffer";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -80,6 +81,7 @@ vi.mock("@aehrc/smart-forms-renderer", () => ({
   ) => response,
 }));
 
+import ReviewResponse from "@/components/ReviewResponse";
 import { submitResponse } from "@/fhir/submit";
 import { FHIR_PROXY_BASE, isSessionEnded } from "@/lib/session";
 import { decodingCodec } from "@/link/codec";
@@ -422,5 +424,142 @@ describe("the requester accepts the answers", () => {
 
     expect(outcome.results[0]?.error).toMatch(/access denied by policy/i);
     expect(outcome.results[0]?.responseId).toBeUndefined();
+  });
+});
+
+/**
+ * Who the answers are about, when the answers themselves do not say.
+ *
+ * An anonymous filler has no patient context, so a scanned-back `QuestionnaireResponse` routinely
+ * arrives with no `subject` at all - and a response filed against nobody is worse than one the
+ * destination server rejects, because nothing objects to it. The returned Task is what closes that
+ * gap: it is the requester's own invitation Task come back, so its `for` still names the patient
+ * the request was addressed to, on the requester's own server.
+ *
+ * This used to be answered from a browser-local record of the mint, which no longer exists -
+ * minting is a server operation now. Asserting it against the Task is what makes the shortcut work
+ * for a request any colleague sent, not only one this browser sent.
+ */
+describe("the requester reconciles the patient", () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    /*
+     * No session and no patients: the review screen asks both questions on mount, and neither
+     * answer changes what is under test. A 401 from `/api/session` is the "not signed in" answer
+     * rather than a failure, so nothing here depends on an unhandled rejection.
+     */
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input) =>
+        Promise.resolve(
+          urlOf(input).includes("/api/session")
+            ? Response.json({ error: "no-session" }, { status: 401 })
+            : Response.json({ resourceType: "Bundle", total: 0 }),
+        ),
+      ),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Render the review screen over answers that name nobody.
+   *
+   * The Questionnaire is deliberately unresolved: it keeps the renderer out of the tree, and it is
+   * the honest case for a form the reviewer's server does not hold anyway.
+   * @param task the Task that came back with the answers, if any
+   */
+  function review(task?: Task): void {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <ReviewResponse
+            response={ANSWERS}
+            questionnaireError="This form could not be resolved."
+            task={task}
+          />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  /**
+   * Click the first button whose text contains a fragment.
+   * @param text the fragment to look for, case-insensitively
+   * @throws {Error} when no button matches
+   */
+  function clickButton(text: string): void {
+    const button = [...container.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.toLowerCase().includes(text.toLowerCase()),
+    );
+    if (!button) {
+      throw new Error(`No button matching "${text}".`);
+    }
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  // The affordance itself: the request's own patient, offered as one click.
+  it("offers the patient the request was addressed to", () => {
+    review({ ...REQUEST_TASK, status: "completed" });
+
+    expect(container.textContent).toContain("Patient/pt-demo");
+    expect(container.textContent).toContain("Jane Citizen");
+
+    clickButton("use that patient");
+
+    expect(
+      container.querySelector<HTMLInputElement>("#subject-override")?.value,
+    ).toBe("Patient/pt-demo");
+  });
+
+  /*
+   * A request addressed to nobody - legal, and what `/fill/:id` produces - has nothing to offer,
+   * so the screen must not offer an empty shortcut. The search remains.
+   */
+  it("offers no shortcut when the request named no patient", () => {
+    review({ ...REQUEST_TASK, for: undefined, status: "completed" });
+
+    expect(container.textContent).not.toContain("Use that patient");
+    expect(container.querySelector("#subject-override")).not.toBeNull();
+  });
+
+  /*
+   * The copy that went with the deleted store said the answers were "not one this browser sent, so
+   * there is no local record to match it against". Nothing is browser-local any more, so nothing
+   * may say so: what the screen knows is the request the answers cite.
+   */
+  it("names the request without appealing to a browser-local record", () => {
+    review({ ...REQUEST_TASK, status: "completed" });
+
+    expect(container.textContent).toContain("urn:uuid:request-1");
+    expect(container.textContent).not.toMatch(/local record|this browser/i);
+  });
+
+  // Answers with no Task at all cannot be tied to a request, and the screen says exactly that.
+  it("says so when no request came back with the answers", () => {
+    review();
+
+    expect(container.textContent).toMatch(/no task accompanied these answers/i);
+    expect(container.textContent).not.toMatch(/local record|this browser/i);
   });
 });

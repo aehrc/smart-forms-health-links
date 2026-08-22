@@ -1,7 +1,6 @@
 import { CheckCircle2, Loader2, Save, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import type { OutstandingRequest } from "@/lib/requestStore";
 import type {
   Provenance,
   Questionnaire,
@@ -26,7 +25,7 @@ import {
 } from "@/fhir/submit";
 import { useConfig } from "@/lib/configContextValue";
 import { FHIR_PROXY_BASE, isSessionEnded, useSession } from "@/lib/session";
-import { taskCorrelationId } from "@/link/exchange";
+import { taskCorrelationId, taskFormLabel } from "@/link/exchange";
 import Connect from "@/routes/Connect";
 
 export interface ReviewResponseProps {
@@ -42,14 +41,18 @@ export interface ReviewResponseProps {
   /** Why the form could not be resolved, when it could not. */
   questionnaireError?: string;
   response: QuestionnaireResponse;
+  /**
+   * The request Task that came back with the answers, when the filler returned one.
+   *
+   * Read for three things beyond completing the request on save: the correlation id the review
+   * screen shows, the form the answers were given against when they do not say themselves, and -
+   * because it is the requester's own invitation Task come back - the patient the request was
+   * addressed to.
+   */
   task?: Task;
   /** Attribution that arrived with the answers, when the filler sent any. */
   provenance?: Provenance;
-  /** The local request these answers came back for, when they match one this browser sent. */
-  matchedRequest?: OutstandingRequest;
   label?: string;
-  /** Called once the response has been written somewhere. */
-  onSaved?: () => void;
 }
 
 /** Whether the response carries a patient-asserted security label. */
@@ -83,6 +86,11 @@ const REQUEST_OUTCOME_TITLES: Record<PublishedTaskOutcome["kind"], string> = {
  * This human step is what keeps the whole design inside the specs: SMART Health Links have no
  * submission channel, so nothing was pushed here. The payload was published, this app pulled it, and
  * a person decides whether it enters the record.
+ *
+ * Everything this screen knows about the request comes off the returned Task. There is no
+ * browser-local record of the mint to consult - minting is a server operation (FR-011) - and the
+ * Task is a better source than one anyway: it is the requester's own invitation Task come back, so
+ * a request sent from a colleague's machine reads here exactly like one sent from this one.
  * @author John Grimes
  */
 export default function ReviewResponse(props: ReviewResponseProps) {
@@ -92,9 +100,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     response,
     task,
     provenance,
-    matchedRequest,
     label,
-    onSaved,
   } = props;
   const config = useConfig();
   /*
@@ -225,7 +231,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     };
   }
 
-  /** Apply a patient to the answers - from the picker, from the matched request, or typed in. */
+  /** Apply a patient to the answers - from the picker, from the request, or typed in. */
   function chooseSubject(reference: string, display?: string) {
     setSubjectOverride(reference);
     setSubjectOverrideDisplay(display ?? "");
@@ -243,6 +249,22 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const needsSubject =
     outcome === null && canSave && (subjectCheck === "missing" || !hasSubject);
   const searchServer = destinations[0];
+  /*
+   * Who the request was addressed to, offered as a one-click reconciliation.
+   *
+   * Taken from the returned Task rather than from any record this browser kept, because there is
+   * no such record: minting is a server operation (FR-011), and the Task that comes back *is* the
+   * requester's own invitation Task, so its `for` still names the patient on the requester's own
+   * server. Reading it here is what makes the shortcut work for a request any colleague sent -
+   * the browser-local store it replaced could only ever match a request minted in this browser.
+   *
+   * Offered only when it differs from what the answers already say: repeating a reference the
+   * destination has just been shown not to hold is not a reconciliation.
+   */
+  const requestSubject =
+    task?.for?.reference !== undefined && task.for.reference !== originalSubject
+      ? { reference: task.for.reference, display: task.for.display }
+      : undefined;
 
   async function handleAccept() {
     setError(null);
@@ -259,9 +281,6 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           : undefined,
       });
       setOutcome(submitted);
-      if (submitted.results.some((result) => result.responseId)) {
-        onSaved?.();
-      }
     } catch (error_) {
       /*
        * A review takes as long as a person takes to read, and a session can die inside that. The
@@ -286,16 +305,36 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const saved = outcome?.results.filter((result) => result.responseId) ?? [];
   const failed = outcome?.results.filter((result) => result.error) ?? [];
   const correlationId = taskCorrelationId(task);
-  /* Why these answers could not be tied to a request this browser sent. */
-  const unmatchedNote = correlationId ? (
+  const authoredOn = task?.authoredOn;
+  /*
+   * Which request these answers belong to, said in the terms the payload actually supports. The
+   * correlation id is `Task.identifier`, the only join that survives a round trip through a
+   * third-party app, and it is what `/requests` shows beside the same request.
+   */
+  let requestNote = (
     <>
       {" "}
-      Request <span className="font-mono text-xs">{correlationId}</span> - not
-      one this browser sent, so there is no local record to match it against.
+      Answering request{" "}
+      <span className="font-mono text-xs">{correlationId}</span>
+      {task?.for?.display ? ` for ${task.for.display}` : ""}
+      {authoredOn ? `, sent ${new Date(authoredOn).toLocaleDateString()}` : ""}.
     </>
-  ) : (
-    " No Task accompanied these answers, so they cannot be matched to a request."
   );
+  if (correlationId === undefined) {
+    requestNote = task ? (
+      <>
+        {" "}
+        A request came back with these answers, but it carries no identifier, so
+        they cannot be matched to a request.
+      </>
+    ) : (
+      <>
+        {" "}
+        No Task accompanied these answers, so they cannot be matched to a
+        request.
+      </>
+    );
+  }
 
   /*
    * Where the destination came from, when the questionnaire itself did not declare one. It is the
@@ -315,25 +354,13 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             Review:{" "}
             {label ??
               questionnaire?.title ??
-              matchedRequest?.label ??
+              taskFormLabel(task) ??
               questionnaire?.id ??
               "answers"}
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Completed answers received.
-            {matchedRequest ? (
-              <>
-                {" "}
-                Answering your request <strong>{matchedRequest.label}</strong>
-                {matchedRequest.subjectDisplay
-                  ? ` for ${matchedRequest.subjectDisplay}`
-                  : ""}
-                , sent {new Date(matchedRequest.createdAt).toLocaleDateString()}
-                .
-              </>
-            ) : (
-              unmatchedNote
-            )}
+            {requestNote}
           </p>
         </div>
 
@@ -406,23 +433,21 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             </p>
           )}
           <div className="mt-2 space-y-3">
-            {matchedRequest?.subjectReference ? (
+            {requestSubject ? (
               <p>
-                This request was addressed to{" "}
+                The request these answers came back for was addressed to{" "}
                 <span className="font-mono text-xs">
-                  {matchedRequest.subjectReference}
+                  {requestSubject.reference}
                 </span>
-                {matchedRequest.subjectDisplay
-                  ? ` (${matchedRequest.subjectDisplay})`
-                  : ""}
-                .{" "}
+                {requestSubject.display ? ` (${requestSubject.display})` : ""},
+                on the server you are signed in to.{" "}
                 <button
                   type="button"
                   className="underline underline-offset-2 hover:text-slate-900 dark:hover:text-slate-200"
                   onClick={() =>
                     chooseSubject(
-                      matchedRequest.subjectReference!,
-                      matchedRequest.subjectDisplay,
+                      requestSubject.reference,
+                      requestSubject.display,
                     )
                   }
                 >

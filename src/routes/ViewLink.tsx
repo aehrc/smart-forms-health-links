@@ -28,12 +28,6 @@ import {
 } from "@/fill/directSend";
 import DirectSendPanel from "@/fill/DirectSendPanel";
 import { useDirectSend } from "@/fill/useDirectSend";
-import {
-  listRequests,
-  updateRequest,
-  type OutstandingRequest,
-} from "@/lib/requestStore";
-import { findRequestForTask } from "@/lib/sentRequests";
 import { FHIR_PROXY_BASE, useSession } from "@/lib/session";
 import {
   PasscodeRequiredError,
@@ -45,6 +39,7 @@ import {
   parseRequestBundle,
   parseResponseBundle,
   responseCanonical,
+  taskQuestionnaireCanonical,
 } from "@/link/exchange";
 import { LINK_CODECS } from "@/link/registry";
 
@@ -57,10 +52,11 @@ import { LINK_CODECS } from "@/link/registry";
  *
  * The response direction is now the primary one: a filler mints its own SMART Health Link and the
  * requester scans it back. Two consequences shape this file. Answers arriving by link carry no
- * indication of *which* request they answer beyond `Task.identifier`, so the local record is looked
- * up here and stamped on save. And a link this app did not write may cite a form the launched
- * server does not hold - or is being opened by a filler with no session at all - so an unresolvable
- * Questionnaire degrades the display rather than failing the open.
+ * indication of *which* request they answer beyond the Task that comes back with them, so that Task
+ * is passed through to the review screen rather than looked up anywhere. And a link this app did not
+ * write may cite a form the launched server does not hold - or is being opened by a filler with no
+ * session at all - so an unresolvable Questionnaire degrades the display rather than failing the
+ * open.
  *
  * ## The direct return
  *
@@ -103,7 +99,6 @@ type Opened = { warnings?: string[]; label?: string } & (
       response: QuestionnaireResponse;
       task?: Task;
       provenance?: Provenance;
-      matchedRequest?: OutstandingRequest;
     }
 );
 
@@ -139,27 +134,23 @@ async function openLink(
 
   const { response, task, provenance } = parseResponseBundle(content.bundle);
 
-  // Which request did this answer? `Task.identifier` is the only thing that survives the round trip.
-  const matchedRequest = findRequestForTask(listRequests(), task);
-
   const base = {
     mode: "response" as const,
     response,
     task,
     provenance,
-    matchedRequest,
     warnings: content.warnings,
     label: content.label,
   };
 
   /*
    * The form is carried by reference, never by value (re-sending hundreds of kilobytes of
-   * Questionnaire would defeat the point), so it is resolved here, falling back to what the
-   * originating request recorded when the answers do not say.
+   * Questionnaire would defeat the point), so it is resolved here, falling back to the canonical
+   * the returned Task carries when the answers do not name one themselves.
    */
   const canonical = responseCanonical(
     response,
-    matchedRequest?.questionnaireCanonical,
+    taskQuestionnaireCanonical(task),
   );
   if (!canonical) {
     return {
@@ -330,19 +321,7 @@ export default function ViewLink() {
           response={opened.response}
           task={opened.task}
           provenance={opened.provenance}
-          matchedRequest={opened.matchedRequest}
           label={opened.label}
-          onSaved={() => {
-            /*
-             * Close the loop on `/requests`. Without this a request answered by link stays listed as
-             * outstanding forever, because nothing else observes that the answers came back.
-             */
-            if (opened.matchedRequest) {
-              updateRequest(opened.matchedRequest.id, {
-                collectedAt: new Date().toISOString(),
-              });
-            }
-          }}
         />
       )}
     </div>
