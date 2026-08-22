@@ -11,7 +11,6 @@ import {
   isSessionEnded,
   sessionEndedError,
 } from "@/lib/session";
-import { buildRequestBundle } from "@/link/exchange";
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -385,82 +384,5 @@ export function declareResponseEndpoint(
       ...(questionnaire.extension ?? []),
       { url: SDC_QUESTIONNAIRE_ENDPOINT, valueUri: endpoint },
     ],
-  };
-}
-
-/**
- * Marks a Task on the EHR as a request this app sent, so sent requests can be listed back.
- *
- * A tag rather than a naming convention because it is searchable: `Task?_tag=…|shl-form-request`
- * returns exactly our requests and nothing else on a server we share with other tools.
- */
-export const SHL_REQUEST_TAG = {
-  system: "http://smartforms.csiro.au/CodeSystem/shl-request",
-  code: "shl-form-request",
-  display: "Form request sent as a SMART Health Link",
-} as const;
-
-/**
- * Publish a request's Task to the EHR, and return its absolute URL.
- *
- * Two jobs, and they are worth separating in your head: it makes a sent request **discoverable** —
- * `/requests` lists these, so a request is visible even from a browser that did not create it — and,
- * when channel B is enabled, it gives a filler something to write against.
- *
- * Three deliberate differences from the Task inside the invitation:
- *
- *  - **No extensions.** The invitation's copy holds the reply descriptor, including any token
- *    authorising a write to the reply slot. Putting that on a server whose purpose is to be read would
- *    hand the capability to anyone who can read a Task.
- *  - **No `focus`.** The invitation names the Questionnaire by canonical, because that is the only
- *    form of the reference that still means something to a filler once the Bundle is taken apart. FHIR
- *    servers will not store that as a `Reference`:
- *
- *      HAPI-0506: Invalid resource reference found at path[Task.focus] — Resource type is unknown or
- *                 not supported on this server — http://example.org/Q/probe|1.0
- *
- *    So the server copy drops it and relies on `input[].valueCanonical`, which is a `canonical` rather
- *    than a `Reference` and stores fine. This is the same split the return leg already makes.
- *  - **A tracking tag**, so these can be searched back out.
- *
- * `buildRequestBundle` is reused with the same `requestId` so both copies share one business
- * identifier — that identifier is what joins a listed Task to the locally-held reply key.
- * @param options.subjectReference
- * @param options.subjectDisplay
- * @param options.requestId
- */
-export async function publishRequestTask(
-  serverUrl: string,
-  questionnaire: Questionnaire,
-  options: {
-    subjectReference?: string;
-    subjectDisplay?: string;
-    requestId?: string;
-  } = {},
-): Promise<string> {
-  const { task } = buildRequestBundle(questionnaire, {
-    subjectReference: options.subjectReference,
-    subjectDisplay: options.subjectDisplay,
-    requestId: options.requestId,
-  });
-
-  const id = await createResource(serverUrl, asPublishedTask(task));
-  return `${trimTrailingSlash(serverUrl)}/Task/${id}`;
-}
-
-/**
- * The server-storable form of a request Task. Exported so `check:roundtrip` can assert its shape.
- */
-export function asPublishedTask(task: Task): Task {
-  const rest = { ...task };
-  delete rest.focus;
-  delete rest.extension;
-
-  return {
-    ...rest,
-    meta: {
-      ...task.meta,
-      tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }],
-    },
   };
 }

@@ -25,7 +25,7 @@
  *     "backendClient": {
  *       "clientId": "smart-forms-backend",
  *       "privateKeyJwk": "env:BACKEND_PRIVATE_JWK",
- *       "scopes": "system/QuestionnaireResponse.c system/Task.r system/Task.u"
+ *       "scopes": "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u"
  *     },
  *     "grantTtlSeconds": 3600
  *   }

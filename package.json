@@ -19,7 +19,7 @@
     "test": "vitest --run",
     "test:watch": "vitest",
     "test:coverage": "vitest --run --coverage",
-    "test:e2e": "playwright test -c e2e/playwright.config.ts",
+    "test:e2e": "npm run build && playwright test -c e2e/playwright.config.ts",
     "setup:aidbox": "tsx ops/aidboxSetup.ts",
     "check:roundtrip": "esbuild scripts/roundtrip.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/roundtrip.mjs --log-level=warning && node node_modules/.cache/roundtrip.mjs",
     "check:e2e": "esbuild scripts/e2eLink.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e.mjs --log-level=warning && node node_modules/.cache/e2e.mjs",

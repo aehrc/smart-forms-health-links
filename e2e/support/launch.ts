@@ -82,12 +82,21 @@ export interface LaunchResult {
 
 /**
  * Read a required environment variable.
- * @param env the environment to read
+ *
+ * Exported because "fail naming the variable" is the suite's rule for every input it needs, not
+ * only the ones a launch needs: a spec that reads `process.env.X` directly and gets `undefined`
+ * reports a confusing downstream failure instead.
  * @param name the variable name
+ * @param env the environment to read, defaulting to the process environment
  * @returns the value
  * @throws {Error} naming the variable when it is absent or empty
+ * @example
+ * const sqlitePath = requiredEnvironment("SQLITE_PATH");
  */
-function required(env: NodeJS.ProcessEnv, name: string): string {
+export function requiredEnvironment(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const value = env[name];
   if (value === undefined || value.length === 0) {
     throw new Error(`environment variable ${name} is required`);
@@ -111,19 +120,22 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 export function readLaunchEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): LaunchEnvironment {
-  const aidboxBaseUrl = required(env, "AIDBOX_BASE_URL").replace(/\/+$/, "");
+  const aidboxBaseUrl = requiredEnvironment("AIDBOX_BASE_URL", env).replace(
+    /\/+$/,
+    "",
+  );
   return {
-    appOrigin: required(env, "APP_ORIGIN").replace(/\/+$/, ""),
+    appOrigin: requiredEnvironment("APP_ORIGIN", env).replace(/\/+$/, ""),
     issuer: (env.E2E_ISSUER ?? `${aidboxBaseUrl}/fhir`).replace(/\/+$/, ""),
     aidboxBaseUrl,
     operator: {
-      clientId: required(env, "AIDBOX_CLIENT_ID"),
-      clientSecret: required(env, "AIDBOX_CLIENT_SECRET"),
+      clientId: requiredEnvironment("AIDBOX_CLIENT_ID", env),
+      clientSecret: requiredEnvironment("AIDBOX_CLIENT_SECRET", env),
     },
     user: {
-      id: required(env, "AIDBOX_E2E_USER_ID"),
-      username: required(env, "AIDBOX_E2E_USER_EMAIL"),
-      password: required(env, "AIDBOX_E2E_USER_PASSWORD"),
+      id: requiredEnvironment("AIDBOX_E2E_USER_ID", env),
+      username: requiredEnvironment("AIDBOX_E2E_USER_EMAIL", env),
+      password: requiredEnvironment("AIDBOX_E2E_USER_PASSWORD", env),
     },
   };
 }

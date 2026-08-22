@@ -1,8 +1,7 @@
-import { SHL_REQUEST_TAG } from "./submit";
-
 import type { Bundle, Patient, QuestionnaireResponse, Task } from "fhir/r4";
 
 import { fetchProxiedFhir } from "@/lib/session";
+import { SHL_REQUEST_TAG } from "@/link/invitationBundle";
 
 /**
  * Reading the launched server: patients, their responses, and the request Tasks this app

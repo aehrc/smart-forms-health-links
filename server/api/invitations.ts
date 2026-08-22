@@ -32,6 +32,7 @@ import { defaultLabel } from "../../src/link/codec";
 import {
   buildInvitationBundle,
   invitationRequesterDisplay,
+  asPublishedTask,
 } from "../../src/link/invitationBundle";
 import { KEY_BYTES, encryptJwe, keyToBase64Url } from "../../src/link/jwe";
 import { findIssuerRegistration } from "../config";
@@ -353,9 +354,16 @@ export const invitationRoutes: FastifyPluginCallback = (
       });
     }
 
+    /*
+     * Published through `asPublishedTask`, which does two things the embedded copy must not.
+     * It stamps the tag `/requests` searches on - without it a request lands on the server and
+     * never appears as sent - and it drops `focus`, which named the Questionnaire by canonical.
+     * That reference is right inside the invitation Bundle, which carries the Questionnaire with
+     * it, and dangling on a server that may not hold the definition.
+     */
     const taskUrl = await publishTask(
       session,
-      JSON.stringify(toPublish.task),
+      JSON.stringify(asPublishedTask(toPublish.task)),
       request.log,
     );
     if (typeof taskUrl !== "string") {

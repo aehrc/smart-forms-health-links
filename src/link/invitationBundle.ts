@@ -134,3 +134,59 @@ export function invitationRequesterDisplay(
   }
   return undefined;
 }
+
+/**
+ * Marks a Task on the EHR as a request this app sent, so sent requests can be listed back.
+ *
+ * A tag rather than a naming convention because it is searchable:
+ * `Task?_tag=…|shl-form-request` returns exactly our requests and nothing else on a server shared
+ * with other tools. `/requests` is built entirely on that search, so a Task published without this
+ * tag lands on the server and never appears as sent.
+ */
+export const SHL_REQUEST_TAG = {
+  system: "http://smartforms.csiro.au/CodeSystem/shl-request",
+  code: "shl-form-request",
+  display: "Form request sent as a SMART Health Link",
+} as const;
+
+/**
+ * The server-storable form of a request Task.
+ *
+ * Two deliberate differences from the copy inside the invitation, and both are about what a
+ * reference means once the Bundle is taken apart.
+ *
+ *  - **No `focus`.** The invitation names the Questionnaire by canonical, which is the only form
+ *    that still means anything to a filler holding the Bundle. FHIR servers will not store that as
+ *    a `Reference`:
+ *
+ *      HAPI-0506: Invalid resource reference found at path[Task.focus] - Resource type is unknown
+ *                 or not supported on this server - http://example.org/Q/probe|1.0
+ *
+ *    So the published copy drops it and relies on `input[].valueCanonical`, which is a `canonical`
+ *    rather than a `Reference` and stores fine. The return leg makes the same split.
+ *  - **No extensions.** The invitation's copy carries the published Task's own URL, and any
+ *    return-channel descriptor a third-party producer declared. A Task cannot cite its own address
+ *    before that address exists, and a capability on a resource whose purpose is to be read is a
+ *    capability handed to every reader.
+ *
+ * It lives beside {@link buildInvitationBundle} because it is the same Task in its other form, and
+ * because both the browser and the server need it: the server publishes through it when minting an
+ * invitation, and `check:roundtrip` asserts its shape.
+ * @param task the request Task as the invitation carries it
+ * @returns the copy to write to the launched server
+ * @example
+ * await publishTask(session, JSON.stringify(asPublishedTask(task)));
+ */
+export function asPublishedTask(task: Task): Task {
+  const rest = { ...task };
+  delete rest.focus;
+  delete rest.extension;
+
+  return {
+    ...rest,
+    meta: {
+      ...task.meta,
+      tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }],
+    },
+  };
+}

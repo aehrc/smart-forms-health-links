@@ -1,7 +1,6 @@
 {
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
   "linkBaseUrl": null,
-  "linkCodec": "shl",
   "senderName": null,
   "linkLifetimeDays": 30
 }

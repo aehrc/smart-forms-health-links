@@ -22,8 +22,6 @@ import { QRMedicalHistoryCurrentProblems } from "../../smart-forms/packages/sdc-
 import { QRRegularMedications } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRRegularMedications";
 import { QRSepsisRisk } from "../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRSepsisRisk";
 import {
-  SHL_REQUEST_TAG,
-  asPublishedTask,
   declareResponseEndpoint,
   declaredEndpoints,
   referenceResolves,
@@ -31,11 +29,7 @@ import {
   submitResponse,
 } from "../src/fhir/submit";
 import { flattenAnswers } from "../src/lib/answerRows";
-import {
-  FALLBACK_CONFIG,
-  isAppConfig,
-  type AppConfig,
-} from "../src/lib/config";
+import { FALLBACK_CONFIG, isAppConfig } from "../src/lib/config";
 import {
   findRequestForTask,
   mergeSentRequests,
@@ -51,7 +45,6 @@ import {
 import {
   PasscodeRequiredError,
   bundleResponse,
-  encodingCodec,
   extractFragment,
   responseFromBundle,
 } from "../src/link/codec";
@@ -63,7 +56,11 @@ import {
   responseCanonical,
   taskCorrelationId,
 } from "../src/link/exchange";
-import { buildInvitationBundle } from "../src/link/invitationBundle";
+import {
+  SHL_REQUEST_TAG,
+  asPublishedTask,
+  buildInvitationBundle,
+} from "../src/link/invitationBundle";
 import {
   decryptJwe,
   encryptJwe,
@@ -112,6 +109,9 @@ let total = 0;
 /**
  * Report every assertion, pass or fail. A silently-skipped check is indistinguishable from a
  * passing one, so the count is part of the result.
+ * @param name the label printed for the assertion
+ * @param condition the assertion result; a false value counts a failure
+ * @param detail extra context appended to the printed line, if any
  */
 function check(name: string, condition: boolean, detail = "") {
   total++;
@@ -332,7 +332,6 @@ const store = {
 
 /**
  * The URL a `fetch` argument names, in whichever of its three forms it arrived.
- *
  * @param input the first argument handed to `fetch`
  * @returns the URL as a string
  */
@@ -465,7 +464,13 @@ check("shl/expiredRejected", expiryRejected);
 
 console.log("\nforeign response links\n");
 
-/** Host a JWE of `content` under `key` and mint the `shlink:` fragment that points at it. */
+/**
+ * Host a JWE of `content` under `key` and mint the `shlink:` fragment that points at it.
+ * @param content the value serialised as JSON and encrypted into the hosted file
+ * @param key the symmetric key used for both the JWE and the link's `key` field
+ * @param extra further fields merged into the `shlink:` payload, such as `flag`
+ * @returns the hosted file's URL and the `shlink:` fragment that points at it
+ */
 async function hostShl(
   content: unknown,
   key: Uint8Array,
@@ -569,7 +574,11 @@ const manifestLink = `#shlink:/${toBase64Url(
   ),
 )}`;
 
-/** Encrypt `content` under the foreign key and host it, returning just the URL. */
+/**
+ * Encrypt `content` under the foreign key and host it, returning just the URL.
+ * @param content the resource or Bundle to place in a single hosted file
+ * @returns the URL of the hosted file
+ */
 const hostFile = async (content: unknown) => {
   const hosted = await hostShl(content, foreignKey);
   return hosted.url;
@@ -1244,7 +1253,11 @@ check("descriptor/unexpiredIsUsable", !isReplyDescriptorExpired(descriptor));
 
 console.log("\nplatypus detection contract\n");
 
-/** Verbatim port of Platypus's `questionnaireRefFromTask`. */
+/**
+ * Verbatim port of Platypus's `questionnaireRefFromTask`.
+ * @param task the invitation Task to search for a Questionnaire reference
+ * @returns the Questionnaire reference, or `undefined` if the Task names none
+ */
 function questionnaireRefFromTask(task: Task): string | undefined {
   const focus = task.focus?.reference;
   if (focus && /questionnaire/i.test(focus)) return focus;
@@ -1267,7 +1280,12 @@ function questionnaireRefFromTask(task: Task): string | undefined {
   return undefined;
 }
 
-/** Verbatim port of Platypus's `refMatchesQuestionnaire` + `taskTargetsQuestionnaire`. */
+/**
+ * Verbatim port of Platypus's `refMatchesQuestionnaire` + `taskTargetsQuestionnaire`.
+ * @param task the invitation Task whose Questionnaire reference is under test
+ * @param q the Questionnaire the Task must name, by `url` or by `id`
+ * @returns whether the Task names that Questionnaire
+ */
 function taskTargetsQuestionnaire(task: Task, q: Questionnaire): boolean {
   const matches = (ref: string | undefined) => {
     if (!ref) return false;
@@ -1909,46 +1927,36 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// Neither codec mints any more, and each declines for its own reason: `sfhl:/` was retired, and
-// `shlink:/` needs a host that is now the BFF. Both still open links in the wild.
+// Each direction has exactly one transport, and neither is chosen by configuration. An invitation
+// is minted by the BFF, which hosts it (`shlink:/`, no `encode` in the browser at all); a return
+// is minted here and hosted nowhere (`sfhl:/`, inline). Reading accepts both, always.
 
 console.log("\ncodec selection\n");
 
-check("bespoke/markedDecodeOnly", bespokeCodec.decodeOnly === true);
-check("shl/notMarkedDecodeOnly", shlCodec.decodeOnly !== true);
-
-let bespokeEncodingRefused = "";
-try {
-  encodingCodec({ ...FALLBACK_CONFIG, linkCodec: "bespoke" } as AppConfig, [
-    bespokeCodec,
-    shlCodec,
-  ]);
-} catch (error) {
-  bespokeEncodingRefused = error instanceof Error ? error.message : "";
-}
 check(
-  "bespoke/notSelectableForEncoding",
-  bespokeEncodingRefused.includes("decode-only") &&
-    bespokeEncodingRefused.includes("linkCodec"),
-  bespokeEncodingRefused,
-);
-
-let shlEncodingRefused = "";
-try {
-  encodingCodec(FALLBACK_CONFIG, [bespokeCodec, shlCodec]);
-} catch (error) {
-  shlEncodingRefused = error instanceof Error ? error.message : "";
-}
-check(
-  "shl/refusedForEncodingWithAReason",
-  shlEncodingRefused.includes("hosted") &&
-    shlEncodingRefused.includes("linkCodec"),
-  shlEncodingRefused,
+  "bespoke/mintsInline",
+  typeof bespokeCodec.encode === "function",
+  "the filler's return leg has no host, so its transport must mint without one",
 );
 check(
-  "bespoke/staleConfigStillValidates",
+  "shl/doesNotMintInTheBrowser",
+  shlCodec.encode === undefined,
+  "hosting an SHL belongs to the server; the browser asks `POST /api/invitations`",
+);
+check(
+  "codecs/bothStillDecode",
+  bespokeCodec.canDecode("sfhl:/abc") && shlCodec.canDecode("shlink:/abc"),
+);
+check(
+  "config/namesNoCodec",
+  !JSON.stringify(shippedConfig).includes("linkCodec") &&
+    !JSON.stringify(FALLBACK_CONFIG).includes("linkCodec"),
+  "nothing selects a codec by configuration any more",
+);
+check(
+  "config/staleCodecKeyStillValidates",
   isAppConfig({ ...(shippedConfig as object), linkCodec: "bespoke" }),
-  "a config naming a retired codec is stale, not malformed — rejecting it would discard its servers",
+  "a config left over from when the key existed is stale, not malformed - rejecting it would discard its servers",
 );
 
 // ---------------------------------------------------------------------------

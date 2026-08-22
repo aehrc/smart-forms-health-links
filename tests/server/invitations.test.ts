@@ -283,6 +283,43 @@ describe("minting an invitation", () => {
       expect(publishedTask().extension).toBeUndefined();
     });
 
+    /*
+     * The tag is how the requester finds its own requests again. `/requests` searches the launched
+     * server for `Task?_tag=…|shl-form-request`, so a published Task without it is invisible to
+     * the surface that exists to list it - the request would land on the server and never appear
+     * as sent (spec US1 acceptance, quickstart scenario 1).
+     */
+    it("tags the published Task as a request this app sent", async () => {
+      insertSession();
+
+      await mint();
+
+      expect(publishedTask().meta?.tag).toEqual([
+        {
+          system: "http://smartforms.csiro.au/CodeSystem/shl-request",
+          code: "shl-form-request",
+          display: "Form request sent as a SMART Health Link",
+        },
+      ]);
+    });
+
+    /*
+     * `focus` named the Questionnaire by canonical, which is right inside the invitation Bundle
+     * that carries the Questionnaire with it. On the launched server it would point at a
+     * definition that server may not hold; `input[].valueCanonical` records the same fact without
+     * the dangling reference.
+     */
+    it("publishes a Task with no dangling focus", async () => {
+      insertSession();
+
+      await mint();
+
+      expect(publishedTask().focus).toBeUndefined();
+      expect(publishedTask().input?.[0]?.valueCanonical).toBe(
+        "http://example.org/Questionnaire/715|1.2.0",
+      );
+    });
+
     // The Task must be addressable on the issuer, whatever the server's Location header says.
     it("derives the published Task URL from the issuer base and the created id", async () => {
       insertSession();
