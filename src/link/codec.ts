@@ -1,3 +1,4 @@
+import type { ReceivedGrant } from "./apiAccess";
 import type { AppConfig, LinkCodecId } from "@/lib/config";
 import type {
   Bundle,
@@ -33,6 +34,17 @@ export interface LinkContent {
    * that is not on screen must not be discoverable only from the console.
    */
   warnings?: string[];
+
+  /**
+   * The API access grant the link's manifest carried, when it carried a well-formed one.
+   *
+   * Beside the payload, never inside it. A grant is a capability rather than content: it names a
+   * destination the answers may be written to directly (`contracts/shl-wire.md`), and merging it
+   * into {@link LinkContent.bundle} would put a bearer token in the Bundle the form is built
+   * from. Absent for every transport that is not a manifest, and absent whenever the grant file
+   * was malformed - which is treated as carrying no grant, never as an error (FR-020).
+   */
+  apiAccess?: ReceivedGrant;
 }
 
 /** Options a reader may supply when opening a link. */
@@ -42,6 +54,25 @@ export interface DecodeOptions {
 
   /** Names the reader in the manifest request body, per the spec's `recipient` field. */
   recipient?: string;
+}
+
+/**
+ * The message a passcode prompt carries, given what has already been tried.
+ *
+ * @param options what the manifest server said about the passcode
+ * @returns a sentence to show the reader
+ */
+function passcodeMessage(options: {
+  remainingAttempts?: number;
+  wasAttempted: boolean;
+}): string {
+  if (!options.wasAttempted) {
+    return "This link requires a passcode.";
+  }
+
+  return options.remainingAttempts === undefined
+    ? "Incorrect passcode."
+    : `Incorrect passcode. ${options.remainingAttempts} attempt(s) remaining.`;
 }
 
 /**
@@ -60,13 +91,7 @@ export class PasscodeRequiredError extends Error {
    *
    */
   constructor(options: { remainingAttempts?: number; wasAttempted: boolean }) {
-    super(
-      options.wasAttempted
-        ? options.remainingAttempts === undefined
-          ? "Incorrect passcode."
-          : `Incorrect passcode. ${options.remainingAttempts} attempt(s) remaining.`
-        : "This link requires a passcode.",
-    );
+    super(passcodeMessage(options));
 
     this.name = "PasscodeRequiredError";
     this.remainingAttempts = options.remainingAttempts;

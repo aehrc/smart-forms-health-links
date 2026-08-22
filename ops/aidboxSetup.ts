@@ -81,9 +81,17 @@ const LAUNCH_SCOPES = [
   "user/*.cruds",
 ];
 
-/** Scopes the backend client is allowed: create a response, read and update the Task. */
+/**
+ * Scopes the backend client is allowed: create the response and its provenance, read and update
+ * the Task.
+ *
+ * The provenance create is not optional. FR-021 requires the transaction to carry a provenance
+ * naming the patient as author, and Aidbox authorises each transaction entry as its own request,
+ * so a grant that can create the response but not its attribution fails every send at entry[1].
+ */
 const BACKEND_SCOPES = [
   "system/QuestionnaireResponse.c",
+  "system/Provenance.c",
   "system/Task.r",
   "system/Task.u",
 ];
@@ -416,17 +424,21 @@ export function buildLaunchPolicy(): AidboxResource {
 }
 
 /**
- * Build the backend client's AccessPolicy: a transaction, and a Task read or update.
+ * Build the backend client's AccessPolicy: a transaction, its two creates, and a Task read or
+ * update.
  *
- * Two alternatives rather than one wildcard, because the accepted blast radius of a leaked
+ * Enumerated alternatives rather than one wildcard, because the accepted blast radius of a leaked
  * grant is exactly what this policy bounds (FR-015). `$one-of` is the only key in its object:
  * matcho forbids combining it with siblings, so the client match is repeated inside each
  * alternative.
  *
  * Aidbox authorises each transaction *entry* as its own request as well as the enclosing
- * `POST /fhir`, so the entry that creates the response needs its own alternative. Verified
- * 2026-08-22 against the target instance: without it the transaction fails with
- * "Transaction failed at entry[0]. Response status is 403."
+ * `POST /fhir`, so every resource the transaction creates needs its own alternative. Verified
+ * against the target instance: without the response create the transaction fails with
+ * "Transaction failed at entry[0]. Response status is 403" (2026-08-22), and without the
+ * provenance create with the same message at `entry[1]` (2026-08-22, during the first live
+ * send). The provenance is not an optional extra - FR-021 requires it - so both creates are
+ * part of what a grant has to be able to do.
  * @returns the `AccessPolicy` body to `PUT` at
  *   `/AccessPolicy/smart-forms-health-links-backend-policy`
  * @example
@@ -450,6 +462,11 @@ export function buildBackendPolicy(): AidboxResource {
           client: { id: BACKEND_CLIENT_ID },
           "request-method": "post",
           uri: "/fhir/QuestionnaireResponse",
+        },
+        {
+          client: { id: BACKEND_CLIENT_ID },
+          "request-method": "post",
+          uri: "/fhir/Provenance",
         },
         {
           client: { id: BACKEND_CLIENT_ID },

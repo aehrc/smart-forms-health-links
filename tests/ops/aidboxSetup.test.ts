@@ -221,6 +221,7 @@ describe("backend services client body", () => {
       },
       scope: [
         "system/QuestionnaireResponse.c",
+        "system/Provenance.c",
         "system/Task.r",
         "system/Task.u",
       ],
@@ -285,10 +286,17 @@ describe("access policies", () => {
     expect(matcho.jwt).toEqual({ sub: "present?", scope: "present?" });
   });
 
-  // The backend client may run a transaction, create the response the transaction carries,
-  // and read or update a Task. Nothing else. Aidbox authorises each transaction entry as its
-  // own request, which is why the response create needs an alternative of its own.
-  it("limits the backend policy to the transaction, the response and Task instances", () => {
+  /*
+   * The backend client may run a transaction, create the two resources the transaction carries,
+   * and read or update a Task. Nothing else. Aidbox authorises each transaction entry as its own
+   * request, which is why the creates need alternatives of their own.
+   *
+   * The Provenance alternative was added after a live send failed with "Transaction failed at
+   * entry[1]. Response status is 403": the attribution entry is not optional - FR-021 requires a
+   * provenance naming the patient as author - so a policy that admits the response but not its
+   * provenance rejects every send.
+   */
+  it("limits the backend policy to the transaction, its two creates and Task instances", () => {
     const policy = buildBackendPolicy();
 
     expect(policy.id).toBe(BACKEND_POLICY_ID);
@@ -307,6 +315,11 @@ describe("access policies", () => {
           client: { id: BACKEND_CLIENT_ID },
           "request-method": "post",
           uri: "/fhir/QuestionnaireResponse",
+        },
+        {
+          client: { id: BACKEND_CLIENT_ID },
+          "request-method": "post",
+          uri: "/fhir/Provenance",
         },
         {
           client: { id: BACKEND_CLIENT_ID },

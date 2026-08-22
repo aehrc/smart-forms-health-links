@@ -1,3 +1,4 @@
+import { GRANT_CONTENT_TYPE, parseGrant } from "./apiAccess";
 import { decodeUtf8, fromBase64Url } from "./binary";
 import {
   bundleFromJson,
@@ -7,6 +8,7 @@ import {
 } from "./codec";
 import { decryptJwe, keyFromBase64Url } from "./jwe";
 
+import type { ReceivedGrant } from "./apiAccess";
 import type { DecodeOptions, LinkCodec, LinkContent } from "./codec";
 import type { Bundle } from "fhir/r4";
 
@@ -214,15 +216,50 @@ async function readManifestFile(
 }
 
 /**
- * Whether a manifest file holds FHIR JSON.
+ * A content type without its parameters.
  *
- * Compared after stripping any `;charset=…` parameter, because `application/fhir+json;charset=utf-8`
- * is the same content type and a strict equality check silently discards it.
+ * `application/fhir+json;charset=utf-8` is the same content type as `application/fhir+json`, and a
+ * strict equality check silently discards it.
+ * @param contentType the content type as the manifest declared it
+ * @returns the type and subtype, lower-cased
  */
-function isFhirJson(contentType: string | undefined): boolean {
-  return (
-    (contentType ?? "").split(";", 1)[0].trim().toLowerCase() === FHIR_JSON
-  );
+function baseContentType(contentType: string | undefined): string {
+  return (contentType ?? "").split(";", 1)[0].trim().toLowerCase();
+}
+
+/**
+ * Read the API access grant, when the manifest carried one.
+ *
+ * Everything here is a tolerance rule rather than a failure path. A grant is a capability, not
+ * content: a filler that cannot read one simply has no direct channel and returns the answers as
+ * a link instead, so an undecryptable or malformed grant file yields *no grant* and no warning
+ * (FR-020). A warning would be worse than silence - it would tell the person filling the form
+ * about a file they cannot act on, when the absence of the send affordance already says
+ * everything there is to say.
+ * @param files the manifest's files
+ * @param key the link key
+ * @returns the grant with the moment it was read, or undefined when there is none to have
+ */
+async function readManifestGrant(
+  files: ManifestFile[],
+  key: Uint8Array,
+): Promise<ReceivedGrant | undefined> {
+  for (const file of files) {
+    if (baseContentType(file.contentType) !== GRANT_CONTENT_TYPE) {
+      continue;
+    }
+
+    try {
+      const grant = parseGrant(await readManifestFile(file, key));
+      if (grant) {
+        return { grant, receivedAt: Date.now() };
+      }
+    } catch {
+      // A grant that will not decrypt is a grant this reader does not have. Nothing to say.
+    }
+  }
+
+  return undefined;
 }
 
 function describeError(cause: unknown): string {
@@ -236,14 +273,24 @@ function describeError(cause: unknown): string {
  * did. One corrupt file in a five-file manifest must not hide the answers in the other four — but a
  * manifest where everything failed has to be an error, or the caller gets an empty Bundle and
  * reports "no answers" for what is really a broken link.
+ *
+ * The grant file is dispatched away from here by content type before anything is read. It is not
+ * a file "this app cannot render as a form" - it is not content at all - so counting it as
+ * skipped would report a healthy two-file manifest as partially unreadable, and feeding it to
+ * {@link bundleFromJson} would put a bearer token in the Bundle the form is built from.
  */
 async function readManifestBundle(
   files: ManifestFile[],
   key: Uint8Array,
 ): Promise<{ bundle: Bundle; warnings: string[] }> {
   const warnings: string[] = [];
+  const payload = files.filter(
+    (file) => baseContentType(file.contentType) !== GRANT_CONTENT_TYPE,
+  );
 
-  const skipped = files.filter((file) => !isFhirJson(file.contentType));
+  const skipped = payload.filter(
+    (file) => baseContentType(file.contentType) !== FHIR_JSON,
+  );
   if (skipped.length > 0) {
     warnings.push(
       `Ignored ${skipped.length} file(s) this app cannot render as a form: ` +
@@ -251,9 +298,11 @@ async function readManifestBundle(
     );
   }
 
-  const fhirFiles = files.filter((file) => isFhirJson(file.contentType));
+  const fhirFiles = payload.filter(
+    (file) => baseContentType(file.contentType) === FHIR_JSON,
+  );
   if (fhirFiles.length === 0) {
-    const seen = files.map((file) => file.contentType).join(", ") || "none";
+    const seen = payload.map((file) => file.contentType).join(", ") || "none";
     throw new Error(
       `This link contains no FHIR content that can be rendered as a form (content types: ${seen}).`,
     );
@@ -323,14 +372,19 @@ export const shlCodec: LinkCodec = {
       throw new PasscodeRequiredError({ wasAttempted: false });
     }
 
-    const { bundle, warnings } = await readManifestBundle(
-      await fetchManifest(payload, options),
-      key,
-    );
+    /*
+     * One fetch, two readings. The manifest is retrieved once and both the payload and the grant
+     * are read out of the same file list: a second fetch would mint a second grant on the
+     * producer's side (`server/shl/manifest.ts` mints per fetch), leaving the filler holding a
+     * token the destination has no reason to honour more than once.
+     */
+    const files = await fetchManifest(payload, options);
+    const { bundle, warnings } = await readManifestBundle(files, key);
     return {
       bundle,
       label: payload.label,
       warnings: warnings.length > 0 ? warnings : undefined,
+      apiAccess: await readManifestGrant(files, key),
     };
   },
 };

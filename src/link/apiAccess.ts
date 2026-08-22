@@ -39,8 +39,14 @@ export interface ApiAccessGrant {
   readonly access_token: string;
   /** Always `Bearer`; a token this app cannot present that way is not stated as a grant. */
   readonly token_type: "Bearer";
-  /** Stated lifetime in seconds. */
-  readonly expires_in: number;
+  /**
+   * Stated lifetime in seconds.
+   *
+   * Optional because a *consumer* may legitimately hold a grant that states none: the contract
+   * reads a missing or absurd `expires_in` as "no stated expiry", which is a working grant
+   * rather than an expired one. {@link buildGrant} always states one.
+   */
+  readonly expires_in?: number;
   /** The launched server's FHIR base URL: where, and only where, the token may be presented. */
   readonly aud: string;
   /** The destination patient, present only when the request named one. */
@@ -118,4 +124,160 @@ export function buildGrant(options: GrantOptions): ApiAccessGrant | undefined {
     aud,
     ...(patientId === null ? {} : { patient: patientId }),
   };
+}
+
+/**
+ * A grant as it arrived, together with the moment it arrived.
+ *
+ * The pairing is the whole of the expiry rule. `expires_in` is a duration, not an instant, so
+ * the only honest window is measured from when the manifest was read on *this* device - never by
+ * comparing a local clock with the issuer's (FR-025). Carrying the two together makes it
+ * impossible to compute a window without saying which reading it came from.
+ */
+export interface ReceivedGrant {
+  /** The grant, as parsed. */
+  readonly grant: ApiAccessGrant;
+  /** Epoch milliseconds at which the manifest carrying it was read. */
+  readonly receivedAt: number;
+}
+
+/**
+ * An `https` URL, or nothing.
+ *
+ * Separate from the parse below because it is the same question asked in two places, and because
+ * it is the one guard whose failure has a security consequence rather than a usability one: `aud`
+ * is where a bearer token gets presented, so `http` here means handing the token to whoever is on
+ * the path.
+ * @param value the candidate, straight off the wire
+ * @returns the parsed URL when it is a syntactically valid `https` URL, otherwise undefined
+ */
+function httpsUrl(value: unknown): URL | undefined {
+  if (typeof value !== "string" || value.trim() === "") {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read a grant file's plaintext, applying the contract's tolerance rules.
+ *
+ * Every rejection below returns undefined rather than throwing, and the difference matters: a
+ * filler holding an unusable grant has no direct channel, which is a state it already handles by
+ * offering the scan-back return. A filler holding an *exception* has no form (FR-020).
+ *
+ * The one rule that is easy to invert is `expires_in`. A missing or absurd lifetime means "no
+ * stated expiry", not "expired": the grant is kept and offered until the destination refuses it.
+ * Reading it the other way round would close a working channel on a technicality.
+ *
+ * Only the five members the contract defines survive. Anything else in the file is something no
+ * filler has agreed to interpret, and carrying it forward would invite exactly that.
+ * @param plaintext the decrypted grant file
+ * @returns the grant, or undefined when the file is to be treated as carrying none
+ * @example
+ * const grant = parseGrant(await readManifestFile(file, key));
+ */
+export function parseGrant(plaintext: string): ApiAccessGrant | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plaintext);
+  } catch {
+    return undefined;
+  }
+
+  // Arrays are objects to `typeof`, and an array is not a grant.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const candidate = parsed as Record<string, unknown>;
+
+  const accessToken = candidate.access_token;
+  if (typeof accessToken !== "string" || accessToken.trim() === "") {
+    return undefined;
+  }
+
+  const tokenType = candidate.token_type;
+  if (
+    typeof tokenType !== "string" ||
+    tokenType.trim().toLowerCase() !== BEARER.toLowerCase()
+  ) {
+    return undefined;
+  }
+
+  const aud = candidate.aud;
+  if (httpsUrl(aud) === undefined) {
+    return undefined;
+  }
+
+  const expiresIn = candidate.expires_in;
+  const stated =
+    typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0
+      ? Math.floor(expiresIn)
+      : undefined;
+
+  const patient = candidate.patient;
+
+  return {
+    access_token: accessToken,
+    token_type: BEARER,
+    ...(stated === undefined ? {} : { expires_in: stated }),
+    // Kept verbatim rather than as `URL.href`, which would normalise a base URL's trailing slash.
+    aud: (aud as string).trim(),
+    ...(typeof patient === "string" && patient.trim() !== ""
+      ? { patient: patient.trim() }
+      : {}),
+  };
+}
+
+/**
+ * The host a grant's answers will be sent to.
+ *
+ * The host rather than the whole URL, because this is what a disclosure has to name (FR-020) and
+ * `https://kuzfdswqmz.edge.aidbox.app/fhir` is not something a person can read as a destination.
+ * @param grant the grant
+ * @returns the destination's host, e.g. `ehr.example.org`
+ * @example
+ * `Answers will be sent to ${destinationHost(grant)}.`;
+ */
+export function destinationHost(grant: ApiAccessGrant): string {
+  return httpsUrl(grant.aud)?.host ?? grant.aud;
+}
+
+/**
+ * When a grant's stated window closes.
+ * @param received the grant and the moment it was received
+ * @returns epoch milliseconds, or undefined when the grant stated no expiry
+ * @example
+ * const closesAt = grantExpiresAt(received);
+ */
+export function grantExpiresAt(received: ReceivedGrant): number | undefined {
+  const { expires_in: expiresIn } = received.grant;
+  return expiresIn === undefined
+    ? undefined
+    : received.receivedAt + expiresIn * 1000;
+}
+
+/**
+ * Whether a grant's stated window has closed.
+ *
+ * False for a grant that stated no window. That is not optimism: there is nothing to have
+ * expired, and the only authority on whether such a token still works is the destination, which
+ * says so by refusing it.
+ * @param received the grant and the moment it was received
+ * @param now epoch milliseconds to judge against; defaults to the current time
+ * @returns true only when the grant stated a window and that window has passed
+ * @example
+ * if (isGrantExpired(received)) { … }
+ */
+export function isGrantExpired(
+  received: ReceivedGrant,
+  now = Date.now(),
+): boolean {
+  const closesAt = grantExpiresAt(received);
+  return closesAt !== undefined && now > closesAt;
 }

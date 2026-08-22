@@ -26,6 +26,10 @@
  */
 import { createServer } from "node:http";
 
+import {
+  fetchQuestionnaireByCanonical,
+  searchQuestionnaires,
+} from "../src/fhir/formsServer";
 import { buildGrant, GRANT_CONTENT_TYPE } from "../src/link/apiAccess";
 import { decodeUtf8, encodeUtf8 } from "../src/link/binary";
 import { questionnaireCanonical } from "../src/link/codec";
@@ -48,14 +52,8 @@ import { chooseErrorCorrectionLevel } from "../src/link/qrCapacity";
 import { parseServerTaskUrl } from "../src/link/replyDescriptor";
 import { shlCodec } from "../src/link/shlCodec";
 
-import {
-  fetchQuestionnaireByCanonical,
-  searchQuestionnaires,
-} from "../src/fhir/formsServer";
-
-import type { AddressInfo } from "node:net";
-
 import type { QuestionnaireResponse } from "fhir/r4";
+import type { AddressInfo } from "node:net";
 
 /** Read-only catalogue the form comes from. Never written to. */
 const FORMS_SERVER = "https://smartforms.csiro.au/api/fhir";
@@ -185,7 +183,7 @@ const grant = buildGrant({
   tokenType: "Bearer",
   expiresIn: 3600,
   aud: ISSUER,
-  patientId: SUBJECT_REFERENCE.split("/")[1],
+  patientId: SUBJECT_REFERENCE.split("/", 2)[1],
   grantTtlSeconds: 3600,
 });
 if (!grant) {
@@ -312,27 +310,47 @@ check(
 );
 
 /*
- * The current reader extracts FHIR files and reports the rest. Surfacing the grant beside the
- * payload rather than as a skipped file is Phase 5 (T037); until then the correct behaviour is
- * to say what was ignored rather than to drop it silently.
+ * The reader dispatches the grant out of the manifest and hands it back beside the payload rather
+ * than reporting it as a file it skipped (T037). Beside, never inside: a bearer token must not end
+ * up in the Bundle the form is built from.
  */
 check(
-  "filler/reportsTheFileItDoesNotYetRead",
-  (opened.warnings ?? []).some((warning) =>
+  "filler/surfacesTheGrantBesideThePayload",
+  opened.apiAccess?.grant.aud === ISSUER &&
+    opened.apiAccess.grant.patient === "e2e-subject" &&
+    opened.apiAccess.grant.token_type === "Bearer" &&
+    opened.apiAccess.grant.expires_in === 3600 &&
+    typeof opened.apiAccess.receivedAt === "number",
+  JSON.stringify({
+    grant: { ...opened.apiAccess?.grant, access_token: "<redacted>" },
+    receivedAt: opened.apiAccess?.receivedAt,
+  }),
+);
+check(
+  "filler/doesNotReportTheGrantAsSkipped",
+  !(opened.warnings ?? []).some((warning) =>
     warning.includes(GRANT_CONTENT_TYPE),
   ),
   (opened.warnings ?? []).join(" | "),
 );
+check(
+  "filler/keepsTheTokenOutOfThePayload",
+  !JSON.stringify(opened.bundle).includes(
+    opened.apiAccess?.grant.access_token ?? "\u0000",
+  ),
+  "a bearer token in the Bundle would travel wherever the answers travel",
+);
 
 console.log("\n--- filler: the grant ---");
 
-const manifest = (await (
-  await fetch(manifestUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ recipient: "Smart Forms Health Links" }),
-  })
-).json()) as { files: { contentType: string; embedded: string }[] };
+const manifestResponse = await fetch(manifestUrl, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ recipient: "Smart Forms Health Links" }),
+});
+const manifest = (await manifestResponse.json()) as {
+  files: { contentType: string; embedded: string }[];
+};
 
 check(
   "grant/manifestHasTwoFiles",
@@ -342,7 +360,7 @@ check(
 
 const grantJwe = manifest.files[1].embedded;
 const grantHeader = JSON.parse(
-  Buffer.from(grantJwe.split(".")[0], "base64url").toString(),
+  Buffer.from(grantJwe.split(".", 1)[0], "base64url").toString(),
 ) as Record<string, string>;
 check(
   "grant/headerDeclaresItsType",

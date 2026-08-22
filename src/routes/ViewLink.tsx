@@ -1,8 +1,14 @@
+import {
+  getResponse,
+  removeEmptyAnswersFromResponse,
+} from "@aehrc/smart-forms-renderer";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, KeyRound, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router-dom";
 
+import type { DirectSendTarget, SendStatus } from "@/fill/directSend";
+import type { ReceivedGrant } from "@/link/apiAccess";
 import type {
   Provenance,
   Questionnaire,
@@ -16,14 +22,25 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
-import { FHIR_PROXY_BASE } from "@/lib/session";
+import {
+  directSendTarget,
+  initialSendStatus,
+  sendDirect,
+  suppressesOtherChannels,
+} from "@/fill/directSend";
+import DirectSendPanel from "@/fill/DirectSendPanel";
 import {
   listRequests,
   updateRequest,
   type OutstandingRequest,
 } from "@/lib/requestStore";
 import { findRequestForTask } from "@/lib/sentRequests";
-import { PasscodeRequiredError, decodingCodec } from "@/link/codec";
+import { FHIR_PROXY_BASE } from "@/lib/session";
+import {
+  PasscodeRequiredError,
+  decodingCodec,
+  ensureQuestionnaireCanonical,
+} from "@/link/codec";
 import {
   isRequestBundle,
   parseRequestBundle,
@@ -45,10 +62,34 @@ import { LINK_CODECS } from "@/link/registry";
  * up here and stamped on save. And a link this app did not write may cite a form the launched
  * server does not hold - or is being opened by a filler with no session at all - so an unresolvable
  * Questionnaire degrades the display rather than failing the open.
+ *
+ * ## The direct return
+ *
+ * An invitation whose manifest carried an API access grant can take the answers straight to the
+ * clinic's own server, and that is what {@link DirectSendPanel} above the form is for. Three
+ * things about where it sits are deliberate.
+ *
+ * It is rendered *here* rather than inside {@link FillFromRequest} because it is a property of the
+ * link, not of the form: the grant arrived beside the payload and never enters the Bundle the form
+ * is built from. The answers are collected from the renderer's own store at send time - the same
+ * `getResponse()` that minting a response link uses - so nothing has to be threaded down and back.
+ *
+ * A successful send removes the form and the other return channels entirely
+ * ({@link suppressesOtherChannels}). FR-026 requires a terminal state that suppresses all further
+ * sends, and the honest way to do that is to stop offering them rather than to disable them.
+ *
+ * A grant that could not be read is simply absent, so nothing here changes: no panel, and the
+ * form and the scan-back return exactly as before (FR-020).
  */
 
 type Opened = { warnings?: string[]; label?: string } & (
-  | { mode: "request"; questionnaire: Questionnaire; task: Task }
+  | {
+      mode: "request";
+      questionnaire: Questionnaire;
+      task: Task;
+      /** The grant the manifest carried, when it carried a readable one. */
+      apiAccess?: ReceivedGrant;
+    }
   | {
       mode: "response";
       questionnaire?: Questionnaire;
@@ -77,6 +118,11 @@ async function openLink(
       task,
       label: content.label,
       warnings: content.warnings,
+      /*
+       * Only the request direction can use a grant. A response link opened here is the requester
+       * scanning answers back, and there is nothing left to send.
+       */
+      apiAccess: content.apiAccess,
     };
   }
 
@@ -159,6 +205,13 @@ export default function ViewLink() {
   });
   const passcode = attempt.fragment === fragment ? attempt.passcode : undefined;
 
+  /*
+   * Null means "nothing has been attempted", not "idle": the starting state depends on the grant,
+   * which is not known until the link has been read. It is derived below rather than written by an
+   * effect, so there is never a render where a closed window looks open.
+   */
+  const [attemptedSend, setAttemptedSend] = useState<SendStatus | null>(null);
+
   const {
     data: opened,
     isPending,
@@ -166,10 +219,9 @@ export default function ViewLink() {
   } = useQuery({
     queryKey: ["link", fragment, passcode ?? "", attempt.nonce],
     /*
-     * TODO(phase-5): T037-T039 rework this surface. The canonical resolution below reads through
-     * the session proxy, which is right for the requester scanning answers back, and unavailable
-     * to a filler who holds only a link - so an unresolvable Questionnaire has to keep degrading
-     * the display rather than failing the open, exactly as it already does.
+     * The canonical resolution below reads through the session proxy, which is right for the
+     * requester scanning answers back and unavailable to a filler who holds only a link - so an
+     * unresolvable Questionnaire degrades the display rather than failing the open.
      */
     queryFn: ({ signal }) =>
       openLink(fragment, FHIR_PROXY_BASE, { passcode, signal }),
@@ -224,6 +276,45 @@ export default function ViewLink() {
     );
   }
 
+  const target =
+    opened.mode === "request"
+      ? directSendTarget({ task: opened.task, apiAccess: opened.apiAccess })
+      : undefined;
+  const sendStatus =
+    target === undefined
+      ? undefined
+      : (attemptedSend ?? initialSendStatus(target.received));
+
+  /**
+   * Take the answers currently in the form straight to the destination.
+   *
+   * The answers are read from the renderer's store rather than passed in, because that store is
+   * where they live: the form is rendered by `FillFromRequest` below and the same `getResponse()`
+   * is what minting a response link uses. Empty and hidden answers are stripped first, and the
+   * questionnaire canonical stamped on, so the destination is told which form was answered.
+   * @param questionnaire the form that was answered
+   * @param sendTo the grant, the request identifier and the published Task URL
+   */
+  async function send(
+    questionnaire: Questionnaire,
+    sendTo: DirectSendTarget,
+  ): Promise<void> {
+    setAttemptedSend({ state: "sending" });
+    const answers = ensureQuestionnaireCanonical(
+      removeEmptyAnswersFromResponse(questionnaire, getResponse()),
+      questionnaire,
+    );
+    setAttemptedSend(
+      await sendDirect({
+        response: answers,
+        received: sendTo.received,
+        requestIdentifier: sendTo.requestIdentifier,
+        serverTaskUrl: sendTo.serverTaskUrl,
+        patientDisplay: sendTo.patientDisplay,
+      }),
+    );
+  }
+
   return (
     <div className="space-y-4">
       <BackLink />
@@ -240,11 +331,32 @@ export default function ViewLink() {
       ) : null}
 
       {opened.mode === "request" ? (
-        <FillFromRequest
-          questionnaire={opened.questionnaire}
-          task={opened.task}
-          label={opened.label}
-        />
+        <>
+          {target && sendStatus ? (
+            <DirectSendPanel
+              host={target.host}
+              status={sendStatus}
+              onSend={() => void send(opened.questionnaire, target)}
+            />
+          ) : null}
+
+          {/*
+           * Once the destination has the answers there is nothing further to return, so the form
+           * and every other channel go away rather than being left disabled (FR-026).
+           */}
+          {sendStatus && suppressesOtherChannels(sendStatus) ? null : (
+            <FillFromRequest
+              questionnaire={opened.questionnaire}
+              task={opened.task}
+              label={opened.label}
+              /*
+               * Suppresses the "this request also names a server, and this app does not write
+               * there" note, which stops being true the moment a grant makes it possible.
+               */
+              directSendOffered={target !== undefined}
+            />
+          )}
+        </>
       ) : (
         <ReviewResponse
           questionnaire={opened.questionnaire}

@@ -7,7 +7,7 @@ import FormRenderer from "@/components/FormRenderer";
 import ShareLinkPanel from "@/components/ShareLinkPanel";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useConfig } from "@/lib/ConfigContext";
+import { useConfig } from "@/lib/configContextValue";
 import {
   canCreateHealthLinks,
   createResponseLink,
@@ -20,6 +20,14 @@ export interface FillFromRequestProps {
   questionnaire: Questionnaire;
   task: Task;
   label?: string;
+  /**
+   * Whether the surface above is already offering to write the answers to the named server.
+   *
+   * When it is, this component must not also claim the app declines to write there - both
+   * statements cannot be true at once, and the one that contradicts what the buttons do is the
+   * one that misleads.
+   */
+  directSendOffered?: boolean;
 }
 
 /**
@@ -41,7 +49,7 @@ export interface FillFromRequestProps {
  * nothing further from the person filling the form.
  */
 export default function FillFromRequest(props: FillFromRequestProps) {
-  const { questionnaire, task, label } = props;
+  const { questionnaire, task, label, directSendOffered = false } = props;
   const config = useConfig();
 
   const [link, setLink] = useState<string | null>(null);
@@ -118,7 +126,12 @@ export default function FillFromRequest(props: FillFromRequestProps) {
         {sent ? null : (
           <div className="ml-auto flex flex-wrap gap-2">
             {channels.reply ? (
-              <Button onClick={handleSendSecurely} disabled={pending !== null}>
+              <Button
+                onClick={() => {
+                  void handleSendSecurely();
+                }}
+                disabled={pending !== null}
+              >
                 {pending === "reply" ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                 ) : (
@@ -131,7 +144,9 @@ export default function FillFromRequest(props: FillFromRequestProps) {
             ) : null}
             <Button
               variant={channels.reply ? "outline" : undefined}
-              onClick={handleReturn}
+              onClick={() => {
+                void handleReturn();
+              }}
               disabled={pending !== null || !canHost}
               title={
                 canHost
@@ -187,7 +202,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
         </Alert>
       ) : null}
 
-      {!sent && channels.serverTaskUrl ? (
+      {!sent && channels.serverTaskUrl && !directSendOffered ? (
         <Alert title="This request also names a server">
           Answers may be written directly to{" "}
           <span className="font-mono text-xs break-all">
