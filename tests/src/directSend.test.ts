@@ -249,11 +249,16 @@ describe("the direct send", () => {
       expect(status.state).toBe("idle");
     });
 
-    // Only `idle` and `failed` may start a send. Everything else is terminal or in flight.
+    /*
+     * Only `idle` and `failed` may start a send. Everything else is terminal, in flight, or - in
+     * the case of `checking` - waiting to hear whether the answers are already there, which is
+     * precisely a state a send must not be started from.
+     */
     it("permits a send only from idle and failed", () => {
       const permitted: Record<SendState, boolean> = {
         idle: true,
         failed: true,
+        checking: false,
         expired: false,
         sending: false,
         sent: false,
@@ -274,6 +279,7 @@ describe("the direct send", () => {
     it("suppresses every other channel once sent, and only then", () => {
       const states: SendState[] = [
         "idle",
+        "checking",
         "expired",
         "sending",
         "sent",
@@ -287,6 +293,8 @@ describe("the direct send", () => {
 
       expect(actual).toEqual({
         idle: false,
+        // A check in flight has delivered nothing, so the form and the scan-back return stay.
+        checking: false,
         expired: false,
         sending: false,
         sent: true,

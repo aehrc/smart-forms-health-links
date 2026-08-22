@@ -96,6 +96,21 @@ export default function DirectSendPanel(props: DirectSendPanelProps) {
     );
   }
 
+  /*
+   * The moment before the destination has said whether it already holds these answers. Showing a
+   * live send button here and withdrawing it a moment later is worse than showing nothing at all -
+   * someone reaches for it - so the affordance waits and the panel says what it is doing instead
+   * of leaving a blank space (Nielsen heuristic 1).
+   */
+  if (status.state === "checking") {
+    return (
+      <p className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+        Checking whether {host} already has these answers…
+      </p>
+    );
+  }
+
   if (status.state === "sending") {
     return (
       <p className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">

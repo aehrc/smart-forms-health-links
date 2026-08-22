@@ -1,5 +1,5 @@
 /**
- * Quickstart scenarios 1 and 3: the whole loop, then the same send again.
+ * Quickstart scenarios 1 and 3: the whole loop, the same send again, and the link reopened.
  *
  * This is the acceptance spec for US1 to US3 and for SC-001, SC-002 and SC-005. It runs two
  * browser contexts against the live instance - a signed-in requester and a filler holding
@@ -7,15 +7,25 @@
  * never has. The browser saying "accepted" and the server holding one labelled response are
  * different claims, and only the second one is the feature.
  *
- * ## What the re-send proves, and what it does not
+ * ## Where the second send comes from
  *
- * Scenario 3 replays the send by reopening the same link and sending again. Only the response
- * count is asserted afterwards, because that is the whole of SC-002: the response entry carries a
- * conditional-create key on the request identifier, so the second transaction resolves to the
- * response already stored. The Provenance entry carries no such key in
- * `contracts/shl-wire.md`, so a replay does leave a second Provenance. That is a documented
- * limitation, written up in `docs/aidbox-validation.md`; asserting one Provenance after the
- * replay would be asserting behaviour the wire contract does not specify, and changing the
+ * From a window that was already open when the first send went, not from a reopened link. The two
+ * are different requirements and this spec asserts both. SC-002 is about two transactions carrying
+ * the same request identifier leaving one response, and a form open on a second device is how
+ * that arises in practice (the spec's "manifest fetched concurrently by two devices" edge case).
+ * A *reopened* link is the separate edge case "the same invitation opened after the response was
+ * already sent": it reads the published Task, finds the answers already there, and shows the
+ * terminal sent state - so there is deliberately nothing there to send with, which is asserted at
+ * the end as a request count rather than only as a screen.
+ *
+ * ## What the second send proves, and what it does not
+ *
+ * Only the response count is asserted afterwards, because that is the whole of SC-002: the
+ * response entry carries a conditional-create key on the request identifier, so the second
+ * transaction resolves to the response already stored. The Provenance entry carries no such key
+ * in `contracts/shl-wire.md`, so a second send does leave a second Provenance. That is a
+ * documented limitation, written up in `docs/aidbox-validation.md`; asserting one Provenance
+ * afterwards would be asserting behaviour the wire contract does not specify, and changing the
  * transaction shape to get it would break the Platypus interop contract (FR-027, SC-008).
  * @author John Grimes
  */
@@ -38,6 +48,7 @@ import {
   chooseSubject,
   DEMO_PATIENT_ID,
   DEMO_PATIENT_NAME,
+  DEMO_QUESTIONNAIRE_TITLE,
   mintInvitation,
   openMintScreen,
   SEPSIS_TYPED_ANSWERS,
@@ -107,6 +118,17 @@ test("the full loop lands one labelled response, one provenance and a completed 
     filler.getByRole("button", { name: "Return answers as a link" }),
   ).toBeVisible();
 
+  /*
+   * A second window on the same invitation, opened and filled *before* the first send goes. It is
+   * the second half of SC-002, and it has to be opened now rather than later: a link opened after
+   * the answers are stored reads the published Task and shows the terminal sent state, so it
+   * offers nothing to send with (asserted at the end of this spec).
+   */
+  const second = await fillerContext.newPage();
+  await second.goto(invitation.link);
+  await awaitOpenedRequest(second, host);
+  await answerSepsisScreening(second);
+
   await answerSepsisScreening(filler);
   await sendAnswersDirectly(filler, host);
 
@@ -173,13 +195,14 @@ test("the full loop lands one labelled response, one provenance and a completed 
     )?.valueReference?.reference,
   ).toBe(`QuestionnaireResponse/${response.id ?? ""}`);
 
-  // ---- Scenario 3: send the same answers again (SC-002) ----
+  // ---- Scenario 3: the same answers sent twice (SC-002) ----
 
-  const replay = await fillerContext.newPage();
-  await replay.goto(invitation.link);
-  await awaitOpenedRequest(replay, host);
-  await answerSepsisScreening(replay);
-  await sendAnswersDirectly(replay, host);
+  /*
+   * The send from the window that was already open. Both transactions carry the same request
+   * identifier, and the response entry's conditional create is what makes the second one resolve
+   * to the response the first one stored.
+   */
+  await sendAnswersDirectly(second, host);
 
   const afterReplay = await byRequestIdentifier<QuestionnaireResponse>(
     environment,
@@ -188,4 +211,57 @@ test("the full loop lands one labelled response, one provenance and a completed 
   );
   expect(afterReplay).toHaveLength(1);
   expect(afterReplay[0].id).toBe(response.id);
+
+  // ---- The same invitation, opened again (the "already sent" edge case) ----
+
+  /*
+   * Every request this page makes to the destination, so the two claims below can be made as
+   * counts: the published Task is read, and nothing is written.
+   */
+  const taskReads: string[] = [];
+  const transactions: string[] = [];
+  const reopened = await fillerContext.newPage();
+  reopened.on("request", (request) => {
+    const url = request.url();
+    if (!url.startsWith(environment.issuer)) {
+      return;
+    }
+    if (request.method() === "GET" && url.includes("/Task/")) {
+      taskReads.push(url);
+    }
+    if (request.method() === "POST") {
+      transactions.push(url);
+    }
+  });
+
+  await reopened.goto(invitation.link);
+
+  // The terminal sent state, and the same wording a completed send leaves on screen.
+  await expect(reopened.getByText(`Accepted by ${host}`)).toBeVisible({
+    timeout: 60_000,
+  });
+
+  // No send affordance, and no pre-send disclosure: nothing here invites a second attempt.
+  await expect(
+    reopened.getByRole("button", { name: `Send answers to ${host}` }),
+  ).toHaveCount(0);
+  await expect(
+    reopened.getByText(`Answers go straight to ${host}`),
+  ).toHaveCount(0);
+
+  // ...and no form to fill in a second time, on either channel (FR-026).
+  await expect(
+    reopened.getByRole("heading", { name: DEMO_QUESTIONNAIRE_TITLE }),
+  ).toHaveCount(0);
+  await expect(
+    reopened.getByRole("button", { name: "Return answers as a link" }),
+  ).toHaveCount(0);
+
+  /*
+   * How it knew: it asked the destination what the published Task says, and wrote nothing. The
+   * POST count is the load-bearing one - a reopened link that re-sent would report acceptance
+   * while adding only a duplicate Provenance.
+   */
+  expect(taskReads.length).toBeGreaterThan(0);
+  expect(transactions).toHaveLength(0);
 });

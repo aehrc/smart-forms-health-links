@@ -289,13 +289,32 @@ From there, continue as scenario 1 from step 2.
 
 ## Scenario 3 - sending twice
 
-Reopen the link from scenario 1 in the private window, answer the form again, and send again.
+Two windows have to be open at once for this one. Before sending in scenario 1, open the same link
+in a second private window and answer the form there too. Send from the first window, then send
+from the second.
 
-Expect: "Accepted by kuzfdswqmz.edge.aidbox.app" a second time, and re-running the
+Expect: "Accepted by kuzfdswqmz.edge.aidbox.app" in both windows, and re-running the
 `QuestionnaireResponse` search above still reports `total: 1`, with the same `id`. The response
 entry in the transaction carries a conditional-create key on the request identifier, so the second
 send resolves to the response already stored rather than adding another. See the first known
 limitation below for what the second send _does_ duplicate.
+
+The second window has to be opened _before_ the first send because a link opened afterwards no
+longer offers one - which is the next scenario.
+
+## Scenario 3a - reopening a link whose answers are already in
+
+Open the link from scenario 1 again, in a third private window.
+
+Expect: "Accepted by kuzfdswqmz.edge.aidbox.app", with no form, no "Send answers to..." button and
+no pre-send disclosure. The page asks the destination what the published `Task` says as it opens;
+finding the answers already recorded against it, it shows the state a completed send leaves rather
+than a second empty form. Nothing is written - the browser's network panel shows the `GET` of
+`Task/...` and no `POST`.
+
+A `Task` the clinic completed or cancelled itself reads differently: without a
+`questionnaire-response` output there is no evidence any answers were sent, so the form and the
+send are offered as normal.
 
 ## Scenario 4 - the window closes
 
@@ -435,14 +454,15 @@ refusal spec is the one that will complain.
 | ----------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1 - the full loop                   | `e2e/fullLoop.spec.ts`, re-run for this record                                     | Pass, 24.6s. One `PATAST` response carrying the typed answers, one `Provenance` naming `Patient/pt-demo`, the `Task` completed with the response as its `output`                 |
 | 2 - EHR launch with patient context | `e2e/ehrLaunch.spec.ts`, re-run for this record                                    | Pass, 8.9s. The launch patient pre-fills the subject as `Patient/pt-demo` / Jane Citizen, and both fields still take an edit                                                     |
-| 3 - sending twice                   | `e2e/fullLoop.spec.ts` (its second half), re-run for this record                   | Pass. After the replay the response count is still one                                                                                                                           |
+| 3 - sending twice                   | `e2e/fullLoop.spec.ts` (its second half), re-run for this record                   | Pass. Two sends from two windows opened before either went; the response count is still one, with the same `id`                                                                  |
+| 3a - reopening a sent link          | `e2e/fullLoop.spec.ts` (its last section), and by hand in Chromium                 | Pass. The reopened link shows "Accepted by kuzfdswqmz.edge.aidbox.app", no form and no buttons; its only request to the destination is the `Task` read, and there is no `POST`   |
 | 4 - the window closes               | By hand, during the feature's acceptance work. Not re-run for this record          | An expired grant offered no send at all and issued zero requests to the destination; the scan-back return worked, and the write went through the clinician's session             |
 | 5 - a refusal never claims delivery | By hand, during the feature's acceptance work. Not re-run for this record          | An authorisation refusal never claimed delivery: no state anywhere read as delivered, and the answers stayed on the device                                                       |
 | 6 - an unregistered issuer          | `e2e/refusal.spec.ts`, both tests, re-run for this record; and by hand with `curl` | Pass, 315ms and 421ms. By hand: `403`, no `Location`, no `Set-Cookie`, `https://example.org/fhir` named in the body, and `/api/issuers` still offering the one registered server |
 
 ### What was run for this record, and what was not
 
-Scenarios 1, 2, 3 and 6 were re-run here, in one command, against a freshly built SPA and a
+Scenarios 1, 2, 3, 3a and 6 were re-run here, in one command, against a freshly built SPA and a
 server started from this branch:
 
 ```bash
@@ -452,12 +472,12 @@ env -u CI op run --env-file .env -- npm run test:e2e
 ```
 Running 4 tests using 1 worker
 
-  ✓  1 [chromium] › e2e/ehrLaunch.spec.ts:28:1 › an EHR launch pre-fills the launch patient as the subject, and it stays editable (8.9s)
-  ✓  2 [chromium] › e2e/fullLoop.spec.ts:55:1 › the full loop lands one labelled response, one provenance and a completed task (24.6s)
-  ✓  3 [chromium] › e2e/refusal.spec.ts:58:1 › an unregistered issuer is refused by name, with no redirect and no session (315ms)
-  ✓  4 [chromium] › e2e/refusal.spec.ts:91:1 › after a refusal the app still offers a registered server to launch from (421ms)
+  ✓  1 [chromium] › e2e/ehrLaunch.spec.ts:28:1 › an EHR launch pre-fills the launch patient as the subject, and it stays editable (9.4s)
+  ✓  2 [chromium] › e2e/fullLoop.spec.ts:66:1 › the full loop lands one labelled response, one provenance and a completed task (26.4s)
+  ✓  3 [chromium] › e2e/refusal.spec.ts:58:1 › an unregistered issuer is refused by name, with no redirect and no session (317ms)
+  ✓  4 [chromium] › e2e/refusal.spec.ts:91:1 › after a refusal the app still offers a registered server to launch from (427ms)
 
-  4 passed (35.3s)
+  4 passed (38.9s)
 ```
 
 Scenarios 4 and 5 were **not** re-run for this record, and this section should not be read as
@@ -480,14 +500,14 @@ step rather than left to the suite.
 | Gate                       | Result                                                                                       |
 | -------------------------- | -------------------------------------------------------------------------------------------- |
 | `npm run typecheck`        | Clean                                                                                        |
-| `npm run lint`             | 0 errors, 220 warnings (all `jsdoc/*`)                                                       |
-| `npm run lint:duplication` | 139 duplicated lines of 19,173, 0.72%                                                        |
+| `npm run lint`             | 0 errors, 222 warnings (all `jsdoc/*`)                                                       |
+| `npm run lint:duplication` | 139 duplicated lines of 20,028, 0.69%                                                        |
 | `npm run format:check`     | All matched files use Prettier code style                                                    |
-| `npm test`                 | 443 tests in 22 files, all passing                                                           |
-| `npm run test:coverage`    | Lines 87.77%, statements 87.84%, branches 83.27%, functions 89.36%, against an 80% threshold |
+| `npm test`                 | 481 tests in 24 files, all passing                                                           |
+| `npm run test:coverage`    | Lines 88.07%, statements 88.13%, branches 83.23%, functions 89.28%, against an 80% threshold |
 | `npm run build`            | Clean                                                                                        |
 | `npm run build:server`     | Clean                                                                                        |
-| `npm run check:e2e`        | 11 checks, all passing, against the public forms catalogue                                   |
+| `npm run check:e2e`        | 10 checks, all passing, against the public forms catalogue                                   |
 | `npm run check:e2e-shl`    | 36 checks, all passing                                                                       |
 
 `npm run check:roundtrip` was **not** run, and cannot be run from this checkout. It imports three
@@ -496,6 +516,21 @@ step rather than left to the suite.
 assertion executes. That dependency predates this feature and is unchanged by it, so its absence is
 not a regression - but it does mean the assertions in `scripts/roundtrip.ts` are unverified in any
 checkout without that sibling directory, including CI.
+
+### The instance answers a conditional `GET` with a 500
+
+Aidbox returns `ETag: "59487"` and `Cache-Control: no-cache` on a `Task` read, then answers the
+revalidation that pair invites with an HTTP 500 and an `OperationOutcome`. Every form of the header
+fails identically - `If-None-Match: 59487`, `"59487"` and `W/"59487"` - so it is the conditional
+read itself, not the ETag's syntax.
+
+It matters because the filler reads the published `Task` twice in one page: once when the link is
+opened, to see whether the answers are already there, and once immediately before a send, to build
+the completion. Left cacheable, the second read is a revalidation, the destination answers 500,
+the `Task` entry is dropped as unreadable, and the request silently never reads as completed -
+observed live before the fix, with both reads returning 200 after it. Both reads therefore go out
+with `cache: "no-store"` (`src/fill/directSend.ts`, `src/fhir/submit.ts`), which is where a
+token-authorised read of clinical state belongs anyway.
 
 ## Known limitations
 

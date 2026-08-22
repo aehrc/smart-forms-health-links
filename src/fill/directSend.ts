@@ -6,7 +6,7 @@
  * that transaction and the act of sending it - the wire shape is fixed by `contracts/shl-wire.md`,
  * "Submission transaction", because a Platypus build has to produce and consume the same thing.
  *
- * ## Three responsibilities, deliberately separate
+ * ## Four responsibilities, deliberately separate
  *
  * {@link buildSubmissionTransaction} is pure: answers plus grant in, Bundle out. Every rule the
  * contract states about the shape is decided here and nowhere else, so a rule can be read off a
@@ -19,6 +19,11 @@
  *
  * {@link sendDirect} presents the token and classifies the answer. It owns nothing about the
  * shape and everything about where the credential goes.
+ *
+ * {@link readPriorSubmission} is the same Task read as {@link readDestinationTask}, classified
+ * the other way round, and it runs when the link is *opened* rather than before a send. It is
+ * what makes reopening an invitation whose answers are already stored show the terminal sent
+ * state instead of a second empty form.
  *
  * ## The token goes to exactly one origin
  *
@@ -51,6 +56,12 @@ import type {
 } from "fhir/r4";
 
 import {
+  completedTask,
+  isFinishedTaskStatus,
+  RESPONSE_OUTPUT_TYPE,
+  taskIfMatch,
+} from "@/fhir/taskCompletion";
+import {
   destinationHost,
   grantExpiresAt,
   isGrantExpired,
@@ -61,33 +72,15 @@ import { parseServerTaskUrl } from "@/link/replyDescriptor";
 /** RFC 3986 URI namespace: the system the invitation's business identifier lives under. */
 const URI_IDENTIFIER_SYSTEM = "urn:ietf:rfc:3986";
 
-/**
- * `Task.output` slot naming the answers.
- *
- * Restated here rather than imported from `src/link/exchange.ts`, which keeps its copy private.
- * Both are the same three words from the same contract; if one changes, both are wrong.
+/*
+ * The Task's shape and the rules about writing to it live in `@/fhir/taskCompletion`, shared with
+ * the scan-back channel: both routes have to say the same thing about the same Task.
  */
-const RESPONSE_OUTPUT_TYPE = { text: "questionnaire-response" } as const;
 
 const PROVENANCE_PARTICIPANT_TYPE =
   "http://terminology.hl7.org/CodeSystem/provenance-participant-type";
 
 const FHIR_JSON = "application/fhir+json";
-
-/**
- * Task states a send must leave alone.
- *
- * FR-022: the transaction must not overwrite a Task the clinic has since moved to another state.
- * A Task already completed, cancelled, rejected, failed or marked in error has been decided by
- * someone with more context than a filler has, and a `PUT` would erase that decision.
- */
-const FINISHED_TASK_STATUSES: Partial<Record<Task["status"], true>> = {
-  completed: true,
-  cancelled: true,
-  rejected: true,
-  failed: true,
-  "entered-in-error": true,
-};
 
 /** The Task as read from the destination immediately before the send. */
 export interface DestinationTask {
@@ -117,7 +110,7 @@ export interface SubmissionTransactionOptions {
 
 /** Where a direct send is up to. See `data-model.md`, "Send states". */
 export type SendState =
-  "idle" | "expired" | "sending" | "sent" | "refused" | "failed";
+  "idle" | "checking" | "expired" | "sending" | "sent" | "refused" | "failed";
 
 /** A send state, with what to say about it. */
 export interface SendStatus {
@@ -310,21 +303,11 @@ export function buildSubmissionTransaction(
   if (task) {
     /*
      * The Task goes back as it was read, changed in exactly the two members the completion is
-     * about. Sending a minimal Task would erase the requester's own identifier, `for` and
-     * `requester` from their Task, which is the opposite of completing it.
+     * about - the shape the scan-back channel writes too, so a completed request reads the same
+     * whichever route brought the answers.
      */
     entry.push({
-      resource: {
-        ...task.resource,
-        status: "completed",
-        output: [
-          ...(task.resource.output ?? []),
-          {
-            type: RESPONSE_OUTPUT_TYPE,
-            valueReference: { reference: responseFullUrl },
-          },
-        ],
-      },
+      resource: completedTask(task.resource, responseFullUrl),
       request: { method: "PUT", url: task.url, ifMatch: task.ifMatch },
     });
   }
@@ -332,23 +315,32 @@ export function buildSubmissionTransaction(
   return { resourceType: "Bundle", type: "transaction", entry };
 }
 
+/** The published Task as the destination answered for it, before any rule is applied. */
+interface FetchedTask {
+  /** The Task exactly as the destination holds it. */
+  readonly task: Task;
+  /** The `ETag` header the destination answered with, when it sent one. */
+  readonly etag: string | null;
+}
+
 /**
- * Read the invitation's published Task from the destination, immediately before the send.
+ * `GET` the invitation's published Task from the destination, presenting the grant's token.
  *
- * Every path out of here that is not a live, versioned, unfinished Task on the grant's own origin
- * returns undefined, and undefined means "send the answers without a Task entry". Nothing about
- * the Task is worth failing a send over.
+ * The single place the token is presented to anything other than the transaction endpoint, and
+ * therefore the single place the origin rule has to hold for a read: a published Task URL that is
+ * not on the grant's own origin is not fetched at all, not even to see whether it would have
+ * worked. Everything that could go wrong afterwards - a refusal, a redirect, a body that is not a
+ * Task - is undefined, because no caller here has anything to gain from the difference.
  * @param options the grant and the published Task URL the invitation named
- * @param options.grant
- * @param options.serverTaskUrl
- * @returns the Task, or undefined when there is none this send may complete
- * @example
- * const task = await readDestinationTask({ grant, serverTaskUrl });
+ * @param options.grant the grant whose token authorises the read
+ * @param options.serverTaskUrl the published Task's absolute URL
+ * @returns the Task and the version the destination stated, or undefined when there is no Task to
+ *   be had from that URL
  */
-export async function readDestinationTask(options: {
+async function fetchPublishedTask(options: {
   readonly grant: ApiAccessGrant;
   readonly serverTaskUrl: string;
-}): Promise<DestinationTask | undefined> {
+}): Promise<FetchedTask | undefined> {
   const { grant, serverTaskUrl } = options;
 
   if (!isOnDestinationOrigin(serverTaskUrl, grant.aud)) {
@@ -364,6 +356,16 @@ export async function readDestinationTask(options: {
         Accept: FHIR_JSON,
       },
       redirect: "manual",
+      /*
+       * Never from the cache, and never *revalidated* against it. This URL is read twice in one
+       * page - once when the link is opened, once immediately before the send - and Aidbox
+       * answers a conditional `GET` with a 500 while still sending a strong `ETag`, so a cached
+       * first read makes the second one a revalidation the destination cannot answer. The
+       * consequence would be silent and expensive: the pre-send read fails, the Task entry is
+       * dropped, and the request never reads as completed. A token-authorised read of clinical
+       * state has no business in a browser cache regardless.
+       */
+      cache: "no-store",
     });
   } catch {
     return undefined;
@@ -388,25 +390,145 @@ export async function readDestinationTask(options: {
   if (task.resourceType !== "Task" || typeof task.id !== "string") {
     return undefined;
   }
-  if (FINISHED_TASK_STATUSES[task.status]) {
+
+  return { task, etag: response.headers.get("ETag") };
+}
+
+/**
+ * Read the invitation's published Task from the destination, immediately before the send.
+ *
+ * Every path out of here that is not a live, versioned, unfinished Task on the grant's own origin
+ * returns undefined, and undefined means "send the answers without a Task entry". Nothing about
+ * the Task is worth failing a send over.
+ * @param options the grant and the published Task URL the invitation named
+ * @param options.grant
+ * @param options.serverTaskUrl
+ * @returns the Task, or undefined when there is none this send may complete
+ * @example
+ * const task = await readDestinationTask({ grant, serverTaskUrl });
+ */
+export async function readDestinationTask(options: {
+  readonly grant: ApiAccessGrant;
+  readonly serverTaskUrl: string;
+}): Promise<DestinationTask | undefined> {
+  const fetched = await fetchPublishedTask(options);
+  if (fetched === undefined) {
     return undefined;
   }
 
-  /*
-   * The ETag is the destination's own statement of which version was just read, which is exactly
-   * what `If-Match` needs; `meta.versionId` is the same fact from inside the resource. Without
-   * either there is no way to make the completion conditional, and an unconditional `PUT` is the
-   * blind overwrite FR-022 forbids.
-   */
-  const etag = response.headers.get("ETag");
-  const versionId = task.meta?.versionId;
-  const fromResource = versionId === undefined ? undefined : `W/"${versionId}"`;
-  const ifMatch = etag?.startsWith("W/") ? etag : fromResource;
+  const { task, etag } = fetched;
+  if (isFinishedTaskStatus(task.status)) {
+    return undefined;
+  }
+
+  // No stated version means no conditional `PUT`, and an unconditional one is the blind overwrite
+  // FR-022 forbids ({@link taskIfMatch}).
+  const ifMatch = taskIfMatch(task, etag);
   if (ifMatch === undefined) {
     return undefined;
   }
 
-  return { url: `Task/${task.id}`, resource: task, ifMatch };
+  return { url: `Task/${task.id ?? ""}`, resource: task, ifMatch };
+}
+
+/**
+ * Whether the destination already holds this invitation's answers.
+ *
+ * The spec's edge case - "the same invitation opened after the response was already sent: the
+ * filler shows the terminal sent state, not a fresh form" - needs an answer at open time, and the
+ * published Task is the only thing a filler can ask. So this is the same read
+ * {@link readDestinationTask} makes, classified the other way round: instead of "may this send
+ * complete the Task", it asks "has a send already completed it".
+ *
+ * ## Why `completed` alone is not the evidence
+ *
+ * Because the clinic can produce it. The enumerated edge case "the published request task was
+ * cancelled or completed by the clinic before the send" describes precisely that: a finished Task
+ * with nothing ever sent. Status alone cannot tell the two apart, and getting it wrong that way
+ * would hide the form from someone who has typed nothing.
+ *
+ * The `questionnaire-response` output is what separates them. This app's submission transaction
+ * completes the Task *and* names the response it stored, in one entry
+ * ({@link buildSubmissionTransaction}); the requester's scan-back acceptance does the same thing
+ * with its own session. A clinic closing a request off in its own system leaves no such
+ * reference. So the output is evidence that answers for this request reached the record - which
+ * is the fact the surface needs, whichever channel put them there - and its absence means they
+ * did not.
+ *
+ * A Task finished any other way is never a prior submission. `cancelled`, `rejected`, `failed`
+ * and `entered-in-error` are states no send produces, so a Task in one of them is the clinic's
+ * decision about the request rather than a delivery of answers, and FR-022 already says a send
+ * leaves that decision alone.
+ *
+ * ## Unknown means "offer the send"
+ *
+ * Every failure returns false. The destination has been observed answering this read with a 500,
+ * and withholding a send because a status read did not work would cost a patient their answers
+ * over a nicety. A closed window is the one case that issues nothing at all: FR-025 forbids a
+ * request from an expired grant, and that includes this one.
+ * @param options the grant with the moment it arrived, the published Task URL, and the clock
+ * @param options.received the grant, with the moment it arrived
+ * @param options.serverTaskUrl the published Task's absolute URL
+ * @param options.now epoch milliseconds to judge the window against; defaults to the current time
+ * @returns true only on positive evidence that the answers are already stored
+ * @example
+ * const already = await readPriorSubmission({ received, serverTaskUrl });
+ */
+export async function readPriorSubmission(options: {
+  readonly received: ReceivedGrant;
+  readonly serverTaskUrl: string;
+  readonly now?: number;
+}): Promise<boolean> {
+  const { received, serverTaskUrl } = options;
+
+  if (isGrantExpired(received, options.now ?? Date.now())) {
+    return false;
+  }
+
+  const fetched = await fetchPublishedTask({
+    grant: received.grant,
+    serverTaskUrl,
+  });
+  if (fetched === undefined || fetched.task.status !== "completed") {
+    return false;
+  }
+
+  /*
+   * The reference has to be there, not merely the slot: an output with the right type and no
+   * value names nothing, and reading it as a stored response would claim one that does not exist.
+   */
+  return (fetched.task.output ?? []).some(
+    (output) =>
+      output.type?.text === RESPONSE_OUTPUT_TYPE.text &&
+      output.valueReference?.reference !== undefined,
+  );
+}
+
+/**
+ * Whether there is a prior-submission check worth making for this invitation.
+ *
+ * Three things have to be true before the read is worth the moment it costs: there is a channel
+ * at all, the invitation named a published Task to ask about, and the grant's window is still
+ * open. When they are not, the surface goes straight to whatever state it belongs in rather than
+ * sitting through a "checking" it will learn nothing from.
+ * @param target what the invitation offers by way of a direct send, if anything
+ * @param now epoch milliseconds to judge the window against; defaults to the current time
+ * @returns true when {@link readPriorSubmission} could return an answer
+ * @example
+ * const [prior] = useState(() => (checksPriorSubmission(target) ? "checking" : "unknown"));
+ */
+export function checksPriorSubmission(
+  target: DirectSendTarget | undefined,
+  now = Date.now(),
+): boolean {
+  if (target?.serverTaskUrl === undefined) {
+    return false;
+  }
+
+  return (
+    isOnDestinationOrigin(target.serverTaskUrl, target.received.grant.aud) &&
+    !isGrantExpired(target.received, now)
+  );
 }
 
 /**
@@ -445,15 +567,29 @@ export interface SendStatusOptions {
 }
 
 /**
+ * States the clock may still close.
+ *
+ * The ones where nothing has yet happened *at the destination* - an untouched grant, a retry left
+ * by a failed attempt, and a prior-submission check still in flight. All three are surfaces a
+ * request could still be issued from, and FR-025 forbids that once the window has closed.
+ * Everything else has an outcome of its own to report.
+ */
+const UNSTARTED_STATES: Partial<Record<SendState, true>> = {
+  idle: true,
+  failed: true,
+  checking: true,
+};
+
+/**
  * The state a send is in right now, given what has been attempted and where the window is up to.
  *
  * Two rules, and the second is the one that is easy to get wrong. The clock may **close** a
- * channel that is still being offered - an untouched grant, or one whose last attempt failed and
- * left a retry on screen - because a request from a closed window is precisely what FR-025
- * forbids. The clock may never **rewrite an outcome**: a send the destination accepted stays
- * accepted, and a refusal stays the more useful of the two explanations. Answers already in
- * someone's record are not un-written by a token expiring afterwards, and saying "the window has
- * closed" over a completed send would read as though nothing had happened.
+ * channel that is still being offered - see {@link UNSTARTED_STATES} - because a request from a
+ * closed window is precisely what FR-025 forbids. The clock may never **rewrite an outcome**: a
+ * send the destination accepted stays accepted, and a refusal stays the more useful of the two
+ * explanations. Answers already in someone's record are not un-written by a token expiring
+ * afterwards, and saying "the window has closed" over a completed send would read as though
+ * nothing had happened.
  * @param options the grant, the last attempt if any, and the moment to judge against
  * @returns the state to present
  * @example
@@ -463,12 +599,7 @@ export function currentSendStatus(options: SendStatusOptions): SendStatus {
   const { received, attempted } = options;
   const now = options.now ?? Date.now();
 
-  /*
-   * The states the clock may still close are exactly the states a send could still be started
-   * from, and for the same reason: they are the ones where nothing has happened yet at the
-   * destination. Everything else has an outcome of its own to report.
-   */
-  if (attempted !== undefined && !canSend(attempted)) {
+  if (attempted !== undefined && !UNSTARTED_STATES[attempted.state]) {
     return attempted;
   }
 

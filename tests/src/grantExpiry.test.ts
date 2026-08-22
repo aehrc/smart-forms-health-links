@@ -101,6 +101,20 @@ function target(grant: ReceivedGrant): DirectSendTarget {
   };
 }
 
+/**
+ * A target whose invitation named no published Task.
+ *
+ * Opening an invitation that names one reads it, to see whether the answers are already there.
+ * That read is a different property, tested in `reopenedInvitation.test.ts`; leaving it out keeps
+ * a send as the only thing on the surface that can issue a request, which is what makes the fetch
+ * counts in the last group below statements about the clock.
+ * @param grant the grant and the moment it arrived
+ * @returns the target, with no Task to ask about
+ */
+function unpublished(grant: ReceivedGrant): DirectSendTarget {
+  return { ...target(grant), serverTaskUrl: undefined };
+}
+
 describe("when the window closes", () => {
   /*
    * The measurement itself. `expires_in` is a duration, and the only instant it can be counted
@@ -369,6 +383,8 @@ describe("what the filler is shown once the window has closed", () => {
   it("promotes the scan-back return, and only from a channel that is shut with nothing delivered", () => {
     const promoted: Record<SendState, boolean> = {
       idle: false,
+      // Nothing is known yet, so nothing is promoted: the check must not rearrange the surface.
+      checking: false,
       sending: false,
       sent: false,
       failed: false,
@@ -436,7 +452,7 @@ describe("the window closing while the page is open", () => {
    */
   it("turns a live send into a closed window with no interaction at all", () => {
     act(() => {
-      root.render(createElement(Probe, { sendTo: target(received(60)) }));
+      root.render(createElement(Probe, { sendTo: unpublished(received(60)) }));
     });
 
     expect(observed?.state).toBe("idle");
@@ -453,7 +469,7 @@ describe("the window closing while the page is open", () => {
   // Before the window closes, nothing changes: the transition is scheduled, not polled.
   it("leaves the send offered until the stated lifetime has actually elapsed", () => {
     act(() => {
-      root.render(createElement(Probe, { sendTo: target(received(60)) }));
+      root.render(createElement(Probe, { sendTo: unpublished(received(60)) }));
     });
 
     act(() => {
@@ -466,7 +482,7 @@ describe("the window closing while the page is open", () => {
   // A grant that stated no lifetime schedules nothing, and stays offered.
   it("schedules no closing for a grant that stated no lifetime", () => {
     act(() => {
-      root.render(createElement(Probe, { sendTo: target(received()) }));
+      root.render(createElement(Probe, { sendTo: unpublished(received()) }));
     });
 
     act(() => {
@@ -476,7 +492,11 @@ describe("the window closing while the page is open", () => {
     expect(observed?.state).toBe("idle");
   });
 
-  // A grant that had already expired when the link was opened is closed on the first render.
+  /*
+   * A grant that had already expired when the link was opened is closed on the first render. This
+   * one keeps its published Task deliberately: a closed window reads nothing either, so the fetch
+   * count covers the prior-submission check as well as the send (FR-025).
+   */
   it("reports a window that had already closed before the page loaded", () => {
     act(() => {
       root.render(
