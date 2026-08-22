@@ -1,0 +1,22 @@
+{{- $origin := include "smartFormsHealthLinks.appOrigin" . }}
+{{ .Chart.Name }} {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Origin: {{ $origin }}
+
+Register these with each authorisation server named in the issuer registry, or the launch will
+fail at the redirect:
+
+  Redirect URI: {{ $origin }}/auth/callback
+  JWKS URI:     {{ $origin }}/.well-known/jwks.json
+
+Watch the rollout, then check the health endpoint through the service:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ .Release.Name }}-deployment
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ .Release.Name }}-service 8080:{{ .Values.smartFormsHealthLinks.service.port }}
+  curl http://localhost:8080/health
+
+Issuers registered in this release: {{ len .Values.smartFormsHealthLinks.issuers }}
+{{- if eq (len .Values.smartFormsHealthLinks.issuers) 0 }}
+No issuers are registered, so every launch will be refused. Set
+smartFormsHealthLinks.issuers, using config/issuers.example.json as the shape.
+{{- end }}

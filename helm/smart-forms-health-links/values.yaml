@@ -1,0 +1,48 @@
+smartFormsHealthLinks:
+  image: "smart-forms-health-links:latest"
+  imagePullPolicy: "Always"
+
+  # Origin the app is served from. Derived from `ingress.host` when unset; set it explicitly
+  # only when an intermediate proxy publishes a different host or scheme.
+  appOrigin: ~
+
+  # Name of an existing Secret holding SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET and
+  # BACKEND_PRIVATE_JWK. Required: the chart never templates a secret value.
+  existingSecret: ""
+
+  # Issuer registry, rendered into a ConfigMap. Secret-bearing fields hold
+  # `env:VARIABLE_NAME` references to keys of the Secret above, never values.
+  issuers: []
+
+  # Extra environment variables for the server process.
+  config: {}
+
+  resources: {}
+    # requests:
+    #   memory: "256Mi"
+    #   cpu: "100m"
+    # limits:
+    #   memory: "512Mi"
+    #   cpu: "500m"
+
+  service:
+    type: "ClusterIP"
+    port: 80
+
+  ingress:
+    enabled: true
+    className: ~
+    host: ""
+    annotations: {}
+    tls:
+      enabled: true
+      secretName: ~
+
+  # The SQLite file holding sessions and invitations.
+  persistence:
+    size: "1Gi"
+    storageClassName: ~
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

@@ -1,0 +1,16 @@
+{{- $app := .Values.smartFormsHealthLinks }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-service
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  type: {{ $app.service.type | quote }}
+  selector:
+    app: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ $app.service.port }}
+      targetPort: http
+      protocol: TCP

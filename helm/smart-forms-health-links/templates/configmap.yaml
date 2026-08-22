@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-configmap
+  labels:
+    app: {{ .Release.Name }}
+data:
+  # The issuer registry the server reads at startup, one entry per FHIR server this deployment
+  # may launch against. Secret-bearing fields hold `env:VARIABLE_NAME` references that the
+  # server resolves from the pod's environment, so no credential appears in this object.
+  issuers.json: |
+{{ toPrettyJson .Values.smartFormsHealthLinks.issuers | indent 4 }}

@@ -1,0 +1,102 @@
+{{- $app := .Values.smartFormsHealthLinks }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-deployment
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  # One replica, not configurable. The entire state is a single SQLite file on a ReadWriteOnce
+  # volume, so a second pod would either fail to schedule or corrupt the file. `Recreate` for
+  # the same reason: a rolling update overlaps old and new pods, and both would hold the file.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+      annotations:
+        # Roll the pod when the issuer registry changes: the server reads it once, at startup.
+        checksum/issuers: {{ toJson $app.issuers | sha256sum }}
+    spec:
+      securityContext:
+        # The image runs as the unprivileged `node` user (uid 1000); fsGroup is what makes the
+        # mounted volume writable by it.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: smart-forms-health-links
+          image: {{ $app.image | quote }}
+          imagePullPolicy: {{ $app.imagePullPolicy | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: APP_ORIGIN
+              value: {{ include "smartFormsHealthLinks.appOrigin" . | quote }}
+            - name: PORT
+              value: "3000"
+            - name: SQLITE_PATH
+              value: "/data/links.sqlite"
+            - name: ISSUER_REGISTRY_PATH
+              value: "/etc/smart-forms-health-links/issuers.json"
+            {{- range $configKey, $configValue := $app.config }}
+            - name: {{ $configKey }}
+              value: {{ $configValue | quote }}
+            {{- end }}
+          envFrom:
+            # SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET, BACKEND_PRIVATE_JWK, and any other
+            # variable the issuer registry names. Every key in the Secret becomes an environment
+            # variable; the chart neither reads nor templates their values.
+            - secretRef:
+                name: {{ required "smartFormsHealthLinks.existingSecret is not set. Create a Secret holding SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET and BACKEND_PRIVATE_JWK, then name it here." $app.existingSecret | quote }}
+          # /health is public and says nothing about configuration, so it is safe to probe and
+          # safe to expose. It answers as soon as the port is bound.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: issuers
+              mountPath: /etc/smart-forms-health-links
+              readOnly: true
+          resources: {{ toJson $app.resources }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-pvc
+        - name: issuers
+          configMap:
+            name: {{ .Release.Name }}-configmap
+      nodeSelector: {{ toJson $app.nodeSelector }}
+      tolerations: {{ toJson $app.tolerations }}
+      affinity: {{ toJson $app.affinity }}
+      terminationGracePeriodSeconds: 30
