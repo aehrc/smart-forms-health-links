@@ -1,5 +1,4 @@
 import type { ReceivedGrant } from "./apiAccess";
-import type { AppConfig, LinkCodecId } from "@/lib/config";
 import type {
   Bundle,
   FhirResource,
@@ -58,8 +57,9 @@ export interface DecodeOptions {
 
 /**
  * The message a passcode prompt carries, given what has already been tried.
- *
  * @param options what the manifest server said about the passcode
+ * @param options.remainingAttempts
+ * @param options.wasAttempted
  * @returns a sentence to show the reader
  */
 function passcodeMessage(options: {
@@ -89,6 +89,8 @@ export class PasscodeRequiredError extends Error {
 
   /**
    *
+   * @param options.remainingAttempts
+   * @param options.wasAttempted
    */
   constructor(options: { remainingAttempts?: number; wasAttempted: boolean }) {
     super(passcodeMessage(options));
@@ -108,6 +110,14 @@ export interface EncodeOptions {
 }
 
 /**
+ * Which transport a link travels on.
+ *
+ * `bespoke` is the inline `sfhl:/` payload the filler's return leg mints; `shl` is the hosted
+ * `shlink:/` manifest this app's server mints for invitations. Both are read.
+ */
+export type LinkCodecId = "bespoke" | "shl";
+
+/**
  * A link transport.
  *
  * Every codec presents its payload in the URL *fragment*, which is the form SMART Health Links
@@ -122,15 +132,6 @@ export interface LinkCodec {
   /** Fragment prefix, e.g. `sfhl:/` or `shlink:/`. */
   readonly prefix: string;
 
-  /**
-   * This codec can still open links, but nothing new is minted with it.
-   *
-   * Retiring a transport is not the same as dropping it: links already in the wild have to keep
-   * working. {@link encodingCodec} refuses a decode-only codec, while {@link decodingCodec}
-   * continues to consider it.
-   */
-  readonly decodeOnly?: boolean;
-
   /** Whether this codec recognises the given link or bare fragment. */
   canDecode(linkOrFragment: string): boolean;
 
@@ -139,8 +140,8 @@ export interface LinkCodec {
    *
    * Optional, because a transport can be readable without being writable here. The SHL codec is
    * exactly that case: a hosted SHL needs a manifest server, and this app's manifest server is
-   * its own BFF (`POST /api/invitations`), which the browser asks rather than implements.
-   * {@link encodingCodec} refuses a codec that cannot mint.
+   * its own BFF (`POST /api/invitations`), which the browser asks rather than implements. A codec
+   * that can mint declares itself as an {@link EncodingCodec} instead.
    */
   encode?(content: LinkContent, options: EncodeOptions): Promise<string>;
 
@@ -151,7 +152,12 @@ export interface LinkCodec {
   decode(linkOrFragment: string, options?: DecodeOptions): Promise<LinkContent>;
 }
 
-/** A codec that can mint, which is what {@link encodingCodec} resolves to. */
+/**
+ * A codec that can mint from the browser.
+ *
+ * One does: the inline transport the filler's return leg uses, which needs no host. Hosted
+ * transports are minted by the server, so they are readable here and nothing more.
+ */
 export interface EncodingCodec extends LinkCodec {
   /** Mint a link. */
   encode(content: LinkContent, options: EncodeOptions): Promise<string>;
@@ -350,9 +356,6 @@ export function ensureQuestionnaireCanonical(
   return { ...response, questionnaire: canonical };
 }
 
-/**
- *
- */
 export function defaultLabel(questionnaire: Questionnaire): string {
   return (
     questionnaire.title ??
@@ -363,52 +366,17 @@ export function defaultLabel(questionnaire: Questionnaire): string {
 }
 
 /**
- * Resolve the codec used for *creating* links.
- * @param config the app configuration, naming the codec to mint with
- * @param codecs the registered codecs
- * @returns the codec, guaranteed to be able to mint
- * @throws {Error} when the configured codec is not registered, has been retired, or cannot mint
- *   in this build
- */
-export function encodingCodec(
-  config: AppConfig,
-  codecs: LinkCodec[],
-): EncodingCodec {
-  const codec = codecs.find((candidate) => candidate.id === config.linkCodec);
-  if (!codec) {
-    throw new Error(
-      `Configured linkCodec "${config.linkCodec}" is not registered.`,
-    );
-  }
-
-  if (codec.decodeOnly) {
-    throw new Error(
-      `Configured linkCodec "${config.linkCodec}" is decode-only — its links can still be opened, ` +
-        "but nothing new is minted with it.",
-    );
-  }
-
-  if (codec.encode === undefined) {
-    /*
-     * The SHL codec's case. Hosting an SHL needs a manifest server, and this deployment's is its
-     * own BFF: a requester's invitation is minted by `POST /api/invitations`, not from the page.
-     * Saying so plainly beats a null-reference a layer down.
-     */
-    throw new Error(
-      `Configured linkCodec "${config.linkCodec}" cannot create links in this build: its payload ` +
-        "has to be hosted, and hosting belongs to this app's server rather than to the browser.",
-    );
-  }
-
-  return codec as EncodingCodec;
-}
-
-/**
  * Resolve the codec for *reading* a link by sniffing its prefix.
  *
- * Decoding always considers every registered codec regardless of config, and regardless of whether
- * that codec is still used for minting. That asymmetry is what lets a transport be retired without
- * invalidating links already in the wild.
+ * Reading considers every registered codec, always. That asymmetry with minting - where each
+ * direction has exactly one transport available to it - is what lets a link written by another
+ * producer, or by an older build of this app, keep opening.
+ * @param linkOrFragment the link, `scheme:/payload` string or bare fragment to read
+ * @param codecs the registered codecs
+ * @returns the codec that recognised it
+ * @throws {Error} when no registered codec recognises it
+ * @example
+ * const content = await decodingCodec(link, LINK_CODECS).decode(link);
  */
 export function decodingCodec(
   linkOrFragment: string,

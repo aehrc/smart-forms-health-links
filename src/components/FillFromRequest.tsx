@@ -8,11 +8,7 @@ import ShareLinkPanel from "@/components/ShareLinkPanel";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useConfig } from "@/lib/configContextValue";
-import {
-  canCreateHealthLinks,
-  createResponseLink,
-  sendEncryptedReply,
-} from "@/link/createLink";
+import { createResponseLink, sendEncryptedReply } from "@/link/createLink";
 import { taskCorrelationId } from "@/link/exchange";
 import { parseReturnChannels } from "@/link/replyDescriptor";
 
@@ -23,33 +19,51 @@ export interface FillFromRequestProps {
   /**
    * Whether the surface above is already offering to write the answers to the named server.
    *
-   * When it is, this component must not also claim the app declines to write there - both
-   * statements cannot be true at once, and the one that contradicts what the buttons do is the
-   * one that misleads.
+   * Suppresses this component's "this request also names a server, and this app does not write
+   * there" note, which stops being true the moment a grant makes such a write possible.
    */
   directSendOffered?: boolean;
+  /**
+   * Whether returning a link is now the way these answers get home.
+   *
+   * Set when the direct channel is shut with nothing delivered - an expired window or a refused
+   * credential. It makes the return the primary action and says so, rather than leaving a person
+   * to work out that the alternative in the corner is now the only option (FR-025, FR-028).
+   */
+  scanBackPromoted?: boolean;
 }
 
 /**
  * The filler's side: a request arrived, so render its embedded Questionnaire and hand the answers
  * back.
  *
- * Two return paths:
+ * Two return paths live here, and neither is the direct send - that is offered above this
+ * component, by the surface that holds the grant.
  *
- * - **SMART Health Link** — the answers are encrypted, hosted, and handed back as a link the
- *   requester scans. This is the default path and the one Platypus uses, so it is what the requester
- *   side is built to read. It needs somewhere to put the payload; in production that would be the
- *   filling app's own storage.
- * - **Send securely** — the answers are encrypted to a public key the request carried and parked in
- *   a slot the requester polls. Offered only when the request asked for it, which by default no
- *   request this app mints does. It remains here because honouring someone else's return channel is
- *   a different question from offering our own: refusing would strand their answers.
+ * - **Return answers as a link** - the answers are compressed into a link the requester scans and
+ *   accepts under their own session. Always available: it needs no session, no host and no
+ *   network, which is what makes it the fallback every other channel can fall back *to*. The link
+ *   is not encrypted, and the panel that shows it says so.
+ * - **Send securely** - the answers are encrypted to a public key the request carried and parked
+ *   in a slot the requester polls. Offered only when the request asked for it, which no request
+ *   this app mints does. It remains here because honouring someone else's return channel is a
+ *   different question from offering our own: refusing would strand their answers.
  *
- * When a request does offer a reply slot, that becomes the primary action — it is the one that needs
- * nothing further from the person filling the form.
+ * Which one leads depends on what the request offers and on what has already been tried. A reply
+ * slot leads when there is one, because it needs nothing further from the person filling the form.
+ * `scanBackPromoted` overrides that: once the direct channel has closed with nothing delivered,
+ * the link is the way home and is presented as such.
+ * @param props the form, the request it answers, and what the surface above has already offered
+ * @returns the filler's surface
  */
 export default function FillFromRequest(props: FillFromRequestProps) {
-  const { questionnaire, task, label, directSendOffered = false } = props;
+  const {
+    questionnaire,
+    task,
+    label,
+    directSendOffered = false,
+    scanBackPromoted = false,
+  } = props;
   const config = useConfig();
 
   const [link, setLink] = useState<string | null>(null);
@@ -92,7 +106,6 @@ export default function FillFromRequest(props: FillFromRequestProps) {
   }
 
   const correlationId = taskCorrelationId(task);
-  const canHost = canCreateHealthLinks(config);
   const requester = task.requester?.display;
   const addressedTo = task.for?.display;
 
@@ -127,6 +140,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
           <div className="ml-auto flex flex-wrap gap-2">
             {channels.reply ? (
               <Button
+                variant={scanBackPromoted ? "outline" : undefined}
                 onClick={() => {
                   void handleSendSecurely();
                 }}
@@ -143,23 +157,21 @@ export default function FillFromRequest(props: FillFromRequestProps) {
               </Button>
             ) : null}
             <Button
-              variant={channels.reply ? "outline" : undefined}
+              variant={
+                channels.reply && !scanBackPromoted ? "outline" : undefined
+              }
               onClick={() => {
                 void handleReturn();
               }}
-              disabled={pending !== null || !canHost}
-              title={
-                canHost
-                  ? "Encrypted and hosted — the requester scans it back"
-                  : "Needs blobServerUrl in config.json"
-              }
+              disabled={pending !== null}
+              title="The requester scans it back and accepts the answers themselves"
             >
               {pending === "shl" ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
               ) : (
                 <Link2 className="h-4 w-4" aria-hidden />
               )}
-              Return as Health Link
+              Return answers as a link
             </Button>
           </div>
         )}
@@ -184,6 +196,21 @@ export default function FillFromRequest(props: FillFromRequestProps) {
         </Alert>
       ) : null}
 
+      {/*
+       * Above the form, because it is an instruction rather than a footnote: the surface that
+       * closed the direct channel has explained why, and this is what to do about it. It says
+       * where the answers go and who does the accepting, since a link that the requester has to
+       * scan needs the requester to be in the room.
+       */}
+      {!sent && scanBackPromoted ? (
+        <Alert title="Return these answers as a link">
+          Finish the form, then use <strong>Return answers as a link</strong>{" "}
+          above. It produces a QR code and a link for{" "}
+          {requester ?? "whoever asked for this form"} to scan, and they accept
+          the answers into the record themselves. Nothing is sent from here.
+        </Alert>
+      ) : null}
+
       {!sent && channels.reply ? (
         <Alert title="This request can accept answers directly">
           The answers will be encrypted to the requester&rsquo;s key on this
@@ -195,7 +222,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
               <span className="font-mono text-xs">
                 {channels.reply.replyMethod}
               </span>
-              , which this app does not implement — use one of the link options
+              , which this app does not implement - use one of the link options
               instead.
             </p>
           )}
@@ -208,8 +235,9 @@ export default function FillFromRequest(props: FillFromRequestProps) {
           <span className="font-mono text-xs break-all">
             {channels.serverTaskUrl}
           </span>
-          . This app does not do that — it returns answers to the requester
-          rather than writing into their record unreviewed.
+          . This app does not do that without a grant that authorises it - it
+          returns answers to the requester rather than writing into their record
+          unreviewed.
         </Alert>
       ) : null}
 

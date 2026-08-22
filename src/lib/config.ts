@@ -20,9 +20,6 @@
  * @author John Grimes
  */
 
-/** Identifier of the link codec used when *creating* links. See `src/link/codec.ts`. */
-export type LinkCodecId = "bespoke" | "shl";
-
 export interface AppConfig {
   /** FHIR terminology server for ValueSet expansion, passed through to the renderer. */
   terminologyServerUrl: string;
@@ -32,14 +29,6 @@ export interface AppConfig {
    * When null, `window.location.origin` is used, which is what you want in dev.
    */
   linkBaseUrl: string | null;
-
-  /**
-   * Which codec creates links.
-   *
-   * `shl` is the only one that still mints; `bespoke` is decode-only and setting it here is an
-   * error. Decoding always accepts every registered codec, so old `sfhl:/` links keep opening.
-   */
-  linkCodec: LinkCodecId;
 
   /**
    * Who requests appear to come from, e.g. `"Parkview Medical Centre"`.
@@ -63,7 +52,6 @@ export interface AppConfig {
 export const FALLBACK_CONFIG: AppConfig = {
   terminologyServerUrl: "https://r4.ontoserver.csiro.au/fhir",
   linkBaseUrl: null,
-  linkCodec: "shl",
   senderName: null,
   linkLifetimeDays: 30,
 };
@@ -119,7 +107,6 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
   return (
     isValidUrl(candidate.terminologyServerUrl) &&
     (candidate.linkBaseUrl === null || isValidUrl(candidate.linkBaseUrl)) &&
-    (candidate.linkCodec === "bespoke" || candidate.linkCodec === "shl") &&
     isAbsentOr(
       candidate.senderName,
       (name) =>

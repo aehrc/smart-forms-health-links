@@ -31,7 +31,7 @@ import type { Mock } from "vitest";
 
 import {
   canSend,
-  initialSendStatus,
+  currentSendStatus,
   sendDirect,
   suppressesOtherChannels,
 } from "@/fill/directSend";
@@ -220,14 +220,17 @@ describe("the direct send", () => {
   describe("the state machine", () => {
     // A live grant is offered. Nothing happens until someone asks for it.
     it("starts idle for a grant whose window is open", () => {
-      expect(initialSendStatus(RECEIVED, RECEIVED_AT + 60_000)).toEqual({
-        state: "idle",
-      });
+      expect(
+        currentSendStatus({ received: RECEIVED, now: RECEIVED_AT + 60_000 }),
+      ).toEqual({ state: "idle" });
     });
 
     // `expired` replaces `idle`: the affordance is never offered from a closed window.
     it("starts expired once the grant's stated window has closed", () => {
-      const status = initialSendStatus(RECEIVED, RECEIVED_AT + 3601 * 1000);
+      const status = currentSendStatus({
+        received: RECEIVED,
+        now: RECEIVED_AT + 3601 * 1000,
+      });
 
       expect(status.state).toBe("expired");
       expect(status.detail).toContain("ehr.example.org");
@@ -235,13 +238,13 @@ describe("the direct send", () => {
 
     // A grant that stated no window has none to have closed.
     it("starts idle for a grant that stated no window, however long ago it arrived", () => {
-      const status = initialSendStatus(
-        {
+      const status = currentSendStatus({
+        received: {
           grant: { ...GRANT, expires_in: undefined },
           receivedAt: RECEIVED_AT,
         },
-        RECEIVED_AT + 400 * 86_400_000,
-      );
+        now: RECEIVED_AT + 400 * 86_400_000,
+      });
 
       expect(status.state).toBe("idle");
     });

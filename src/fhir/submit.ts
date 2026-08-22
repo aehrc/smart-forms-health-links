@@ -6,6 +6,11 @@ import type {
   Task,
 } from "fhir/r4";
 
+import {
+  classifyProxyResponse,
+  isSessionEnded,
+  sessionEndedError,
+} from "@/lib/session";
 import { buildRequestBundle } from "@/link/exchange";
 
 /**
@@ -25,7 +30,7 @@ import { buildRequestBundle } from "@/link/exchange";
 
 /**
  * "Where to send answers", from the SDC IG:
- * *"the base URL for the server(s) to which questionnaire response associated with this questionnaire
+ * "the base URL for the server(s) to which questionnaire response associated with this questionnaire
  * should be submitted. If multiple repetitions are present, the completed form should be sent to all
  * listed endpoints."*
  *
@@ -37,7 +42,9 @@ export const SDC_QUESTIONNAIRE_ENDPOINT =
 
 const FHIR_JSON = "application/fhir+json";
 
-/** Endpoints declared by the Questionnaire itself, if any. */
+/**
+ * Endpoints declared by the Questionnaire itself, if any.
+ */
 export function declaredEndpoints(
   questionnaire: Questionnaire | undefined,
 ): string[] {
@@ -133,29 +140,41 @@ interface OperationOutcome {
 /**
  * Pull the human-readable reason out of a FHIR error response.
  *
- * Worth the effort: a rejected write is usually rejected for a reason the reviewer can act on — a
- * subject that does not resolve on this server, say — and `400 Bad Request` alone tells them
+ * Worth the effort: a rejected write is usually rejected for a reason the reviewer can act on - a
+ * subject that does not resolve on this server, say - and `400 Bad Request` alone tells them
  * nothing.
+ * @param response the refused response, for its status
+ * @param body its parsed body, or undefined when it had none this app could read
+ * @returns the status, with any diagnostics the server supplied appended
  */
-async function describeFailure(response: Response): Promise<string> {
+function describeFailure(response: Response, body: unknown): string {
   const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+  const outcome = body as OperationOutcome | undefined;
+  const diagnostics = (outcome?.issue ?? [])
+    .map((issue) => issue.diagnostics)
+    .filter((text): text is string => !!text);
 
-  try {
-    const body = (await response.json()) as OperationOutcome;
-    const diagnostics = (body.issue ?? [])
-      .map((issue) => issue.diagnostics)
-      .filter((text): text is string => !!text);
-
-    if (diagnostics.length > 0) {
-      return `${status}: ${diagnostics.join("; ")}`;
-    }
-  } catch {
-    // Not every error response carries an OperationOutcome.
-  }
-
-  return status;
+  return diagnostics.length > 0
+    ? `${status}: ${diagnostics.join("; ")}`
+    : status;
 }
 
+/**
+ * Create one resource on the destination, distinguishing a lost session from a refused write.
+ *
+ * Every requester write goes through the BFF proxy, which holds the session's authority, and a
+ * session can die between opening a set of answers and accepting them - a review is a person
+ * reading, and people take as long as they take. So the proxy's own `401` is separated from
+ * everything else and raised as a session-ended error, which is what turns the surface into a
+ * re-launch prompt rather than a FHIR error nobody can act on. An upstream `401` or `403` the
+ * proxy passed through verbatim is *not* that: the session is intact and the launched server is
+ * refusing the write, which signing in again would not change.
+ * @param serverUrl the destination base, normally {@link FHIR_PROXY_BASE}
+ * @param resource the resource to create
+ * @returns the server-assigned id
+ * @throws {SessionEndedError} when the session behind the proxy has gone
+ * @throws {Error} when the destination refused the write, or accepted it without an id
+ */
 async function createResource(
   serverUrl: string,
   resource: QuestionnaireResponse | Task | Provenance,
@@ -169,17 +188,32 @@ async function createResource(
     },
   );
 
-  if (!response.ok) {
-    throw new Error(
-      `Could not save the ${resource.resourceType} — ${await describeFailure(response)}`,
-    );
+  /*
+   * Read once: the body is both the diagnosis of a failure and the evidence of a lost session.
+   * A response with no JSON body at all is not exceptional - a bare 401 from a proxy has none.
+   */
+  const body: unknown = await response.json().catch(() => {
+    return;
+  });
+
+  switch (classifyProxyResponse(response.status, body)) {
+    case "session-ended": {
+      throw sessionEndedError(
+        `The session has ended, so the ${resource.resourceType} was not saved.`,
+      );
+    }
+    case "failed": {
+      throw new Error(
+        `Could not save the ${resource.resourceType} - ${describeFailure(response, body)}`,
+      );
+    }
+    case "ok": {
+      break;
+    }
   }
 
-  const created = (await response.json()) as {
-    id?: string;
-    resourceType?: string;
-  };
-  if (created.resourceType === "OperationOutcome" || !created.id) {
+  const created = body as { id?: string; resourceType?: string } | undefined;
+  if (created?.resourceType === "OperationOutcome" || !created?.id) {
     throw new Error(`The server rejected the ${resource.resourceType}.`);
   }
 
@@ -207,6 +241,17 @@ export interface SubmitOptions {
  * losing the correlation or attribution record is a reporting problem, not a data-loss one, and
  * re-submitting the response to fix it would duplicate it. They are reported rather than swallowed so
  * the gap is visible.
+ *
+ * A lost session is the one failure that is not reported as a per-destination error but raised.
+ * Nothing was written and nothing will be until there is a session again, so the caller has to be
+ * able to offer a re-launch rather than paint a red box beside the answers - and that decision is
+ * made on the error's kind, which a `SubmitResult.error` string would have thrown away.
+ * @param options the answers, their companions, and where to write them
+ * @returns one result per destination
+ * @throws {SessionEndedError} when the session behind the proxy has gone
+ * @throws {Error} when no destination is configured
+ * @example
+ * const results = await submitResponse({ response, responseServerUrl: FHIR_PROXY_BASE });
  */
 export async function submitResponse(
   options: SubmitOptions,
@@ -267,6 +312,10 @@ export async function submitResponse(
 
         return { serverUrl, responseId, taskId, provenanceId };
       } catch (error) {
+        if (isSessionEnded(error)) {
+          throw error;
+        }
+
         return {
           serverUrl,
           error: error instanceof Error ? error.message : String(error),
@@ -280,7 +329,7 @@ export async function submitResponse(
  * Whether a reference resolves on the server the response is about to be written to.
  *
  * Worth checking before offering to save. A response from a third-party filler names a patient in
- * *that* app's terms — Platypus sends its own vault key — and a server enforcing referential integrity
+ * that* app's terms — Platypus sends its own vault key — and a server enforcing referential integrity
  * rejects the whole write with `HAPI-1094`. Finding that out before the reviewer clicks Accept turns a
  * confusing failure into a question they can answer.
  *
@@ -376,6 +425,9 @@ export const SHL_REQUEST_TAG = {
  *
  * `buildRequestBundle` is reused with the same `requestId` so both copies share one business
  * identifier — that identifier is what joins a listed Task to the locally-held reply key.
+ * @param options.subjectReference
+ * @param options.subjectDisplay
+ * @param options.requestId
  */
 export async function publishRequestTask(
   serverUrl: string,
@@ -396,7 +448,9 @@ export async function publishRequestTask(
   return `${trimTrailingSlash(serverUrl)}/Task/${id}`;
 }
 
-/** The server-storable form of a request Task. Exported so `check:roundtrip` can assert its shape. */
+/**
+ * The server-storable form of a request Task. Exported so `check:roundtrip` can assert its shape.
+ */
 export function asPublishedTask(task: Task): Task {
   const rest = { ...task };
   delete rest.focus;

@@ -3,15 +3,11 @@ import {
   removeEmptyAnswersFromResponse,
 } from "@aehrc/smart-forms-renderer";
 
+import { bespokeCodec } from "./bespokeCodec";
 import { encodeUtf8 } from "./binary";
-import {
-  defaultLabel,
-  encodingCodec,
-  ensureQuestionnaireCanonical,
-} from "./codec";
+import { defaultLabel, ensureQuestionnaireCanonical } from "./codec";
 import { buildReplyBundle, buildResponseBundle } from "./exchange";
 import { JOSE_CONTENT_TYPE } from "./jwe";
-import { LINK_CODECS } from "./registry";
 import { encryptReplyJwe } from "./replyCrypto";
 import {
   isReplyDescriptorExpired,
@@ -27,17 +23,26 @@ import { sessionEndedError } from "@/lib/session";
 /**
  * Link creation, from the browser's side.
  *
- * Minting an invitation is no longer something this code does; it is something it *asks for*.
- * The component that mints is the component that hosts (FR-013), and that is the BFF: it holds
- * the session's authority to publish the request Task, it hosts the encrypted payload, and it
- * mints a fresh grant on every manifest fetch. So {@link createRequestLink} is one `POST` to
- * `/api/invitations` and some presentation of the answer.
+ * The two directions are minted in two different places, and the reason is hosting.
  *
- * What went with that move is worth stating, because both were real features:
+ * An **invitation** is no longer minted by this code; it is *asked for*. The component that mints
+ * is the component that hosts (FR-013), and that is the BFF: it holds the session's authority to
+ * publish the request Task, it hosts the encrypted payload, and it mints a fresh grant on every
+ * manifest fetch. So {@link createRequestLink} is one `POST` to `/api/invitations` and some
+ * presentation of the answer.
+ *
+ * A **return** is minted here, because there is nowhere else it could be. Whoever fills a form
+ * holds a link and nothing else, and the server's public surface takes no payloads
+ * (`contracts/http-api.md`), so {@link createResponseLink} uses the one transport that needs no
+ * host: the answers, compressed into the fragment. That is a weaker confidentiality position than
+ * a hosted encrypted payload and the surface showing the link says so.
+ *
+ * What went with the move to server-side minting is worth stating, because both were real
+ * features:
  *
  *  - **Channel B**, where an invitation declared a `sdc-questionnaire-endpoint` and invited a
  *    filler to write to it anonymously, is replaced by the grant. A filler now writes with a
- *    token that expires, scoped to two operations, rather than to an open endpoint.
+ *    token that expires, scoped to four operations, rather than to an open endpoint.
  *  - **Channel C**, the encrypted reply slot, is no longer minted. Its requester half - creating
  *    a slot, holding the private key in one browser, polling - is gone with it. The *filler*
  *    half stays: {@link sendEncryptedReply} still honours a reply channel declared by somebody
@@ -47,31 +52,6 @@ import { sessionEndedError } from "@/lib/session";
 
 /** Where the BFF mints invitations. */
 export const INVITATIONS_ENDPOINT = "/api/invitations";
-
-/**
- * Whether this build can mint a link from the browser.
- *
- * Asked by the *filler* surfaces, which return answers by minting their own link for the
- * requester to scan (FR-028). The requester's own invitations do not go through this: they are
- * minted by the BFF, which needs no codec in the page.
- *
- * It answers false in this build, and the reason is worth being plain about rather than hiding
- * behind a disabled button. The only codec configured for minting is the SHL one, whose payload
- * has to be hosted somewhere, and the third-party blob host it used to be parked on was removed
- * with the rest of anonymous mode. Restoring the filler's return leg is T044/T045.
- * @param config the app configuration, naming the codec to mint with
- * @returns true when a link can be created here
- * @example
- * {canCreateHealthLinks(config) ? <Button …/> : <Alert …/>}
- */
-export function canCreateHealthLinks(config: AppConfig): boolean {
-  try {
-    encodingCodec(config, LINK_CODECS);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /** Details of the request being made, beyond which form it is for. */
 export interface CreateRequestOptions {
@@ -246,17 +226,29 @@ export async function createRequestLink(
 /**
  * Build a "here are the answers" link from the form's current state.
  *
- * Empty and enableWhen-hidden answers are stripped first — partly hygiene, mostly size, since
- * everything removed here is payload that would otherwise count against the QR budget on the return
- * leg.
+ * The fallback channel, and the only one available to whoever is filling the form: they mint this,
+ * show it to the requester, and the requester scans it and accepts under their own session
+ * (FR-028). It is what the surface promotes when a direct send is not possible - an expired grant,
+ * a refused credential, or an invitation that carried no grant at all - so it must work with no
+ * session, no host and no network.
+ *
+ * Hence the inline transport. The whole payload is compressed into the fragment, which costs
+ * confidentiality against anyone who sees the QR code and buys the ability to hand answers back
+ * from a device that has no account anywhere. `ShareLinkPanel` states the trade where the link is
+ * shown.
+ *
+ * Empty and enableWhen-hidden answers are stripped first - partly hygiene, mostly size, since
+ * everything removed here is payload that would otherwise count against the QR budget.
  *
  * `requestTask` is the Task that arrived with the request; passing it through is what lets the
  * requester match these answers to what it asked for.
  * @param questionnaire the form the answers belong to
- * @param config the app configuration, for the link origin and codec
+ * @param config the app configuration, for the link origin
  * @param requestTask the Task that arrived with the request, when there was one
  * @returns the link
- * @throws {Error} when no registered codec can mint a link in this build
+ * @throws {Error} when the answers cannot be compressed into a link
+ * @example
+ * setLink(await createResponseLink(questionnaire, config, task));
  */
 export async function createResponseLink(
   questionnaire: Questionnaire,
@@ -267,9 +259,7 @@ export async function createResponseLink(
   const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
   const { bundle } = buildResponseBundle(response, requestTask);
 
-  const codec = encodingCodec(config, LINK_CODECS);
-
-  return codec.encode(
+  return bespokeCodec.encode(
     { bundle, label: defaultLabel(questionnaire) },
     { baseUrl: resolveLinkBaseUrl(config) },
   );

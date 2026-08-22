@@ -275,7 +275,16 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
 }
 
 /**
- * Process entry point: load configuration, open the database, listen.
+ * Signals that mean "stop", and are worth stopping cleanly for.
+ *
+ * Kubernetes sends `SIGTERM` and then waits out `terminationGracePeriodSeconds` before
+ * `SIGKILL`. Without a handler the process ignores it, so every rollout pays the whole grace
+ * period and any request in flight dies mid-response.
+ */
+const SHUTDOWN_SIGNALS = ["SIGTERM", "SIGINT"] as const;
+
+/**
+ * Process entry point: load configuration, open the database, listen, and stop cleanly.
  * @returns nothing; resolves once the server is listening
  * @throws {Error} when configuration is invalid, the database cannot be opened, or the port
  *   cannot be bound
@@ -284,6 +293,31 @@ async function main(): Promise<void> {
   const config = loadServerConfig();
   const db = openDatabase(config.sqlitePath);
   const server = buildServer({ config, db });
+
+  let stopping = false;
+  const stop = (signal: string): void => {
+    // A second signal during shutdown is impatience, not new information.
+    if (stopping) {
+      return;
+    }
+    stopping = true;
+    server.log.info({ signal }, "shutting down");
+    void server
+      .close()
+      .then(() => {
+        // Only after the last handler has returned, so nothing writes to a closed handle.
+        db.close();
+      })
+      .catch((error: unknown) => {
+        server.log.error({ err: error }, "shutdown failed");
+        process.exitCode = 1;
+      });
+  };
+
+  for (const signal of SHUTDOWN_SIGNALS) {
+    process.once(signal, stop);
+  }
+
   await server.listen({ port: config.port, host: "0.0.0.0" });
 }
 

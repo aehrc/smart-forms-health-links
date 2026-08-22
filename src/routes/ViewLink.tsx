@@ -7,7 +7,6 @@ import { ArrowLeft, KeyRound, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router-dom";
 
-import type { DirectSendTarget, SendStatus } from "@/fill/directSend";
 import type { ReceivedGrant } from "@/link/apiAccess";
 import type {
   Provenance,
@@ -24,11 +23,11 @@ import { Input } from "@/components/ui/input";
 import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
 import {
   directSendTarget,
-  initialSendStatus,
-  sendDirect,
+  promotesScanBack,
   suppressesOtherChannels,
 } from "@/fill/directSend";
 import DirectSendPanel from "@/fill/DirectSendPanel";
+import { useDirectSend } from "@/fill/useDirectSend";
 import {
   listRequests,
   updateRequest,
@@ -180,6 +179,9 @@ async function openLink(
   }
 }
 
+/**
+ *
+ */
 export default function ViewLink() {
   const location = useLocation();
 
@@ -204,13 +206,6 @@ export default function ViewLink() {
     nonce: 0,
   });
   const passcode = attempt.fragment === fragment ? attempt.passcode : undefined;
-
-  /*
-   * Null means "nothing has been attempted", not "idle": the starting state depends on the grant,
-   * which is not known until the link has been read. It is derived below rather than written by an
-   * effect, so there is never a render where a closed window looks open.
-   */
-  const [attemptedSend, setAttemptedSend] = useState<SendStatus | null>(null);
 
   const {
     data: opened,
@@ -276,45 +271,6 @@ export default function ViewLink() {
     );
   }
 
-  const target =
-    opened.mode === "request"
-      ? directSendTarget({ task: opened.task, apiAccess: opened.apiAccess })
-      : undefined;
-  const sendStatus =
-    target === undefined
-      ? undefined
-      : (attemptedSend ?? initialSendStatus(target.received));
-
-  /**
-   * Take the answers currently in the form straight to the destination.
-   *
-   * The answers are read from the renderer's store rather than passed in, because that store is
-   * where they live: the form is rendered by `FillFromRequest` below and the same `getResponse()`
-   * is what minting a response link uses. Empty and hidden answers are stripped first, and the
-   * questionnaire canonical stamped on, so the destination is told which form was answered.
-   * @param questionnaire the form that was answered
-   * @param sendTo the grant, the request identifier and the published Task URL
-   */
-  async function send(
-    questionnaire: Questionnaire,
-    sendTo: DirectSendTarget,
-  ): Promise<void> {
-    setAttemptedSend({ state: "sending" });
-    const answers = ensureQuestionnaireCanonical(
-      removeEmptyAnswersFromResponse(questionnaire, getResponse()),
-      questionnaire,
-    );
-    setAttemptedSend(
-      await sendDirect({
-        response: answers,
-        received: sendTo.received,
-        requestIdentifier: sendTo.requestIdentifier,
-        serverTaskUrl: sendTo.serverTaskUrl,
-        patientDisplay: sendTo.patientDisplay,
-      }),
-    );
-  }
-
   return (
     <div className="space-y-4">
       <BackLink />
@@ -331,32 +287,18 @@ export default function ViewLink() {
       ) : null}
 
       {opened.mode === "request" ? (
-        <>
-          {target && sendStatus ? (
-            <DirectSendPanel
-              host={target.host}
-              status={sendStatus}
-              onSend={() => void send(opened.questionnaire, target)}
-            />
-          ) : null}
-
-          {/*
-           * Once the destination has the answers there is nothing further to return, so the form
-           * and every other channel go away rather than being left disabled (FR-026).
-           */}
-          {sendStatus && suppressesOtherChannels(sendStatus) ? null : (
-            <FillFromRequest
-              questionnaire={opened.questionnaire}
-              task={opened.task}
-              label={opened.label}
-              /*
-               * Suppresses the "this request also names a server, and this app does not write
-               * there" note, which stops being true the moment a grant makes it possible.
-               */
-              directSendOffered={target !== undefined}
-            />
-          )}
-        </>
+        /*
+         * Keyed by the fragment so that opening a second link inside the same mounted route starts
+         * over: a send state and a grant window belong to one invitation, and carrying either
+         * across would describe the previous link.
+         */
+        <OpenedRequest
+          key={fragment}
+          questionnaire={opened.questionnaire}
+          task={opened.task}
+          apiAccess={opened.apiAccess}
+          label={opened.label}
+        />
       ) : (
         <ReviewResponse
           questionnaire={opened.questionnaire}
@@ -380,6 +322,79 @@ export default function ViewLink() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * An opened invitation: the direct send if there is one, and the form.
+ *
+ * Separate from {@link ViewLink} because the direct send is live state - a window that closes on a
+ * timer - and hooks cannot be called after the route's loading, passcode and error branches have
+ * returned. Splitting it also means the send state is scoped to one invitation by construction.
+ * @param props the form, the request, the grant it arrived with, and the label to show
+ * @param props.questionnaire
+ * @param props.task
+ * @param props.apiAccess
+ * @param props.label
+ * @returns the direct-send surface above the form
+ */
+function OpenedRequest(props: {
+  readonly questionnaire: Questionnaire;
+  readonly task: Task;
+  readonly apiAccess?: ReceivedGrant;
+  readonly label?: string;
+}) {
+  const { questionnaire, task, apiAccess, label } = props;
+
+  const target = directSendTarget({ task, apiAccess });
+  const { status, send } = useDirectSend(target);
+
+  return (
+    <>
+      {target && status ? (
+        <DirectSendPanel
+          host={target.host}
+          status={status}
+          /*
+           * The answers are read from the renderer's store at the moment of the send rather than
+           * threaded down and back: that store is where they live, and it is the same
+           * `getResponse()` that minting a return link uses. Empty and hidden answers are stripped
+           * and the questionnaire canonical stamped on, so the destination is told which form was
+           * answered.
+           */
+          onSend={() =>
+            send(
+              ensureQuestionnaireCanonical(
+                removeEmptyAnswersFromResponse(questionnaire, getResponse()),
+                questionnaire,
+              ),
+            )
+          }
+        />
+      ) : null}
+
+      {/*
+       * Once the destination has the answers there is nothing further to return, so the form
+       * and every other channel go away rather than being left disabled (FR-026).
+       */}
+      {status && suppressesOtherChannels(status) ? null : (
+        <FillFromRequest
+          questionnaire={questionnaire}
+          task={task}
+          label={label}
+          /*
+           * Suppresses the "this request also names a server, and this app does not write there"
+           * note, which stops being true the moment a grant makes it possible.
+           */
+          directSendOffered={target !== undefined}
+          /*
+           * ...and once that grant is spent or expired, the note is not the point any more: the
+           * link return is, so it stops being the alternative and becomes the instruction.
+           */
+          scanBackPromoted={status !== undefined && promotesScanBack(status)}
+        />
+      )}
+    </>
   );
 }
 

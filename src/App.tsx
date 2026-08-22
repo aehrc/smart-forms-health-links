@@ -27,6 +27,7 @@ import ResponseList from "./routes/ResponseList";
 import Scan from "./routes/Scan";
 import ViewLink from "./routes/ViewLink";
 
+import type { Session } from "./lib/session";
 import type { ReactNode } from "react";
 
 /**
@@ -103,19 +104,16 @@ function NavLink({
 /**
  * Who is signed in, and how to stop being.
  *
- * Shown only when there is a session, because the alternative - a permanent "signed out" chip -
- * would be noise on the filler surfaces, where being signed out is the normal condition.
- * @returns the identity and sign-out control, or nothing when signed out
+ * Rendered only inside the requester's navigation, which only exists when there is a session. The
+ * alternative - a permanent "signed out" chip - would be noise on the filler surfaces, where
+ * being signed out is the normal condition rather than a state to report.
+ * @param props the component props
+ * @param props.session the launched session this badge describes
+ * @returns the identity and sign-out control
  */
-function SessionBadge() {
-  const state = useSession();
+function SessionBadge({ session }: Readonly<{ session: Session }>) {
   const signOut = useLogout();
-
-  if (state.kind !== "active") {
-    return null;
-  }
-
-  const { issuerLabel, userDisplay } = state.session;
+  const { issuerLabel, userDisplay } = session;
 
   return (
     <div className="flex items-center gap-2 border-l border-slate-200 pl-2 dark:border-slate-800">
@@ -142,10 +140,25 @@ function SessionBadge() {
 }
 
 /**
- * The application header: brand, navigation and identity.
+ * The application header: brand, and - for a requester - navigation and identity.
+ *
+ * The navigation is a requester's navigation, all of it. Every destination in it reads or writes
+ * the launched clinical system through the session proxy - `/scan` included, since scanning a
+ * link is how a requester takes someone's answers into that system. Shown to a filler - a patient
+ * who opened an invitation on their phone and has no account anywhere - not one of those links
+ * leads to anything but a prompt to sign in to a clinic they do not work at.
+ *
+ * So an anonymous visitor gets the app's name and nothing else. It is not a permissions question
+ * (the routes gate themselves) but an honesty one: offering navigation that cannot go anywhere is
+ * the same failure as offering a send that cannot land.
+ *
+ * The loading state shows no navigation either, deliberately. A brief flash of clinician links on
+ * a patient's phone is worse than a header that fills in a moment later.
  * @returns the header
  */
 function Header() {
+  const state = useSession();
+
   return (
     <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
@@ -156,21 +169,23 @@ function Header() {
           <QrCode className="h-5 w-5" aria-hidden />
           Smart Forms Health Links
         </RouterLink>
-        <nav className="ml-auto flex flex-wrap items-center gap-1">
-          <NavLink to="/patients" icon={Users}>
-            Patients
-          </NavLink>
-          <NavLink to="/responses" icon={ClipboardList}>
-            Responses
-          </NavLink>
-          <NavLink to="/requests" icon={Inbox}>
-            Sent requests
-          </NavLink>
-          <NavLink to="/scan" icon={ScanLine}>
-            Scan
-          </NavLink>
-          <SessionBadge />
-        </nav>
+        {state.kind === "active" ? (
+          <nav className="ml-auto flex flex-wrap items-center gap-1">
+            <NavLink to="/patients" icon={Users}>
+              Patients
+            </NavLink>
+            <NavLink to="/responses" icon={ClipboardList}>
+              Responses
+            </NavLink>
+            <NavLink to="/requests" icon={Inbox}>
+              Sent requests
+            </NavLink>
+            <NavLink to="/scan" icon={ScanLine}>
+              Scan
+            </NavLink>
+            <SessionBadge session={state.session} />
+          </nav>
+        ) : null}
       </div>
     </header>
   );

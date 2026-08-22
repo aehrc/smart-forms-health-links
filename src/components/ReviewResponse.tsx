@@ -24,11 +24,9 @@ import {
   type SubmitResult,
 } from "@/fhir/submit";
 import { useConfig } from "@/lib/configContextValue";
-// TODO(phase-5): T045 finishes the proxy write path. Responses are already written through
-// `/api/fhir` here, but `src/fhir/submit.ts` still uses a bare `fetch`, so a session that has
-// expired mid-review surfaces as a plain FHIR error rather than as a re-launch prompt.
-import { FHIR_PROXY_BASE } from "@/lib/session";
+import { FHIR_PROXY_BASE, isSessionEnded } from "@/lib/session";
 import { taskCorrelationId } from "@/link/exchange";
+import Connect from "@/routes/Connect";
 
 export interface ReviewResponseProps {
   /**
@@ -88,6 +86,11 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const [results, setResults] = useState<SubmitResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  /*
+   * Separate from `error`, because it is not one: nothing about the answers is wrong, and the
+   * remedy is a launch rather than a correction.
+   */
+  const [sessionEnded, setSessionEnded] = useState(false);
 
   /*
    * Patient reconciliation. A response from a third-party filler names a patient in *that* app's terms
@@ -222,10 +225,24 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         onSaved?.();
       }
     } catch (error_) {
+      /*
+       * A review takes as long as a person takes to read, and a session can die inside that. The
+       * answers are still here and still acceptable - what is missing is the authority to write
+       * them - so the honest surface is a launch prompt, not a FHIR error nobody can act on.
+       */
+      if (isSessionEnded(error_)) {
+        setSessionEnded(true);
+        return;
+      }
+
       setError(error_ instanceof Error ? error_.message : String(error_));
     } finally {
       setIsSaving(false);
     }
+  }
+
+  if (sessionEnded) {
+    return <Connect reason="session-expired" />;
   }
 
   const saved = results?.filter((result) => result.responseId) ?? [];

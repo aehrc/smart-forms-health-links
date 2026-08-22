@@ -13,8 +13,11 @@ import {
 } from "@/fhir/formsServer";
 import { useConfig } from "@/lib/configContextValue";
 import { FHIR_PROXY_BASE } from "@/lib/session";
-import { canCreateHealthLinks, createResponseLink } from "@/link/createLink";
+import { createResponseLink } from "@/link/createLink";
 
+/**
+ *
+ */
 export default function FillForm() {
   const { questionnaireId } = useParams<{ questionnaireId: string }>();
   const config = useConfig();
@@ -22,8 +25,6 @@ export default function FillForm() {
   const [link, setLink] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-
-  const canHost = canCreateHealthLinks(config);
 
   const {
     data: questionnaire,
@@ -100,10 +101,8 @@ export default function FillForm() {
           onClick={() => {
             void handleCreateLink();
           }}
-          disabled={isCreating || !canHost}
-          title={
-            canHost ? undefined : "Link creation is not available in this build"
-          }
+          disabled={isCreating}
+          title="The answers travel inside the link, so it needs nothing hosted"
           className="ml-auto"
         >
           {isCreating ? (
@@ -114,20 +113,6 @@ export default function FillForm() {
           {isCreating ? "Creating…" : "Create link"}
         </Button>
       </div>
-
-      {canHost ? null : (
-        <Alert tone="warning" title="Links cannot be created yet">
-          {/*
-            TODO(phase-4): T031 moves minting to `POST /api/invitations`, which hosts the
-            encrypted payload on this app's own server. Until then there is nowhere to put one,
-            because the third-party blob server that used to host them went with anonymous mode.
-          */}
-          Answers are shared as a SMART Health Link, whose encrypted payload has
-          to be hosted somewhere. Hosting moves to this app&rsquo;s own server,
-          which is not implemented yet. The form below still works; there is
-          just nowhere to put the result.
-        </Alert>
-      )}
 
       {linkError ? (
         <Alert tone="error" title="Could not create link">

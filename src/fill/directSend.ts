@@ -50,7 +50,11 @@ import type {
   Task,
 } from "fhir/r4";
 
-import { destinationHost, isGrantExpired } from "@/link/apiAccess";
+import {
+  destinationHost,
+  grantExpiresAt,
+  isGrantExpired,
+} from "@/link/apiAccess";
 import { PATIENT_ASSERTED_SECURITY, taskCorrelationId } from "@/link/exchange";
 import { parseServerTaskUrl } from "@/link/replyDescriptor";
 
@@ -335,6 +339,8 @@ export function buildSubmissionTransaction(
  * returns undefined, and undefined means "send the answers without a Task entry". Nothing about
  * the Task is worth failing a send over.
  * @param options the grant and the published Task URL the invitation named
+ * @param options.grant
+ * @param options.serverTaskUrl
  * @returns the Task, or undefined when there is none this send may complete
  * @example
  * const task = await readDestinationTask({ grant, serverTaskUrl });
@@ -404,19 +410,70 @@ export async function readDestinationTask(options: {
 }
 
 /**
- * The state a freshly received grant starts in.
+ * How long until the grant's stated window closes.
+ *
+ * Measured from the moment the grant arrived, which is the only clock a filler has any authority
+ * over. Nothing here compares against a timestamp the token endpoint or the resource server
+ * chose, so a backend running an hour fast changes none of it (spec edge case: clock skew).
  * @param received the grant and the moment it was received
  * @param now epoch milliseconds; defaults to the current time
- * @returns `idle`, or `expired` when the grant's stated window has already closed
+ * @returns milliseconds remaining, or undefined when the grant stated no window or it has closed
  * @example
- * const [status, setStatus] = useState(initialSendStatus(received));
+ * const delay = msUntilWindowCloses(received);
+ * if (delay !== undefined) setTimeout(close, delay);
  */
-export function initialSendStatus(
+export function msUntilWindowCloses(
   received: ReceivedGrant,
   now = Date.now(),
-): SendStatus {
+): number | undefined {
+  const closesAt = grantExpiresAt(received);
+  if (closesAt === undefined || closesAt <= now) {
+    return undefined;
+  }
+
+  return closesAt - now;
+}
+
+/** What the current state of a send is derived from. */
+export interface SendStatusOptions {
+  /** The grant, with the moment it was received. */
+  readonly received: ReceivedGrant;
+  /** The state of the last attempt, when there has been one. */
+  readonly attempted?: SendStatus;
+  /** Epoch milliseconds to judge the window against; defaults to the current time. */
+  readonly now?: number;
+}
+
+/**
+ * The state a send is in right now, given what has been attempted and where the window is up to.
+ *
+ * Two rules, and the second is the one that is easy to get wrong. The clock may **close** a
+ * channel that is still being offered - an untouched grant, or one whose last attempt failed and
+ * left a retry on screen - because a request from a closed window is precisely what FR-025
+ * forbids. The clock may never **rewrite an outcome**: a send the destination accepted stays
+ * accepted, and a refusal stays the more useful of the two explanations. Answers already in
+ * someone's record are not un-written by a token expiring afterwards, and saying "the window has
+ * closed" over a completed send would read as though nothing had happened.
+ * @param options the grant, the last attempt if any, and the moment to judge against
+ * @returns the state to present
+ * @example
+ * const status = currentSendStatus({ received: target.received, attempted, now });
+ */
+export function currentSendStatus(options: SendStatusOptions): SendStatus {
+  const { received, attempted } = options;
+  const now = options.now ?? Date.now();
+
+  /*
+   * The states the clock may still close are exactly the states a send could still be started
+   * from, and for the same reason: they are the ones where nothing has happened yet at the
+   * destination. Everything else has an outcome of its own to report.
+   */
+  if (attempted !== undefined && !canSend(attempted)) {
+    return attempted;
+  }
+
   if (!isGrantExpired(received, now)) {
-    return { state: "idle" };
+    return attempted ?? { state: "idle" };
   }
 
   return {
@@ -453,6 +510,25 @@ export function suppressesOtherChannels(status: SendStatus): boolean {
 }
 
 /**
+ * Whether this state makes the scan-back return the primary way back.
+ *
+ * True for the two states that shut the direct channel with nothing delivered: an expired window
+ * and a refused credential. Both are permanent for this invitation, and both leave a completed
+ * set of answers on the device with exactly one way home, so that way stops being the alternative
+ * and becomes the instruction (FR-025, FR-028).
+ *
+ * False for a retryable failure, deliberately. Its primary action is the retry, and pointing
+ * someone at a QR code because a network blipped would be worse advice than saying nothing.
+ * @param status where the send is up to
+ * @returns true when the fallback should be presented as the primary action
+ * @example
+ * <FillFromRequest scanBackPromoted={promotesScanBack(status)} … />
+ */
+export function promotesScanBack(status: SendStatus): boolean {
+  return status.state === "expired" || status.state === "refused";
+}
+
+/**
  * Post the answers to the grant's destination.
  *
  * The classification at the end is the whole point of returning a state rather than throwing.
@@ -479,8 +555,13 @@ export async function sendDirect(
   const { grant } = received;
   const host = destinationHost(grant);
 
+  /*
+   * Before anything else, and before anything is built. The send is reachable from a state that
+   * was derived a moment ago, and a window can close in that moment - so this is the check that
+   * makes "no request from an expired grant" true rather than likely (FR-025).
+   */
   if (isGrantExpired(received, now)) {
-    return initialSendStatus(received, now);
+    return currentSendStatus({ received, now });
   }
 
   if (httpsOrigin(grant.aud) === undefined) {
@@ -584,6 +665,8 @@ export interface DirectSendTarget {
  * Returning undefined is how "no direct channel" is expressed all the way to the surface: no
  * disclosure, no button, and the scan-back return untouched (FR-020).
  * @param options the invitation's Task and the grant its manifest carried, if any
+ * @param options.task
+ * @param options.apiAccess
  * @returns what a send needs, or undefined when there is no direct channel to offer
  * @example
  * const target = directSendTarget({ task, apiAccess: content.apiAccess });
