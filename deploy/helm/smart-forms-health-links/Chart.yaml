@@ -1,0 +1,12 @@
+# Author: John Grimes
+apiVersion: v2
+name: smart-forms-health-links
+description: Smart Forms Health Links, a single-page app for sending and filling FHIR Questionnaires over SMART Health Links
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/aehrc/smart-forms-health-links
+sources:
+  - https://github.com/aehrc/smart-forms-health-links
+maintainers:
+  - name: John Grimes

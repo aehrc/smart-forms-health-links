@@ -1,0 +1,17 @@
+# Author: John Grimes
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-service
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.smartFormsHealthLinks.service.type | quote }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.smartFormsHealthLinks.service.port }}
+      targetPort: http
+      protocol: TCP

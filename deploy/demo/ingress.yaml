@@ -1,0 +1,39 @@
+# Ingress for the demo deployment on the pathling-demo cluster.
+#
+# EKS auto mode's ALB controller reads these annotations: one internet-facing
+# ALB - the scheme comes from the alb-params IngressClassParams - listening on
+# 443 only, terminating TLS with the ACM certificate for formlinks.fhirapp.net.
+# The health check names /healthz rather than the default /, so a pod that is
+# serving the SPA shell but not yet ready is not counted as healthy.
+#
+# The chart does not template this, matching the cluster's pattern of ingresses
+# applied beside the release.
+#
+# Author: John Grimes
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: smart-forms-health-links-ingress
+  namespace: formlinks
+  annotations:
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-2:865780493209:certificate/7e3727b7-6e60-46a7-ad42-fc55f6095787
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    # Plain HTTP is answered only to send the browser to HTTPS. Without this the
+    # ALB has no listener on 80 and an http:// link fails to connect rather than
+    # arriving somewhere.
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+spec:
+  ingressClassName: alb
+  rules:
+    - host: formlinks.fhirapp.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: smart-forms-health-links-service
+                port:
+                  number: 80
