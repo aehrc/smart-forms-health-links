@@ -8,7 +8,12 @@
 #
 # Author: John Grimes
 
-FROM node:24-alpine AS build
+# The build output is JavaScript, HTML and CSS, which is the same whatever the
+# target architecture, so the build runs natively on the builder's own
+# architecture and its output is copied into a per-architecture nginx image.
+# Building on the target architecture instead would mean running npm under
+# emulation for every architecture but the builder's own.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
 
 WORKDIR /build
 
