@@ -214,7 +214,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 {matchedRequest.subjectDisplay ? ` for ${matchedRequest.subjectDisplay}` : ''}, sent{' '}
                 {new Date(matchedRequest.createdAt).toLocaleDateString()}.
               </>
-            ) : correlationId ? (
+            ) : (correlationId ? (
               <>
                 {' '}
                 Request <span className="font-mono text-xs">{correlationId}</span> — not one this
@@ -222,7 +222,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               </>
             ) : (
               ' No Task accompanied these answers, so they cannot be matched to a request.'
-            )}
+            ))}}
           </p>
         </div>
 
@@ -241,19 +241,27 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       {isPatientAsserted(response) ? (
         <Alert title="Patient-asserted answers">
           <span className="inline-flex items-center gap-1.5">
-            <ShieldCheck className="h-3.5 w-3.5 text-slate-500" aria-hidden />
-            These answers are labelled <span className="font-mono text-xs">PATAST</span> — recorded by
-            the person themselves rather than by a clinician.
-          </span>
-          <p className="mt-1">
-            The label {provenance ? 'and its Provenance are' : 'is'} preserved on save, so the record
-            keeps who said this.
-          </p>
-        </Alert>
-      ) : null}
-
-      {results === null && !canSave ? (
-        <Alert tone="warning" title="Nowhere to save this">
+            {matchedRequest ? (
+              <>
+                {" "}
+                Answering your request <strong>{matchedRequest.label}</strong>
+                {matchedRequest.subjectDisplay
+                  ? ` for ${matchedRequest.subjectDisplay}`
+                  : ""}
+                , sent {new Date(matchedRequest.createdAt).toLocaleDateString()}
+                .
+              </>
+            ) : (correlationId ? (
+              <>
+                {" "}
+                Request{" "}
+                <span className="font-mono text-xs">{correlationId}</span> — not
+                one this browser sent, so there is no local record to match it
+                against.
+              </>
+            ) : (
+              " No Task accompanied these answers, so they cannot be matched to a request."
+            ))}
           {NO_DESTINATION_MESSAGE}
         </Alert>
       ) : null}
@@ -382,10 +390,10 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           <p className="mt-1">
             {isFormDeclared
               ? 'Declared by the questionnaire itself via sdc-questionnaire-endpoint.'
-              : questionnaire
+              : (questionnaire
                 ? 'From app configuration; this questionnaire does not declare an endpoint.'
                 : 'From app configuration. The form definition could not be resolved, so its ' +
-                  'sdc-questionnaire-endpoint — if it declares one — was not consulted.'}
+                  'sdc-questionnaire-endpoint — if it declares one — was not consulted.')}
           </p>
         </Alert>
       ) : null}
@@ -400,9 +408,9 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                   QuestionnaireResponse/{result.responseId}
                   {result.taskId ? ` · Task/${result.taskId}` : ' · Task not saved'}
                   {provenance
-                    ? result.provenanceId
+                    ? (result.provenanceId
                       ? ` · Provenance/${result.provenanceId}`
-                      : ' · Provenance not saved'
+                      : ' · Provenance not saved')
                     : ''}
                 </span>
               </li>
