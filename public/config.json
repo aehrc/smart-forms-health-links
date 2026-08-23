@@ -10,6 +10,8 @@
   "senderName": null,
   "enableServerReturn": false,
   "enableEncryptedReply": false,
+  "enableOneShotWrite": false,
+  "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
   "publishRequestTasks": true
 }

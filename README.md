@@ -26,7 +26,9 @@ cannot currently be opened by third-party SHL wallets.
 - [Quick start](#quick-start) — install, then walk the round trip end to end
 - [What it does](#what-it-does) — the routes
 - [The round trip](#the-round-trip) — ten steps, with measured sizes
-- [Three ways to return answers](#three-ways-to-return-answers) — and why A is the default
+- [Four ways to return answers](#four-ways-to-return-answers) — and why A is the default
+- [Amendments are new resources](#amendments-are-new-resources) — why the review screen is read-only
+- [Creating a patient at review time](#creating-a-patient-at-review-time) — the duplicate problem
 - [How links work](#how-links-work)
 - [Two transports, one interface](#two-transports-one-interface)
 - [Three servers, three jobs](#three-servers-three-jobs)
@@ -53,7 +55,7 @@ how SHL is usually described:
 3. **Answers can come back over SHL without going off-spec.** SHL is strictly one-directional and
    defines no upload channel — so the return leg is *another SHL*, minted by the filler and scanned
    by the requester, who performs the write themselves. See
-   [Three ways to return answers](#three-ways-to-return-answers).
+   [Four ways to return answers](#four-ways-to-return-answers).
 4. **A human reviews before anything is stored.** Answers arrive, get rendered read-only, and are
    written only on accept. The one channel that skips review is off by default and labelled as such.
 5. **Reading a link somebody else wrote is the hard part**, and it is where a strict implementation
@@ -124,10 +126,15 @@ demo the QR codes.
 8. **Review and accept.** The answers render read-only. The subject is probed against the EHR
    first, so a patient the destination does not hold — or answers that name no patient at all —
    surfaces as a question rather than a failed write or a silently unfiled record. Search the
-   destination for the right patient there and then; the answers only exist in the browser at that
-   point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
+   destination for the right patient there and then — and if they are genuinely not there, create
+   them, which is offered once a search has come back empty. The answers only exist in the browser at
+   that point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
    `QuestionnaireResponse` and the `Task`.
-9. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
+9. **Amend, if you have to.** The form stays read-only — see
+   [Amendments are new resources](#amendments-are-new-resources). *Amend these answers* opens an
+   editable copy and writes your changes as a **second** response authored by you, joined to the
+   first by a `Provenance`. Both versions survive, and the record says who wrote each.
+10. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
    flips to **Accepted** — the scanned answers are matched back to the request on `Task.identifier`,
    which is the one key that survives both copies.
 
@@ -203,7 +210,7 @@ Measured on the live server for the GP Chronic Condition Management Plan:
 | **The link itself** | **271** |
 | Return payload (no Questionnaire) | 1,119 |
 
-## Three ways to return answers
+## Four ways to return answers
 
 **SMART Health Links are strictly one-directional.** Neither the
 [SHL spec](https://docs.smarthealthit.org/smart-health-links/spec/) nor the
@@ -216,13 +223,15 @@ a filler publishes a link, this app pulls it, shows a human, and only then write
 Answers travel the same way the request did — as a SMART Health Link, in the direction SHL already
 supports — and the return leg is just another scan.
 
-| | A · return a link | B · write to our server | C · encrypted reply |
-|---|---|---|---|
-| Who it suits | anything that can mint a link and show a QR | a filler that can reach our server | a filler that cannot get a QR back to us |
-| Needs from us | nothing | a writable FHIR endpoint | somewhere to `PUT` a file |
-| Reviewed before it lands? | yes | **no** | yes |
-| Host sees answers? | no, ciphertext only | yes — it is the record | no, ciphertext only |
-| Default | **on** | off | off |
+| | A · return a link | B · write to our server | C · encrypted reply | D · write once to a slot |
+|---|---|---|---|---|
+| Who it suits | anything that can mint a link and show a QR | a filler that can reach our server | a filler that cannot get a QR back to us | a filler that cannot do C's crypto |
+| Needs from us | nothing | a writable FHIR endpoint | somewhere to `PUT` a file | a FHIR server we can create on |
+| Needs from them | mint a link, show a QR | `POST` | ECDH-ES + A256GCM | `PUT` |
+| Reviewed before it lands? | yes | **no** | yes | yes |
+| Host sees answers? | no, ciphertext only | yes — it is the record | no, ciphertext only | yes — but it is transport |
+| Answerable more than once? | yes | yes | yes, last wins | **no** |
+| Default | **on** | off (superseded by D) | off | off |
 
 **A is the primary channel**, and it is the one [Platypus](https://github.com/aehrc/platypus) uses:
 the form is filled there, Platypus mints its own `shlink:/` carrying the QuestionnaireResponse, and
@@ -240,13 +249,35 @@ only what this app *mints*. A request from a third party that offers a reply des
 answerable here regardless, because refusing to honour someone else's return channel would strand
 their answers rather than protect anyone.
 
-**B is opt-in and does not preserve the review posture.** It declares `sdc-questionnaire-endpoint` on
-the form and publishes the request's `Task`, so a filler holding nothing but the link can `POST` a
-response straight into the configured server. That is ordinary SDC and needs no infrastructure, but
-the answers arrive unreviewed and the endpoint must accept anonymous writes. Point it at a staging
-server if you want both. Off unless `enableServerReturn` is set.
+**D is C's answer for a filler that cannot do crypto**, and is off by default
+(`enableOneShotWrite`). The request pre-allocates an empty `QuestionnaireResponse` on the blob server
+and carries its address, the version it is at, and a token. The filler `PUT`s the answers there with
+`If-Match`; the requester polls the slot, reviews, and only then writes to the record. Turn it on
+alongside or instead of C when the fillers you expect can manage a `PUT` and not much more.
 
-The wire format for B and C is specified in [`docs/shl-form-reply-channel.md`](docs/shl-form-reply-channel.md);
+Two things about D that are easy to get wrong, and both are load-bearing:
+
+- **"Once" comes from `If-Match`, not from the token.** The second write collides with the version the
+  first one created and the server refuses it — verified live against public HAPI, which answers
+  `HAPI-0989: Trying to update QuestionnaireResponse/… but this is not the current version`. A plain
+  FHIR server has no notion of bearer tokens and ignores ours entirely; it is carried because it is
+  the field a gating host would check, and it is **advisory** anywhere else. Nothing in this app
+  implies otherwise.
+- **The slot is not on the record server.** It is minted on `blobServerUrl` — transport, the same
+  trust class as the host already holding the encrypted payload — so answers are collected and
+  reviewed before anything reaches a record. Point it at the record server and you have rebuilt B.
+
+The cost, stated plainly: **the slot host sees the answers.** They are ordinary FHIR, not ciphertext.
+That is the trade for a channel a filler can implement in an afternoon, and it is why C is not
+retired.
+
+**B is superseded by D and should not be turned on for anything new.** It declares
+`sdc-questionnaire-endpoint` on the form and publishes the request's `Task`, so a filler holding
+nothing but the link can `POST` a response straight into the configured server. That is ordinary SDC
+and needs no infrastructure, but it names a record server, carries no capability, cannot be made
+single-use, and the answers arrive unreviewed. Off unless `enableServerReturn` is set.
+
+The wire format for B, C and D is specified in [`docs/shl-form-reply-channel.md`](docs/shl-form-reply-channel.md);
 what this app accepts as an inbound response link is in [`docs/response-links.md`](docs/response-links.md).
 Both are written so a third party can implement against them without reading this source.
 
@@ -318,6 +349,112 @@ untrusted host: the file is a JWE and the key travels only in the link, so the h
 plaintext. That is why a FHIR `Binary` on an open server is a legitimate file host and no
 S3/lambda tier is required. It is also, for a different reason, currently the thing that stops
 third-party wallets opening these links — see [Known limitations](#known-limitations).
+
+## Amendments are new resources
+
+The review screen renders the incoming form **read-only**, and that is a design decision rather than a
+missing feature. It is the first thing people try to change, so it is worth setting out why.
+
+Answers arriving over the encrypted channel carry two claims about who said them: `meta.security` =
+`PATAST`, and a `Provenance` naming the patient as author. `submit.ts` deliberately preserves both on
+save. Editing the answers in place and writing them under those would file words the reviewer typed as
+words the patient asserted, and nothing downstream could separate the two.
+
+So the original is stored exactly as it arrived, and an amendment is a **second**
+`QuestionnaireResponse`:
+
+| | original | amendment |
+| --- | --- | --- |
+| `author` | absent, or the filler's | the reviewer, by name — required before the button enables |
+| `source` | the patient | **still the patient** — they did answer the questions |
+| `meta.security` | `PATAST` | `PATAST` removed; every other label, tag and profile kept |
+| `item` | as given | as edited |
+
+The two are joined by a `Provenance` with `activity` = v3 `UPDATE` and `entity.role` = `revision`
+pointing at the original. It has to be a Provenance because R4 offers nothing better:
+`QuestionnaireResponse.partOf` takes only `Procedure|Observation` and `basedOn` only
+`CarePlan|ServiceRequest`, so neither can name the response being revised. This is the same shape as
+the correlation problem in [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel),
+and it has the same cause.
+
+Three details that are easy to get wrong:
+
+- **`author` and `source` are not the same field.** `author` is who *recorded* the answers, `source` is
+  who *answered* them. The amender becomes the author of their version; `source` rides through
+  untouched, because overwriting it would erase that a patient answered at all.
+- **`PATAST` is dropped from the amended copy, not from the original.** An amended document is no
+  longer wholly the patient's words, so carrying the label across would assert something false about
+  the parts that changed. Removing it understates the other direction — most of the content usually
+  *is* patient-asserted — but that error is recoverable through the Provenance, and the other is not.
+- **The `Provenance` failing is not a footnote here.** On the inbound path a lost Provenance costs
+  attribution accompanying the clinical content, so it is warned about and shrugged off. On this path
+  it is the *only* thing joining two otherwise unrelated responses, so a failure is reported as an
+  error telling the reviewer they have an orphan to fix by hand.
+
+Amending twice chains: the second revises the first, not the original. And the original's `versionId`
+is never bumped, which `check:amend` asserts by re-reading it — a server-side fact that no amount of
+reading the code will prove.
+
+## Creating a patient at review time
+
+Answers come back for somebody the destination server has never heard of more often than the design
+admits — a walk-in, a new referral, anyone not yet registered. Until there was a way to create them,
+the only remaining option was *save without a subject*, which files the answers against nobody,
+permanently.
+
+So the picker offers a fourth way out, and the ordering is the whole safety story. There is no master
+patient index here and no fuzzy matching, and **a duplicate patient record is a worse outcome than a
+slow reconciliation** — a person's history split across two records, with nothing to notice it. What
+the design has instead is sequence: searching happens first, creating is the way out of an empty
+result, and before the write the form re-searches the family name alone, because the reviewer probably
+searched a full name and the server may spell the rest differently. A hit there is shown as a warning
+with the matching records offered as one-click alternatives, never as a block — two people really can
+share a surname.
+
+**Every field is typed by a human, and that is forced by the wire format rather than chosen.** No
+channel carries demographics: `parseResponseBundle` extracts only the QuestionnaireResponse, its Task
+and its Provenance, and a `Patient` entry in a bundle is dropped. The most that can travel is a
+free-text name in `subject.display` — which this app previously discarded and now reads, purely to
+seed a field a human checks. It is still never carried onto a reference: `reconciledResponse` replaces
+the display rather than merging it, and a created patient is labelled with the name *the destination
+server now holds*.
+
+What the created record carries, and does not:
+
+| | |
+| --- | --- |
+| `name.family` | **required** — `searchPatients` sorts and searches by it, so a record without one is invisible to the very picker that would have to find it next time |
+| `name.given` | optional, split from the seed name — the split is a guess, shown in two editable fields rather than applied silently |
+| `birthDate`, `gender` | optional, and omitted entirely when blank. A cleared `<input type="date">` yields `''`, which is not a FHIR `date` |
+| `identifier` | **never**. The one field where a typo makes a false claim that silently mis-matches records elsewhere. There is no HI Service lookup here and no authenticated user |
+| `name.text` | **never**. `patientDisplay` falls back to the joined parts, so omitting it costs nothing and removes the trap of `text` and the parts disagreeing |
+| `name.use`, `active` | **never**. Both are claims nothing here can support |
+
+Created on the *destination* server — `destinations[0]`, the same one the subject probe uses — because
+a reference is only worth anything on the server the answers will be stored on, and a questionnaire
+declaring its own `sdc-questionnaire-endpoint` sends the write elsewhere. With several destinations the
+others stay best-effort, and the panel says so.
+
+The `Patient` is `POST`ed on click rather than bundled into the save. That leaves an orphan if the
+reviewer then abandons the review, which is the honest cost of the alternative being worse: a
+`transaction` Bundle would make a Task the server dislikes lose the clinical content, demands
+transaction support from an arbitrary `sdc-questionnaire-endpoint`, and would never let the reviewer
+see the reference before committing to it. A patient with nothing filed against them is the least
+harmful orphan available; the one worth preventing is a duplicate, and only the search-first ordering
+prevents that.
+
+### The caching proxy, which is not a footnote
+
+`searchPatients` sends `Cache-Control: no-cache`, and the reason is worth knowing before anyone
+removes it. The default response server sits behind a caching proxy that stores search responses
+**including empty ones**. Search for a patient who does not exist, create them, repeat the same
+search, and the proxy replays the negative result — `x-cache: HIT` — so the patient just created
+appears not to exist. That is precisely the state that produces a second record. `check:patient`
+repeats the *identical* search that came back empty rather than varying it to dodge the cache, since
+a variation would test something nobody experiences.
+
+Belt and braces, the picker also pins what it created into its own list, so the UI stays truthful
+against a server with a genuine indexing lag rather than a cache.
 
 ## How links work
 
@@ -463,6 +600,8 @@ This is what ships, and it is a working demo as-is:
   "senderName": null,
   "enableServerReturn": false,
   "enableEncryptedReply": false,
+  "enableOneShotWrite": false,
+  "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
   "publishRequestTasks": true
 }
@@ -485,6 +624,8 @@ rather than a demo.
 | `senderName` | `Task.requester.display`. An invitation that cannot say who sent it is one a patient has reason to decline |
 | `enableServerReturn` | offer channel B. **Off by default** — it accepts answers without review |
 | `enableEncryptedReply` | offer channel C, the encrypted reply slot. **Off by default** — answers come back as a link the filler mints. Turn it on when a filler may have no way to show you a QR code. Requires `blobServerUrl` |
+| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **Off by default.** Turn it on for fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
+| `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
 | `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
 | `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
 
@@ -576,6 +717,7 @@ src/
     FillFromRequest.tsx  the filler's side: render, then return answers
     ReviewResponse.tsx   the requester's side: read-only review, then write
     PatientPicker.tsx  inline patient search, at both ends of the round trip
+    CreatePatientForm.tsx  registering somebody the destination server does not hold
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
     ShareLinkPanel.tsx QR + copyable link
   link/
@@ -586,6 +728,7 @@ src/
     exchange.ts        resolves a link into something renderable
     jwe.ts             alg:dir + A256GCM
     replyCrypto.ts     ECDH-ES + A256GCM, P-256 — channel C
+    writeSlot.ts       pre-allocate, write once, poll — channel D
     replySlot.ts       minting and reading the reply slot
     replyDescriptor.ts the wire format for channels B and C
     collectReply.ts    pulling and decrypting a reply
@@ -595,6 +738,8 @@ src/
     ehrServer.ts       patients, responses, published request Tasks
     blobStore.ts       Binary create/read, and the Location-header workaround
     submit.ts          the write: endpoint resolution, meta handling, Provenance
+    amend.ts           amendments as a new resource joined by a revision Provenance
+    newPatient.ts      building a Patient from what a reviewer typed
   lib/
     config.ts          AppConfig, validation, and the fallback
     requestStore.ts    reply keys in localStorage
@@ -603,9 +748,12 @@ src/
 scripts/
   roundtrip.ts         npm run check:roundtrip — no network
   e2eShl.ts            npm run check:e2e-shl   — live, writes and cleans up
+  e2eWrite.ts          npm run check:e2e-write — live, writes and cleans up
   e2eLink.ts           npm run check:e2e       — the legacy decode path
+  e2eAmend.ts          npm run check:amend     — live, writes and cleans up
+  e2ePatient.ts        npm run check:patient   — live, writes and cleans up
 docs/
-  shl-form-reply-channel.md   wire format for channels B and C
+  shl-form-reply-channel.md   wire format for channels B, C and D
   response-links.md           what counts as an inbound response link
   u-flag-hosting.md           the third-party blocker, in full
 public/config.json     runtime config
@@ -646,7 +794,13 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
   replies, permanently. See [Notes](#notes).
 - **A reply slot hosted as a plain `Binary` can be overwritten by anyone who can reach the server.**
   They cannot read it. `replyToken` is reserved in the descriptor for hosts that can gate writes.
-- **The default servers are shared public sandboxes** and are wiped periodically.
+- **The default servers are shared public sandboxes** and are wiped periodically. The response server
+  also sits behind a caching proxy that caches empty search results — see
+  [the caching proxy](#the-caching-proxy-which-is-not-a-footnote).
+- **A patient created at review time is not identity-verified and is not matched against anything.**
+  The demographics are typed by a reviewer from an unverified scan, no identifier is minted, and
+  duplicate detection goes no further than re-searching the family name. There is no master patient
+  index and no fuzzy matching.
 - **No automated browser tests.** The checks cover the codecs, crypto, wire formats and the live
   FHIR round trip; the UI is verified by hand.
 
@@ -655,12 +809,21 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 195 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
+npm run check:roundtrip  # 231 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
 # Reads the forms server, writes only to SHL_WRITE_SERVER
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-shl
+
+# 23 checks: the one-shot write channel, including that a SECOND write is actually refused
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-write
+
+# 21 checks: amending answers somebody else gave, without editing what they said
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
+
+# 30 checks: creating a patient the destination server does not hold, and filing answers against them
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:patient
 ```
 
 `check:roundtrip` needs neither network nor hosting, so it is the one to run on every change. It
@@ -691,6 +854,32 @@ nowhere in the `shlink:` string, that the slot holds ciphertext only, that a str
 decrypt it, that `PATAST` and the `Provenance` survive all the way into storage, and that the stored
 Task points at the response's *real* id rather than a `urn:uuid`. It also asserts the
 unresolvable-subject failure mode above.
+
+`check:e2e-write` exists for one assertion, and the rest of it is scaffolding to reach that assertion:
+**the second write is refused.** Everything about channel D that could be checked offline already is;
+what cannot be is whether a real FHIR server actually honours `If-Match`, and therefore whether
+"once" is a fact or a hope. It mints a slot, seals a request around it, decodes it as the filler
+would, writes the answers, writes them *again*, and requires the second attempt to come back
+`taken` — against public HAPI that is `409 HAPI-0989`. It also asserts the token and the slot id
+appear nowhere in the `shlink:` string, that `PATAST` survives the round trip, that the filler's own
+patient reference deliberately does not, and that what lands in the record is a new resource rather
+than the transport slot.
+
+`check:amend` covers the amendment path, and it is written mostly as a set of things that must **not**
+happen: the original is never updated in place, its `PATAST` label never rides along onto content the
+reviewer wrote, and the patient never ends up named as the author of words they did not say. Each is a
+one-line mistake to make and invisible afterwards, so the original is re-read and compared — version
+included — rather than assumed untouched. It also asserts the `Provenance` actually joins the two, since
+without it the server holds two unrelated responses.
+
+`check:patient` ends at the assertion the feature exists for: a `QuestionnaireResponse` naming the
+newly created patient is accepted by a server that enforces referential integrity. That claim is only
+worth anything beside its **control** — the same write with the filler's original unresolvable subject
+must still be rejected. Without it, the success could equally mean the server had stopped enforcing
+integrity, and creating the patient achieved nothing. It also asserts the builder fabricates no
+identifier and no full-text name, that a blank date of birth is *absent* rather than an empty string,
+that a nameless create is refused before any network call, and that the repeated search really does
+find the new patient rather than a cached "nobody by that name".
 
 It also publishes a request `Task` and searches it back out by tag, because that is a **server-side**
 constraint a unit check cannot prove — a canonical in `Task.focus` is rejected outright, and nothing
@@ -753,7 +942,9 @@ foreign-shaped payloads this app would never itself produce.
   against nobody, permanently, so it is asked about just as loudly as a subject that does not resolve.
 - **Nothing is written without review — on channels A and C.** `ReviewResponse` renders read-only on
   purpose: editing another party's answers before committing them would blur who recorded what and make
-  the response's `author`/`source` describe a document that no longer exists. Channel B is the
+  the response's `author`/`source` describe a document that no longer exists. Changing something is
+  still possible, as a separate amendment resource — see
+  [Amendments are new resources](#amendments-are-new-resources). Channel B is the
   exception, by construction: it hands a filler an endpoint and the answers land unreviewed. That is
   why it is off by default.
 - **A foreign `id` is stripped before writing, but not the whole of `meta`.** A response from another

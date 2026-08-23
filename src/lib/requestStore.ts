@@ -31,6 +31,21 @@ export interface StoredReplyChannel {
   privateJwk: ReplyPrivateJwk;
 }
 
+export interface StoredWriteChannel {
+  /** The pre-allocated QuestionnaireResponse the filler may write to. */
+  url: string;
+  /** The version the slot was minted at — what the filler must send in `If-Match`. */
+  etag: string;
+  /**
+   * The capability handed out with the invitation.
+   *
+   * Kept so the requester can see what it issued and, on a host that gates writes, revoke it. It is
+   * a write capability for a slot we own, so holding it here costs nothing; it is never sent to the
+   * EHR, and never echoed back on a return leg.
+   */
+  token: string;
+}
+
 export interface OutstandingRequest {
   /** `Task.identifier` value — the correlation key shared with any published server Task. */
   id: string;
@@ -56,6 +71,14 @@ export interface OutstandingRequest {
   subjectReference?: string;
   /** Channel C. */
   reply?: StoredReplyChannel;
+  /**
+   * Channel D: the one-shot write capability handed out with this request.
+   *
+   * Held so the slot can be polled later. Note what it is *not*: irreplaceable. The reply key above
+   * exists nowhere else, so losing it makes a reply permanently unreadable; a write slot is plaintext
+   * on a server, so losing this only loses track of where the answers will turn up.
+   */
+  write?: StoredWriteChannel;
   /**
    * Absolute URL of the request's published `Task`, when one was written.
    *
@@ -89,6 +112,13 @@ function isOutstandingRequest(value: unknown): value is OutstandingRequest {
   if (candidate.reply !== undefined) {
     const reply = candidate.reply as Record<string, unknown>;
     if (typeof reply?.url !== 'string' || !isReplyPrivateJwk(reply?.privateJwk)) {
+      return false;
+    }
+  }
+
+  if (candidate.write !== undefined) {
+    const write = candidate.write as Record<string, unknown>;
+    if (typeof write?.url !== 'string' || typeof write?.etag !== 'string') {
       return false;
     }
   }

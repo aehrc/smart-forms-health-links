@@ -4,19 +4,33 @@ import type { AppConfig } from '@/lib/config';
 import {
   canTrackRequests,
   canUseEncryptedReply,
+  canUseOneShotWrite,
   canUseServerReturn,
   resolveExpiry,
-  resolveLinkBaseUrl
+  resolveLinkBaseUrl,
+  resolveWriteSlotServerUrl
 } from '@/lib/config';
 import { fhirBinaryBlobStore, type BlobStore } from '@/fhir/blobStore';
 import { declareResponseEndpoint, publishRequestTask } from '@/fhir/submit';
 import { LINK_CODECS } from './registry';
 import { defaultLabel, encodingCodec, ensureQuestionnaireCanonical } from './codec';
-import { buildReplyBundle, buildRequestBundle, buildResponseBundle } from './exchange';
+import {
+  buildReplyBundle,
+  buildRequestBundle,
+  buildResponseBundle,
+  buildWriteResponse,
+  questionnaireCanonicalOf
+} from './exchange';
 import { encodeUtf8 } from './binary';
 import { encryptReplyJwe, generateReplyKeyPair, type ReplyPrivateJwk } from './replyCrypto';
 import { createReplySlot, putReply } from './replySlot';
-import { isReplyDescriptorExpired, type ReplyDescriptor } from './replyDescriptor';
+import {
+  isReplyDescriptorExpired,
+  isWriteDescriptorExpired,
+  type ReplyDescriptor,
+  type WriteDescriptor
+} from './replyDescriptor';
+import { createWriteSlot, putResponseToSlot, type WriteSlotOutcome } from './writeSlot';
 
 /**
  * Link creation — the boundary where the renderer's global form state and the app's config meet the
@@ -79,6 +93,14 @@ export interface CreatedRequest {
   serverTaskUrl?: string;
   /** Whether the invitation invites the filler to write to `serverTaskUrl`'s server directly. */
   serverReturnOffered: boolean;
+  /**
+   * Channel D, when a slot was minted: the capability that was handed out.
+   *
+   * Kept with the outstanding request so the requester can poll the slot later. Unlike the reply
+   * key, none of this is irreplaceable — the slot is readable by anyone who can reach it — but
+   * losing it means losing track of where the answers will appear.
+   */
+  write?: { url: string; etag: string; token: string };
 }
 
 /**
@@ -129,6 +151,29 @@ export async function createRequestLink(
       : undefined;
 
   /*
+   * Channel D, when it is enabled. Minted before the payload is sealed for the same reason the reply
+   * slot is: the invitation has to name a resource that already exists, and nothing can be added to a
+   * link once it is encrypted and uploaded. A failure further down leaves an unanswered slot behind,
+   * which is harmless — an empty `in-progress` QuestionnaireResponse.
+   */
+  const writeSlotServerUrl = canUseOneShotWrite(config) ? resolveWriteSlotServerUrl(config) : null;
+  const slot = writeSlotServerUrl
+    ? await createWriteSlot(writeSlotServerUrl, {
+        questionnaireCanonical: questionnaireCanonicalOf(questionnaire),
+        requestId
+      })
+    : undefined;
+  const writeDescriptor: WriteDescriptor | undefined = slot
+    ? {
+        writeUrl: slot.writeUrl,
+        writeMethod: 'PUT',
+        writeEtag: slot.writeEtag,
+        writeToken: slot.writeToken,
+        ...(expiresAt !== undefined ? { expiresAt } : {})
+      }
+    : undefined;
+
+  /*
    * Publishing the Task and offering channel B are separate decisions, and conflating them would be a
    * mistake in both directions. Publishing only records that a request was sent, so `/requests` can
    * list it from any browser; channel B additionally tells the filler to write answers straight to that
@@ -173,6 +218,7 @@ export async function createRequestLink(
       subjectDisplay: options.subjectDisplay,
       requesterDisplay: config.senderName ?? undefined,
       replyDescriptor,
+      writeDescriptor,
       // Named in the invitation only when the filler is actually invited to write there. Tracking is
       // ours; there is no reason to tell a filler about a Task it must not touch.
       serverTaskUrl: serverReturn ? serverTaskUrl : undefined
@@ -192,7 +238,10 @@ export async function createRequestLink(
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(keyPair && replyUrl ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } } : {}),
     ...(serverTaskUrl ? { serverTaskUrl } : {}),
-    serverReturnOffered: serverReturn
+    serverReturnOffered: serverReturn,
+    ...(slot
+      ? { write: { url: slot.writeUrl, etag: slot.writeEtag, token: slot.writeToken } }
+      : {})
   };
 }
 
@@ -256,4 +305,36 @@ export async function sendEncryptedReply(
   const { bundle } = buildReplyBundle(response, { requestTask });
 
   await putReply(descriptor.replyUrl, await encryptReplyJwe(encodeUtf8(JSON.stringify(bundle)), descriptor.publicJwk));
+}
+
+
+/**
+ * Send the answers through the request's one-shot write channel (channel D).
+ *
+ * The filler's half, and — like {@link sendEncryptedReply} — the reason this app is a reference
+ * implementation on both sides rather than only the requesting one. Everything worth knowing about
+ * what this does and does not claim:
+ *
+ *  - **It is conditional.** The `If-Match` the descriptor carries is what makes this a *single*
+ *    write. A slot someone has already answered refuses the second write rather than silently
+ *    overwriting it, and that outcome comes back as `taken` — not as a failure to retry.
+ *  - **It confirms delivery to a slot and nothing more.** The requester still has to collect the
+ *    answers and a human still has to review them before anything reaches a record. There is no
+ *    signal available for either, so nothing here may imply one.
+ *  - **The slot host sees the answers.** This is plaintext FHIR; channel C is what to use when the
+ *    host must not.
+ */
+export async function sendOneShotWrite(
+  questionnaire: Questionnaire,
+  descriptor: WriteDescriptor,
+  requestTask?: Task
+): Promise<WriteSlotOutcome> {
+  if (isWriteDescriptorExpired(descriptor)) {
+    throw new Error('This request has expired, so its slot will no longer accept answers.');
+  }
+
+  const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
+  const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
+
+  return putResponseToSlot(descriptor, buildWriteResponse(response, { requestTask }));
 }

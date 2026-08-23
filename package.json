@@ -11,7 +11,10 @@
     "typecheck": "tsc -b --noEmit",
     "check:roundtrip": "esbuild scripts/roundtrip.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/roundtrip.mjs --log-level=warning && node node_modules/.cache/roundtrip.mjs",
     "check:e2e": "esbuild scripts/e2eLink.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e.mjs --log-level=warning && node node_modules/.cache/e2e.mjs",
-    "check:e2e-shl": "esbuild scripts/e2eShl.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-shl.mjs --log-level=warning && node node_modules/.cache/e2e-shl.mjs"
+    "check:e2e-shl": "esbuild scripts/e2eShl.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-shl.mjs --log-level=warning && node node_modules/.cache/e2e-shl.mjs",
+    "check:e2e-write": "esbuild scripts/e2eWrite.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-write.mjs --log-level=warning && node node_modules/.cache/e2e-write.mjs",
+    "check:amend": "esbuild scripts/e2eAmend.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-amend.mjs --log-level=warning && node node_modules/.cache/e2e-amend.mjs",
+    "check:patient": "esbuild scripts/e2ePatient.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-patient.mjs --log-level=warning && node node_modules/.cache/e2e-patient.mjs"
   },
   "dependencies": {
     "@aehrc/smart-forms-renderer": "^1.4.0",

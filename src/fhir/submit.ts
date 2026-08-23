@@ -1,5 +1,7 @@
-import type { Meta, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
+import type { Meta, Patient, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { buildRequestBundle } from '@/link/exchange';
+import type { Amendment } from './amend';
+import { buildPatient, type NewPatientDetails } from './newPatient';
 
 /**
  * Write a reviewed QuestionnaireResponse to the requester's own FHIR server.
@@ -76,6 +78,15 @@ export interface SubmitResult {
   taskId?: string;
   /** Server-assigned id of the created Provenance, when one accompanied the response. */
   provenanceId?: string;
+  /**
+   * The response was written but its Provenance was not.
+   *
+   * Separate from {@link error}, which means the response itself failed. For an *amendment* this is
+   * the serious half: the Provenance is the only thing joining the new resource to the one it
+   * revises, so without it the server holds two responses and no record that one supersedes the
+   * other.
+   */
+  provenanceError?: string;
   error?: string;
 }
 
@@ -139,9 +150,13 @@ async function describeFailure(response: Response): Promise<string> {
   return status;
 }
 
+/**
+ * The union is the point: it enumerates what this app is allowed to bring into existence. Widen it
+ * deliberately rather than making it generic.
+ */
 async function createResource(
   serverUrl: string,
-  resource: QuestionnaireResponse | Task | Provenance
+  resource: QuestionnaireResponse | Task | Provenance | Patient
 ): Promise<string> {
   const response = await fetch(`${trimTrailingSlash(serverUrl)}/${resource.resourceType}`, {
     method: 'POST',
@@ -243,6 +258,113 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
       }
     })
   );
+}
+
+export interface SavedResponse {
+  serverUrl: string;
+  /** Id the server gave the original. What the amendment's `entity.what` points back at. */
+  responseId: string;
+}
+
+export interface SubmitAmendmentOptions {
+  /**
+   * Where the original landed. Only a server that stored it can hold a revision of it, and each one
+   * assigned its own id — hence a list of pairs rather than a destination list.
+   */
+  saved: SavedResponse[];
+  /** Builds the amendment against one server's id for the original. */
+  amend: (originalResponseId: string) => Amendment;
+}
+
+export const NO_AMENDMENT_TARGET_MESSAGE =
+  'There is nothing to amend: the original response was not stored on any server, so there is no ' +
+  'resource for an amendment to revise.';
+
+/**
+ * Write an amendment: a second QuestionnaireResponse, plus the Provenance saying what it revises.
+ *
+ * Deliberately *not* an update of the original. See `src/fhir/amend.ts` for why — the short version is
+ * that the original carries claims about who asserted it, and editing it in place would make those
+ * claims describe a document that no longer exists.
+ *
+ * The Provenance is built per destination, because the original's id differs between them. Unlike the
+ * inbound path, a failed Provenance is reported rather than shrugged off: there it is attribution
+ * accompanying the clinical content, here it is the only link between two otherwise unrelated
+ * responses, and a reviewer needs to know they now have an orphan to fix by hand.
+ */
+export async function submitAmendment(options: SubmitAmendmentOptions): Promise<SubmitResult[]> {
+  if (options.saved.length === 0) {
+    throw new Error(NO_AMENDMENT_TARGET_MESSAGE);
+  }
+
+  return Promise.all(
+    options.saved.map(async ({ serverUrl, responseId }): Promise<SubmitResult> => {
+      try {
+        const { response, provenance } = options.amend(responseId);
+        const amendedId = await createResource(serverUrl, asNewResource(response));
+
+        try {
+          const provenanceId = await createResource(
+            serverUrl,
+            asNewResource<Provenance>({
+              ...provenance,
+              // Built against a placeholder, because the id did not exist until the line above.
+              target: [{ reference: `QuestionnaireResponse/${amendedId}` }]
+            })
+          );
+          return { serverUrl, responseId: amendedId, provenanceId };
+        } catch (cause) {
+          return {
+            serverUrl,
+            responseId: amendedId,
+            provenanceError: cause instanceof Error ? cause.message : String(cause)
+          };
+        }
+      } catch (cause) {
+        return { serverUrl, error: cause instanceof Error ? cause.message : String(cause) };
+      }
+    })
+  );
+}
+
+export interface CreatedPatient {
+  /** Relative, e.g. `Patient/123` — it only means anything against the server it was created on. */
+  reference: string;
+  /** What was sent, plus the id the server assigned. See below for why this is not a re-read. */
+  patient: Patient;
+}
+
+/**
+ * Create a Patient, so answers about somebody the server has never heard of can still be filed.
+ *
+ * The reference this returns is only valid on `serverUrl`, which is why the caller passes the
+ * *destination* server rather than the configured one — a questionnaire declaring its own
+ * `sdc-questionnaire-endpoint` sends the write somewhere else entirely.
+ *
+ * Two decisions worth knowing about:
+ *
+ *  - **The empty-family guard is here, not only in the form.** A Patient with no family name cannot
+ *    be found again by the very picker that would have to find it, so the primitive refuses rather
+ *    than trusting every future caller to validate first.
+ *  - **The returned `patient` is what was sent plus the id, not the server's echo.** `createResource`
+ *    already reads only `created.id`, and re-reading would spend a round trip on metadata nothing
+ *    here uses. Everything the UI needs — `patientDisplay`, `describePatient` — is in what was sent.
+ *
+ * Deliberately returns a plain shape rather than the picker's `ChosenPatient`: that type lives in a
+ * component, and the FHIR layer does not depend on components.
+ */
+export async function createPatient(
+  serverUrl: string,
+  details: NewPatientDetails
+): Promise<CreatedPatient> {
+  if (details.family.trim() === '') {
+    throw new Error('A patient cannot be created without a family name.');
+  }
+
+  const patient = buildPatient(details);
+  const id = await createResource(serverUrl, patient);
+
+  return { reference: `Patient/${id}`, patient: { ...patient, id } };
 }
 
 /**
