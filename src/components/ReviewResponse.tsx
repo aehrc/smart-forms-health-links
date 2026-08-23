@@ -222,7 +222,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               </>
             ) : (
               ' No Task accompanied these answers, so they cannot be matched to a request.'
-            ))}}
+            ))}
           </p>
         </div>
 
@@ -241,27 +241,19 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       {isPatientAsserted(response) ? (
         <Alert title="Patient-asserted answers">
           <span className="inline-flex items-center gap-1.5">
-            {matchedRequest ? (
-              <>
-                {" "}
-                Answering your request <strong>{matchedRequest.label}</strong>
-                {matchedRequest.subjectDisplay
-                  ? ` for ${matchedRequest.subjectDisplay}`
-                  : ""}
-                , sent {new Date(matchedRequest.createdAt).toLocaleDateString()}
-                .
-              </>
-            ) : (correlationId ? (
-              <>
-                {" "}
-                Request{" "}
-                <span className="font-mono text-xs">{correlationId}</span> — not
-                one this browser sent, so there is no local record to match it
-                against.
-              </>
-            ) : (
-              " No Task accompanied these answers, so they cannot be matched to a request."
-            ))}
+            <ShieldCheck className="h-3.5 w-3.5 text-slate-500" aria-hidden />
+            These answers are labelled <span className="font-mono text-xs">PATAST</span> — recorded by
+            the person themselves rather than by a clinician.
+          </span>
+          <p className="mt-1">
+            The label {provenance ? 'and its Provenance are' : 'is'} preserved on save, so the record
+            keeps who said this.
+          </p>
+        </Alert>
+      ) : null}
+
+      {results === null && !canSave ? (
+        <Alert tone="warning" title="Nowhere to save this">
           {NO_DESTINATION_MESSAGE}
         </Alert>
       ) : null}
