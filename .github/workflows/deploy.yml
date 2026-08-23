@@ -7,6 +7,11 @@
 # amd64 and arm64 capacity, and a single-architecture image works only until the
 # node it landed on is replaced by one of the other kind.
 #
+# This runs on the self-hosted runner rather than a GitHub-hosted one, so it
+# costs no Actions minutes. The runner is an amd64 Linux host with Docker,
+# kubectl and Helm installed system wide; anything else the job needs it
+# installs for itself.
+#
 # Author: John Grimes
 name: Deploy
 
@@ -31,7 +36,7 @@ env:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       # Required to exchange the GitHub OIDC token for AWS credentials.
       id-token: write
@@ -39,6 +44,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      # The runner user cannot write to a system directory, so the CLI goes
+      # under its home, where the next run finds it again. It gets a directory
+      # of its own rather than the user's own bin directory, so that only the
+      # CLI is added to the job's path. The installer is unpacked into the
+      # runner's temporary directory because /tmp on this host is noexec.
+      - name: Install the AWS CLI
+        run: |
+          echo "$HOME/.local/aws-cli/bin" >> "$GITHUB_PATH"
+          if [ -x "$HOME/.local/aws-cli/bin/aws" ]; then
+            exit 0
+          fi
+          curl --silent --show-error --fail --location \
+            https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+            --output "$RUNNER_TEMP/awscliv2.zip"
+          unzip -q -o "$RUNNER_TEMP/awscliv2.zip" -d "$RUNNER_TEMP"
+          "$RUNNER_TEMP/aws/install" --install-dir "$HOME/.local/aws-cli" \
+            --bin-dir "$HOME/.local/aws-cli/bin"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -66,8 +89,14 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      # The runner's user has a kubeconfig of its own, which the job must not
+      # take over, so the cluster's credentials go in a file for this run alone
+      # and the steps after this one are pointed at it.
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+        run: |
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$KUBECONFIG" >> "$GITHUB_ENV"
+          aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
 
       # `upgrade --install` so a release that has been uninstalled comes back
       # rather than failing here.
