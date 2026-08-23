@@ -705,6 +705,39 @@ Then edit `dist/config.json` for the environment — no rebuild needed, which is
 config is fetched at runtime. Serve it with a short cache lifetime, or a stale copy will outlive a
 server change.
 
+### Container and Kubernetes
+
+`Dockerfile` builds the site and serves it from nginx with both requirements
+already met: unknown paths fall through to `index.html`, and `config.json` is
+served `no-store` while the hashed assets beside it are immutable for a year.
+The container listens on 8080, runs as an unprivileged user, and answers
+`/healthz` independently of the app bundle so a probe does not depend on the
+shell being readable.
+
+```bash
+docker build -t smart-forms-health-links:local .
+docker run --rm -p 8080:8080 --read-only --tmpfs /tmp smart-forms-health-links:local
+```
+
+The Helm chart under `deploy/helm/smart-forms-health-links` runs that image and
+supplies `config.json` from a ConfigMap, so one image serves any environment.
+Its own README documents the values. The chart holds no ingress: how the app is
+exposed differs per cluster, so the ingress is applied beside the release.
+
+```bash
+helm upgrade --install smart-forms-health-links deploy/helm/smart-forms-health-links \
+  --namespace formlinks \
+  --values deploy/demo/values.yaml \
+  --set smartFormsHealthLinks.image=my-registry/smart-forms-health-links:abc1234
+```
+
+`deploy/demo` is the deployment at
+[formlinks.fhirapp.net](https://formlinks.fhirapp.net): its values and its ALB
+ingress. Pushing to `main` runs `.github/workflows/deploy.yml`, which builds a
+multi-architecture image tagged with the commit, pushes it to ECR and rolls the
+release onto it. The workflow authenticates by assuming an IAM role through
+GitHub's OIDC provider, so there are no stored credentials.
+
 ## Repo layout
 
 ```
@@ -756,6 +789,10 @@ docs/
   shl-form-reply-channel.md   wire format for channels B, C and D
   response-links.md           what counts as an inbound response link
   u-flag-hosting.md           the third-party blocker, in full
+deploy/
+  nginx.conf                  SPA rewrite, and the cache policy that goes with it
+  helm/smart-forms-health-links/  the chart, and its own README
+  demo/                       values and ingress for formlinks.fhirapp.net
 public/config.json     runtime config
 ```
 

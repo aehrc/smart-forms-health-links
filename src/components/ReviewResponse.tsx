@@ -302,7 +302,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 {matchedRequest.subjectDisplay ? ` for ${matchedRequest.subjectDisplay}` : ''}, sent{' '}
                 {new Date(matchedRequest.createdAt).toLocaleDateString()}.
               </>
-            ) : correlationId ? (
+            ) : (correlationId ? (
               <>
                 {' '}
                 Request <span className="font-mono text-xs">{correlationId}</span> — not one this
@@ -310,7 +310,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
               </>
             ) : (
               ' No Task accompanied these answers, so they cannot be matched to a request.'
-            )}
+            ))}
           </p>
         </div>
 
@@ -490,10 +490,10 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           <p className="mt-1">
             {isFormDeclared
               ? 'Declared by the questionnaire itself via sdc-questionnaire-endpoint.'
-              : questionnaire
+              : (questionnaire
                 ? 'From app configuration; this questionnaire does not declare an endpoint.'
                 : 'From app configuration. The form definition could not be resolved, so its ' +
-                  'sdc-questionnaire-endpoint — if it declares one — was not consulted.'}
+                  'sdc-questionnaire-endpoint — if it declares one — was not consulted.')}
           </p>
         </Alert>
       ) : null}
@@ -508,9 +508,9 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                   QuestionnaireResponse/{result.responseId}
                   {result.taskId ? ` · Task/${result.taskId}` : ' · Task not saved'}
                   {provenance
-                    ? result.provenanceId
+                    ? (result.provenanceId
                       ? ` · Provenance/${result.provenanceId}`
-                      : ' · Provenance not saved'
+                      : ' · Provenance not saved')
                     : ''}
                 </span>
               </li>

@@ -1,0 +1,9 @@
+.claude
+.git
+.github
+.local
+dist
+docs
+node_modules
+scripts
+*.tsbuildinfo

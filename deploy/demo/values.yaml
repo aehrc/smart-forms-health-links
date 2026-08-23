@@ -1,0 +1,29 @@
+# Helm values for the demo deployment at https://formlinks.fhirapp.net, on the
+# pathling-demo EKS cluster.
+#
+# The image tag is not set here: the deploy workflow passes the commit it built,
+# so the tag in the cluster names the code that is running.
+#
+# Author: John Grimes
+smartFormsHealthLinks:
+  replicas: 2
+
+  # Replaces the config.json baked into the image, so this is the whole
+  # configuration and not an overlay on it.
+  config:
+    formsServerUrl: "https://smartforms.csiro.au/api/fhir"
+    terminologyServerUrl: "https://r4.ontoserver.csiro.au/fhir"
+    # Links have to name the public origin, not the pod's own.
+    linkBaseUrl: "https://formlinks.fhirapp.net"
+    linkCodec: "shl"
+    responseServerUrl: "https://proxy.smartforms.io/fhir"
+    blobServerUrl: "https://proxy.smartforms.io/fhir"
+    blobStore: "fhir-binary"
+    shlManifestUrl: null
+    senderName: "Smart Forms Health Links demo"
+    # Both return channels stay off: answers come back as a link the filler
+    # mints, which is reviewed before anything is written.
+    enableServerReturn: false
+    enableEncryptedReply: false
+    linkLifetimeDays: 30
+    publishRequestTasks: true

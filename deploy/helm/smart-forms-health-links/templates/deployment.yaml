@@ -1,0 +1,87 @@
+# Author: John Grimes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-deployment
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.smartFormsHealthLinks.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- if .Values.smartFormsHealthLinks.config }}
+      annotations:
+        # Rolls the pods when the config changes, which is otherwise invisible to
+        # the Deployment: the file arrives through a mounted ConfigMap.
+        checksum/config: {{ toJson .Values.smartFormsHealthLinks.config | sha256sum }}
+      {{- end }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ .Values.smartFormsHealthLinks.image | quote }}
+          imagePullPolicy: {{ .Values.smartFormsHealthLinks.imagePullPolicy | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources: {{ toJson .Values.smartFormsHealthLinks.resources }}
+          volumeMounts:
+            # nginx writes its pid and its temporary bodies here, which is what
+            # allows the root filesystem to stay read-only.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.smartFormsHealthLinks.config }}
+            - name: config
+              mountPath: /usr/share/nginx/html/config.json
+              subPath: config.json
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.smartFormsHealthLinks.config }}
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+        {{- end }}
+      nodeSelector: {{ toJson .Values.smartFormsHealthLinks.nodeSelector }}
+      tolerations: {{ toJson .Values.smartFormsHealthLinks.tolerations }}
+      affinity: {{ toJson .Values.smartFormsHealthLinks.affinity }}

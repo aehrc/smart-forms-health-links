@@ -1,0 +1,26 @@
+# Author: John Grimes
+smartFormsHealthLinks:
+  image: "smart-forms-health-links:latest"
+  imagePullPolicy: "Always"
+  replicas: 2
+
+  # The app fetches /config.json at boot. Leaving this empty serves the file
+  # baked into the image; supplying keys replaces it entirely, so a deployment
+  # that sets anything must set everything it cares about.
+  config: {}
+
+  service:
+    type: "ClusterIP"
+    port: 80
+
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "100m"
+    limits:
+      memory: "128Mi"
+      cpu: "500m"
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

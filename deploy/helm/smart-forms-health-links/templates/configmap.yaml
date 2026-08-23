@@ -1,0 +1,17 @@
+# The app fetches /config.json at boot to learn which servers to talk to. This
+# ConfigMap is mounted over the copy built into the image, so a deployment can
+# point the same image at different servers. It is only created when values
+# supply config; otherwise the built-in file is served.
+#
+# Author: John Grimes
+{{- if .Values.smartFormsHealthLinks.config }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  config.json: {{ toJson .Values.smartFormsHealthLinks.config | quote }}
+{{- end }}
