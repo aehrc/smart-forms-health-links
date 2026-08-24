@@ -8,7 +8,11 @@ import ResponseList from './routes/ResponseList';
 import PatientList from './routes/PatientList';
 import ViewLink from './routes/ViewLink';
 import Scan from './routes/Scan';
+import Launch from './routes/Launch';
+import Callback from './routes/Callback';
 import { LINK_CODECS } from './link/registry';
+import { CALLBACK_PATH, LAUNCH_PATH } from './auth/routes';
+import SessionBadge from './components/SessionBadge';
 
 /** Does the current fragment look like a link payload from any registered codec? */
 function fragmentHasLink(hash: string): boolean {
@@ -48,6 +52,7 @@ function Header() {
             <ScanLine className="h-4 w-4" aria-hidden />
             Scan
           </RouterLink>
+          <SessionBadge />
         </nav>
       </div>
     </header>
@@ -79,6 +84,8 @@ export default function App() {
           <Route path="/patients" element={<PatientList />} />
           <Route path="/view" element={<ViewLink />} />
           <Route path="/scan" element={<Scan />} />
+          <Route path={LAUNCH_PATH} element={<Launch />} />
+          <Route path={CALLBACK_PATH} element={<Callback />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

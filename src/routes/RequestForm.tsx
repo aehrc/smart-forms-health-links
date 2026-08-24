@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Inbox, Loader2, Send } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
+import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
+import { fetchPatient, fetchUserDisplay, patientDisplay } from '@/fhir/ehrServer';
 import {
   canUseEncryptedReply,
   canUseOneShotWrite,
@@ -32,8 +34,34 @@ export default function RequestForm() {
   const [params] = useSearchParams();
   const config = useConfig();
 
+  const session = useSmartSession();
+  const ehrServerUrl = useEhrServerUrl();
+
   const [subject, setSubject] = useState('');
   const [subjectDisplay, setSubjectDisplay] = useState('');
+
+  /*
+   * An EHR launch from a chart already knows who the request is for. Looking that patient up and
+   * filling both fields is the difference between a launch that means something and one that only
+   * changes which server is written to — being made to search for the patient you launched from is
+   * exactly the friction the launch exists to remove.
+   */
+  const launchPatientRef = session?.patientId ? `Patient/${session.patientId}` : null;
+
+  const { data: launchPatient } = useQuery({
+    queryKey: ['launch-patient', ehrServerUrl, launchPatientRef],
+    queryFn: ({ signal }) =>
+      fetchPatient(ehrServerUrl!, session!.patientId!, signal, session),
+    enabled: !!launchPatientRef && !!ehrServerUrl
+  });
+
+  /** The launched user, so the invitation can say who it is from without `senderName` being set. */
+  const { data: launchedUserName } = useQuery({
+    queryKey: ['fhirUser', session?.serverUrl, session?.fhirUser],
+    queryFn: ({ signal }) =>
+      fetchUserDisplay(session!.serverUrl, session!.fhirUser!, signal, session),
+    enabled: !!session?.fhirUser
+  });
 
   /*
    * The patient picker navigates back here with the chosen patient in the query string. Applied via an
@@ -50,6 +78,22 @@ export default function RequestForm() {
       setSubjectDisplay(pickedDisplay);
     }
   }, [pickedSubject, pickedDisplay]);
+
+  /*
+   * The launch context seeds the fields, but only while they are still empty. An explicit choice — a
+   * patient picked here, or one carried in the query string — is the clinician overriding the chart
+   * they launched from, and a background fetch landing afterwards must not undo that.
+   */
+  useEffect(() => {
+    if (!launchPatientRef || pickedSubject) {
+      return;
+    }
+
+    setSubject((current) => (current === '' ? launchPatientRef : current));
+    if (launchPatient) {
+      setSubjectDisplay((current) => (current === '' ? patientDisplay(launchPatient) : current));
+    }
+  }, [launchPatientRef, launchPatient, pickedSubject]);
   const [link, setLink] = useState<string | null>(null);
   const [correlationId, setCorrelationId] = useState<string | undefined>();
   /** Whether the request just created actually minted a reply slot, as opposed to config saying it could. */
@@ -83,7 +127,9 @@ export default function RequestForm() {
     try {
       const created = await createRequestLink(questionnaire, config, {
         subjectReference: subject.trim() === '' ? undefined : subject.trim(),
-        subjectDisplay: subjectDisplay.trim() === '' ? undefined : subjectDisplay.trim()
+        subjectDisplay: subjectDisplay.trim() === '' ? undefined : subjectDisplay.trim(),
+        session,
+        requesterDisplay: launchedUserName ?? undefined
       });
 
       const id = taskCorrelationId(created.task);
@@ -178,13 +224,13 @@ export default function RequestForm() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {config.responseServerUrl ? (
+          {ehrServerUrl ? (
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-slate-700">
-                Search <span className="font-mono">{config.responseServerUrl}</span>
+                Search <span className="font-mono">{ehrServerUrl}</span>
               </p>
               <PatientPicker
-                serverUrl={config.responseServerUrl}
+                serverUrl={ehrServerUrl}
                 selectedReference={subject.trim() === '' ? undefined : subject.trim()}
                 onChoose={(chosen) => {
                   setSubject(chosen.reference);
@@ -199,7 +245,7 @@ export default function RequestForm() {
 
           <div className="space-y-2">
             <p className="text-xs font-medium text-slate-700">
-              {config.responseServerUrl ? 'Or enter it by hand' : 'Subject'}
+              {ehrServerUrl ? 'Or enter it by hand' : 'Subject'}
             </p>
             <Input
               value={subject}
@@ -215,7 +261,7 @@ export default function RequestForm() {
             />
           </div>
 
-          {config.responseServerUrl ? (
+          {ehrServerUrl ? (
             <p className="text-xs text-slate-500">
               Or{' '}
               <RouterLink
@@ -306,7 +352,7 @@ export default function RequestForm() {
             worth doing when a filler may have no way to show you a QR code.
           </p>
         )}
-        {config.senderName ? null : (
+        {config.senderName ?? launchedUserName ? null : (
           <p className="mt-2">
             No <span className="font-mono text-xs">senderName</span> is configured, so this request
             cannot say who it is from — which is a reason for someone to decline it.

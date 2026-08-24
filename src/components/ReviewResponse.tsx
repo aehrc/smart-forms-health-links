@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, FilePlus2, Loader2, PencilLine, Save, ShieldCheck, X } from 'lucide-react';
 import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
 import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
+import { useSmartSession } from '@/auth/SmartContext';
+import { fetchUserDisplay } from '@/fhir/ehrServer';
 import {
   NO_DESTINATION_MESSAGE,
   declaredEndpoints,
@@ -94,7 +97,37 @@ export default function ReviewResponse(props: ReviewResponseProps) {
    * the form in a loop and throws away every keystroke the reviewer has made.
    */
   const [amendSeed, setAmendSeed] = useState<QuestionnaireResponse | null>(null);
+  const session = useSmartSession();
+
+  /*
+   * Who the amendment is attributed to.
+   *
+   * Seeded from the launched user when there is one, and from `senderName` otherwise. The field stays
+   * editable in both cases: with no session it is the only way to say who is amending, and with one it
+   * is still a display name — `amenderReference` carries the identity the server actually vouched for,
+   * so editing this changes what is readable, never what is claimed.
+   */
   const [amender, setAmender] = useState(config.senderName ?? '');
+
+  const { data: launchedUserName } = useQuery({
+    queryKey: ['fhirUser', session?.serverUrl, session?.fhirUser],
+    queryFn: ({ signal }) =>
+      fetchUserDisplay(session!.serverUrl, session!.fhirUser!, signal, session),
+    enabled: !!session?.fhirUser
+  });
+
+  /*
+   * Applied once the name arrives rather than at mount, because it is fetched. Guarded on the field
+   * still holding its seeded default: a reviewer who has started typing owns the field from then on,
+   * and overwriting their edit when a background fetch lands would be maddening.
+   */
+  const seededAmender = useRef(config.senderName ?? '');
+  useEffect(() => {
+    if (launchedUserName && amender === seededAmender.current) {
+      setAmender(launchedUserName);
+      seededAmender.current = launchedUserName;
+    }
+  }, [launchedUserName, amender]);
   const [amendResults, setAmendResults] = useState<SubmitResult[] | null>(null);
   const [amendedResponse, setAmendedResponse] = useState<QuestionnaireResponse | null>(null);
   const [amendError, setAmendError] = useState<string | null>(null);
@@ -118,7 +151,8 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
   const destinations = resolveDestinations({
     questionnaire,
-    responseServerUrl: config.responseServerUrl
+    responseServerUrl: config.responseServerUrl,
+    session
   });
   const isFormDeclared = questionnaire !== undefined && declaredEndpoints(questionnaire).length > 0;
   const canSave = destinations.length > 0;
@@ -136,7 +170,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
 
     // Probed against the first destination only. With several, the reviewer is told which one failed by
     // the write itself; guessing at a reconciliation that satisfies all of them is not this step's job.
-    referenceResolves(destinations[0], originalSubject)
+    referenceResolves(destinations[0], originalSubject, session)
       .then((resolves) => {
         if (!cancelled) {
           setSubjectCheck(resolves ? 'resolves' : 'missing');
@@ -214,7 +248,8 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         task,
         provenance,
         questionnaire,
-        responseServerUrl: config.responseServerUrl
+        responseServerUrl: config.responseServerUrl,
+        session
       });
       setResults(submitted);
       if (submitted.some((result) => result.responseId)) {
@@ -259,9 +294,18 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       const recorded = new Date().toISOString();
 
       const amend = (originalResponseId: string) =>
-        buildAmendment({ original, originalResponseId, edited, amender: amender.trim(), recorded });
+        buildAmendment({
+          original,
+          originalResponseId,
+          edited,
+          amender: amender.trim(),
+          // Only when signed in. Naming a reference the server cannot vouch for would be worse than
+          // naming none, because it reads as verified identity when it is still just a typed string.
+          amenderReference: session?.fhirUser ?? undefined,
+          recorded
+        });
 
-      const submitted = await submitAmendment({ saved: amendTargets, amend });
+      const submitted = await submitAmendment({ saved: amendTargets, amend, session });
       setAmendResults(submitted);
 
       if (submitted.some((result) => result.responseId)) {

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import { ConfigProvider } from './lib/ConfigContext';
+import { SmartProvider } from './auth/SmartContext';
 import './index.css';
 
 /**
@@ -18,13 +19,17 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ConfigProvider>
-        {/*
-          BrowserRouter, not HashRouter: the URL fragment carries the link payload, so it is not
-          available for routing. See src/link/codec.ts.
-        */}
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        {/* Inside ConfigProvider because it needs the issuer; outside the router because it is not
+            route-dependent and must survive navigation. */}
+        <SmartProvider>
+          {/*
+            BrowserRouter, not HashRouter: the URL fragment carries the link payload, so it is not
+            available for routing. See src/link/codec.ts.
+          */}
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </SmartProvider>
       </ConfigProvider>
     </QueryClientProvider>
   </StrictMode>

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, X } from 'lucide-react';
 import type { QuestionnaireResponse } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
+import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
 import { fetchPatient, patientDisplay, searchQuestionnaireResponses } from '@/fhir/ehrServer';
 import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
 import FormRenderer from '@/components/FormRenderer';
@@ -41,27 +42,29 @@ function responseTitle(response: QuestionnaireResponse): string {
 }
 
 export default function ResponseList() {
-  const config = useConfig();
   const [params, setParams] = useSearchParams();
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
 
   const subject = params.get('subject') ?? undefined;
-  const ehrServerUrl = config.responseServerUrl;
+  const ehrServerUrl = useEhrServerUrl();
+  const session = useSmartSession();
 
   const {
     data: page,
     isPending,
     error
   } = useQuery({
-    queryKey: ['ehr-responses', ehrServerUrl, subject],
-    queryFn: ({ signal }) => searchQuestionnaireResponses(ehrServerUrl!, { subject }, signal),
+    // `fhirUser` in the key so signing in or out refetches — see PatientList.
+    queryKey: ['ehr-responses', ehrServerUrl, session?.fhirUser ?? null, subject],
+    queryFn: ({ signal }) =>
+      searchQuestionnaireResponses(ehrServerUrl!, { subject, session }, signal),
     enabled: ehrServerUrl !== null
   });
 
   // Only to name the filter chip; the list itself is already filtered server-side.
   const { data: filterPatient } = useQuery({
-    queryKey: ['ehr-patient', ehrServerUrl, subject],
-    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subject!.split('/')[1], signal),
+    queryKey: ['ehr-patient', ehrServerUrl, session?.fhirUser ?? null, subject],
+    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subject!.split('/')[1], signal, session),
     enabled: ehrServerUrl !== null && subject !== undefined && subject.startsWith('Patient/')
   });
 

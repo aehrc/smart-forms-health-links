@@ -3,6 +3,7 @@ import { Loader2, UserPlus, X } from 'lucide-react';
 import type { Patient } from 'fhir/r4';
 import { createPatient, type CreatedPatient } from '@/fhir/submit';
 import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
+import { useSmartSession } from '@/auth/SmartContext';
 import { splitName } from '@/fhir/newPatient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -52,6 +53,7 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
   const [error, setError] = useState<string | null>(null);
   /** Existing patients sharing the family name. A warning, never a block. */
   const [nearMatches, setNearMatches] = useState<Patient[] | null>(null);
+  const session = useSmartSession();
 
   const canCreate = family.trim() !== '' && !isSaving;
 
@@ -64,7 +66,7 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
    */
   async function checkForDuplicates() {
     try {
-      const { resources } = await searchPatients(serverUrl, family.trim(), 5);
+      const { resources } = await searchPatients(serverUrl, family.trim(), 5, undefined, session);
       // `resources.length`, not `total` — `_total=accurate` is a request, not a guarantee.
       setNearMatches(resources);
       return resources.length > 0;
@@ -84,12 +86,11 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
       }
 
       onCreated(
-        await createPatient(serverUrl, {
-          family,
-          given,
-          birthDate,
-          gender: gender === '' ? undefined : gender
-        })
+        await createPatient(
+          serverUrl,
+          { family, given, birthDate, gender: gender === '' ? undefined : gender },
+          session
+        )
       );
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);

@@ -13,5 +13,9 @@
   "enableOneShotWrite": false,
   "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
-  "publishRequestTasks": true
+  "publishRequestTasks": true,
+  "enableSmartLaunch": false,
+  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
+  "smartClientId": "smart-forms-health-links",
+  "smartScopes": null
 }

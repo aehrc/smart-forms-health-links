@@ -3,7 +3,7 @@ import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-d
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ClipboardList, Loader2, Search, Send, User } from 'lucide-react';
 import type { Patient } from 'fhir/r4';
-import { useConfig } from '@/lib/ConfigContext';
+import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
 import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
 import { useDebounced } from '@/lib/useDebounced';
 import { Button } from '@/components/ui/button';
@@ -26,13 +26,13 @@ import { Card, CardContent } from '@/components/ui/card';
 const PAGE_SIZE = 50;
 
 export default function PatientList() {
-  const config = useConfig();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [searchText, setSearchText] = useState('');
   const debouncedSearch = useDebounced(searchText, 300);
 
-  const ehrServerUrl = config.responseServerUrl;
+  const ehrServerUrl = useEhrServerUrl();
+  const session = useSmartSession();
   /*
    * Where to go once a patient is chosen. Restricted to an in-app path: this value comes from the URL,
    * so treating it as a destination without checking would let a crafted link bounce someone off-site.
@@ -45,8 +45,11 @@ export default function PatientList() {
     isPending,
     error
   } = useQuery({
-    queryKey: ['ehr-patients', ehrServerUrl, debouncedSearch, PAGE_SIZE],
-    queryFn: ({ signal }) => searchPatients(ehrServerUrl!, debouncedSearch, PAGE_SIZE, signal),
+    // `fhirUser` in the key so signing in or out refetches: the same URL can return different
+    // rows to an authorised reader than to an anonymous one.
+    queryKey: ['ehr-patients', ehrServerUrl, session?.fhirUser ?? null, debouncedSearch, PAGE_SIZE],
+    queryFn: ({ signal }) =>
+      searchPatients(ehrServerUrl!, debouncedSearch, PAGE_SIZE, signal, session),
     enabled: ehrServerUrl !== null
   });
 

@@ -21,9 +21,12 @@ import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhi
 import {
   FALLBACK_CONFIG,
   canUseEncryptedReply,
+  canUseSmartLaunch,
   isAppConfig,
   type AppConfig
 } from '../src/lib/config';
+import { isLaunchedServer } from '../src/fhir/authedFetch';
+import { buildScopes } from '../src/auth/scopes';
 import { bespokeCodec } from '../src/link/bespokeCodec';
 import { shlCodec } from '../src/link/shlCodec';
 import {
@@ -1806,6 +1809,127 @@ check('rawAnswers/indentsByDepth', rawRows.find((row) => row.linkId === 'pain')?
 check(
   'rawAnswers/emptyResponseYieldsNoRows',
   flattenAnswers({ resourceType: 'QuestionnaireResponse', status: 'completed' }).length === 0
+);
+
+// ---------------------------------------------------------------------------
+console.log('\n--- SMART App Launch: the token boundary ---');
+
+/*
+ * `isLaunchedServer` is the single thing standing between an EHR access token and a server named by
+ * whoever authored a downloaded Questionnaire. `resolveDestinations` reads write targets from an
+ * `sdc-questionnaire-endpoint` extension and those outrank config, so "is there a session" is not a
+ * safe gate — origin is. These are the cases that gate has to get right.
+ */
+const EHR = 'https://ehr.example.org/fhir';
+
+check('authedFetch/sameOriginMatches', isLaunchedServer(`${EHR}/Patient/123`, EHR));
+check(
+  'authedFetch/differentPathSameOriginMatches',
+  isLaunchedServer('https://ehr.example.org/other/Patient/123', EHR),
+  'the server\'s own absolute pagination links are legitimate and must not be refused'
+);
+check(
+  'authedFetch/suffixedHostIsNotAMatch',
+  !isLaunchedServer('https://ehr.example.org.attacker.test/fhir/Patient/1', EHR),
+  'a prefix test on the base URL would accept this'
+);
+check('authedFetch/otherHostIsNotAMatch', !isLaunchedServer('https://elsewhere.test/fhir', EHR));
+check(
+  'authedFetch/schemeMustMatch',
+  !isLaunchedServer('http://ehr.example.org/fhir/Patient/1', EHR),
+  'origin includes the scheme, so a downgrade to http is a different origin'
+);
+check(
+  'authedFetch/portMustMatch',
+  !isLaunchedServer('https://ehr.example.org:8443/fhir', EHR),
+  'origin includes the port'
+);
+check(
+  'authedFetch/malformedFailsClosed',
+  !isLaunchedServer('not a url', EHR),
+  'failing closed costs an unauthenticated request; failing open costs the token'
+);
+
+console.log('\n--- SMART App Launch: scopes ---');
+
+const ehrScopes = buildScopes(FALLBACK_CONFIG, false).split(' ');
+const standaloneScopes = buildScopes(FALLBACK_CONFIG, true).split(' ');
+
+check('scopes/ehrLaunchKeepsLaunch', ehrScopes.includes('launch'));
+check(
+  'scopes/standaloneSwapsToLaunchPatient',
+  standaloneScopes.includes('launch/patient') && !standaloneScopes.includes('launch'),
+  'a bare `launch` means "use the context the launch parameter refers to", and there is none'
+);
+check(
+  'scopes/userContextNotPatient',
+  ehrScopes.some((scope) => scope.startsWith('user/')) &&
+    !ehrScopes.some((scope) => scope.startsWith('patient/')),
+  '/patients and /responses search across the server, which a patient/ grant cannot do'
+);
+check(
+  'scopes/noUpdateOrDeleteOnTheEhr',
+  !ehrScopes.some((scope) => /^user\/[A-Za-z]+\.[a-z]*[ud]/.test(scope)),
+  'the app creates, reads and searches; the only PUT in it goes to an unauthenticated write slot'
+);
+check(
+  'scopes/onlineNotOffline',
+  ehrScopes.includes('online_access') && !ehrScopes.includes('offline_access'),
+  'no backend to hold a refresh token that outlives the session'
+);
+check(
+  'scopes/overrideIsHonoured',
+  buildScopes({ ...FALLBACK_CONFIG, smartScopes: 'launch openid' }, false) === 'launch openid'
+);
+
+console.log('\n--- SMART App Launch: config guards ---');
+
+check(
+  'smartLaunch/offByDefault',
+  !FALLBACK_CONFIG.enableSmartLaunch && !canUseSmartLaunch(FALLBACK_CONFIG)
+);
+check(
+  'smartLaunch/flagAloneIsNotEnough',
+  !canUseSmartLaunch({ ...FALLBACK_CONFIG, enableSmartLaunch: true }),
+  'a config that failed to load must not be able to start a flow, whatever the flag says'
+);
+check(
+  'smartLaunch/needsBothIssuerAndClientId',
+  !canUseSmartLaunch({
+    ...FALLBACK_CONFIG,
+    enableSmartLaunch: true,
+    smartIssuerUrl: 'https://ehr.example.org/fhir'
+  }) &&
+    canUseSmartLaunch({
+      ...FALLBACK_CONFIG,
+      enableSmartLaunch: true,
+      smartIssuerUrl: 'https://ehr.example.org/fhir',
+      smartClientId: 'an-app'
+    })
+);
+
+/*
+ * The launch outranks configuration, but not a Questionnaire that names its own endpoint — that is
+ * the form's author saying where its answers belong, and it was true before launches existed.
+ */
+const launchedSession = { serverUrl: EHR } as unknown as Parameters<
+  typeof resolveDestinations
+>[0]['session'];
+
+check(
+  'smartLaunch/launchOutranksConfig',
+  resolveDestinations({
+    responseServerUrl: 'https://configured.test/fhir',
+    session: launchedSession
+  })[0] === EHR
+);
+check(
+  'smartLaunch/questionnaireEndpointOutranksLaunch',
+  resolveDestinations({
+    questionnaire: declareResponseEndpoint(detectionQuestionnaire, 'https://declared.test/fhir'),
+    responseServerUrl: 'https://configured.test/fhir',
+    session: launchedSession
+  })[0] === 'https://declared.test/fhir'
 );
 
 console.log(

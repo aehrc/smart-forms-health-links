@@ -58,6 +58,17 @@ export interface BuildAmendmentOptions {
   edited: QuestionnaireResponse;
   /** Who is amending. Required — an unattributed amendment is the thing this module exists to prevent. */
   amender: string;
+  /**
+   * The amender as a FHIR reference, e.g. `Practitioner/123`, when a SMART launch established who they
+   * are. Optional, because the app works unauthenticated and a typed name is still better than nothing.
+   *
+   * When present it is the difference between an attribution and a claim. `who.display` alone records
+   * a string somebody typed into a box; `who.reference` records a person the authorisation server
+   * vouched for, which is what makes the Provenance worth keeping. Both are written when both are
+   * known — the reference identifies, the display stays readable if the reference later cannot be
+   * resolved.
+   */
+  amenderReference?: string;
   recorded?: string;
 }
 
@@ -99,7 +110,12 @@ function withoutPatientAsserted(meta: Meta | undefined): Meta | undefined {
  * singleton and not something to trust with the identity of the record.
  */
 export function buildAmendment(options: BuildAmendmentOptions): Amendment {
-  const { original, originalResponseId, edited, amender } = options;
+  const { original, originalResponseId, edited, amender, amenderReference } = options;
+
+  /** `who` is 1..1 on a Provenance agent, so this is built once and used for both places it appears. */
+  const who = amenderReference
+    ? { reference: amenderReference, display: amender }
+    : { display: amender };
   const recorded = options.recorded ?? new Date().toISOString();
   const { id: _id, meta, ...withoutIdentity } = original;
   const keptMeta = withoutPatientAsserted(meta);
@@ -115,7 +131,7 @@ export function buildAmendment(options: BuildAmendmentOptions): Amendment {
      * is the whole point here. The amender becomes the author of this version; `source` rides through
      * untouched, because the patient still answered the questions.
      */
-    author: { display: amender }
+    author: who
   };
 
   const provenance: Provenance = {
@@ -128,7 +144,7 @@ export function buildAmendment(options: BuildAmendmentOptions): Amendment {
         type: {
           coding: [{ system: PROVENANCE_PARTICIPANT_TYPE, code: 'author', display: 'Author' }]
         },
-        who: { display: amender }
+        who
       }
     ],
     entity: [

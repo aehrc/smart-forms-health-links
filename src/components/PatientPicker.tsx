@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Loader2, Search, User } from 'lucide-react';
 import type { Patient } from 'fhir/r4';
 import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
+import { useSmartSession } from '@/auth/SmartContext';
 import { useDebounced } from '@/lib/useDebounced';
 import CreatePatientForm from '@/components/CreatePatientForm';
 import { Input } from '@/components/ui/input';
@@ -72,6 +73,7 @@ export default function PatientPicker(props: PatientPickerProps) {
     prefillName
   } = props;
 
+  const session = useSmartSession();
   const [searchText, setSearchText] = useState('');
   const debouncedSearch = useDebounced(searchText, 300);
   const [isCreating, setIsCreating] = useState(false);
@@ -97,8 +99,8 @@ export default function PatientPicker(props: PatientPickerProps) {
     isFetching,
     error
   } = useQuery({
-    queryKey: ['ehr-patients', serverUrl, debouncedSearch, count],
-    queryFn: ({ signal }) => searchPatients(serverUrl, debouncedSearch, count, signal)
+    queryKey: ['ehr-patients', serverUrl, session?.fhirUser ?? null, debouncedSearch, count],
+    queryFn: ({ signal }) => searchPatients(serverUrl, debouncedSearch, count, signal, session)
   });
 
   const found = page?.resources ?? [];
