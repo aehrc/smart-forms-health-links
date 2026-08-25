@@ -4,8 +4,9 @@ import { CheckCircle2, FilePlus2, Loader2, PencilLine, Save, ShieldCheck, X } fr
 import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
 import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
+import { canWriteToRecord } from '@/lib/config';
 import { useSmartSession } from '@/auth/SmartContext';
-import { fetchUserDisplay } from '@/fhir/ehrServer';
+import { useLaunchContext } from '@/auth/useLaunchContext';
 import {
   NO_DESTINATION_MESSAGE,
   declaredEndpoints,
@@ -30,6 +31,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { LaunchRequiredNote } from '@/components/LaunchRequired';
 
 export interface ReviewResponseProps {
   /**
@@ -113,12 +115,8 @@ export default function ReviewResponse(props: ReviewResponseProps) {
    */
   const [amender, setAmender] = useState(config.senderName ?? '');
 
-  const { data: launchedUserName } = useQuery({
-    queryKey: ['fhirUser', session?.serverUrl, session?.fhirUser],
-    queryFn: ({ signal }) =>
-      fetchUserDisplay(session!.serverUrl, session!.fhirUser!, signal, session),
-    enabled: !!session?.fhirUser
-  });
+  // Shared with the header's context strip rather than fetched again — see `useLaunchContext`.
+  const { userDisplay: launchedUserName } = useLaunchContext();
 
   /*
    * Applied once the name arrives rather than at mount, because it is fetched. Guarded on the field
@@ -159,7 +157,14 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     session
   });
   const isFormDeclared = questionnaire !== undefined && declaredEndpoints(questionnaire).length > 0;
-  const canSave = destinations.length > 0;
+
+  /*
+   * Two refusals, kept apart because their fixes are nothing like each other. Nowhere to write is a
+   * deployment problem that no reviewer can act on; no session is one click. Folding both into
+   * `canSave` would tell a launched clinician to go and read `config.json`.
+   */
+  const hasDestination = destinations.length > 0;
+  const canSave = canWriteToRecord(session, destinations[0] ?? null);
 
   const originalSubject = response.subject?.reference;
 
@@ -374,6 +379,11 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   /*
    * Needs the form definition, because an amendment means editing answers and there is nothing to
    * render without it. The `RawAnswers` fallback is a table, not an editor.
+   *
+   * No launch check here, and not because writing an amendment needs no launch. `amendTargets` comes
+   * from a write this component performed, so there is nothing to amend until `canSave` has already
+   * been satisfied. Seeding `results` from a prop — reviewing a response fetched from the server, say —
+   * would break that chain and this would need the check `canSave` makes.
    */
   const canAmend = amendTargets.length > 0 && questionnaire !== undefined;
 
@@ -495,10 +505,18 @@ export default function ReviewResponse(props: ReviewResponseProps) {
         </Alert>
       ) : null}
 
-      {results === null && !canSave ? (
+      {results === null && !hasDestination ? (
         <Alert tone="warning" title="Nowhere to save this">
           {NO_DESTINATION_MESSAGE}
         </Alert>
+      ) : null}
+
+      {results === null && hasDestination && !canSave ? (
+        <LaunchRequiredNote>
+          These answers can be read without a session, but filing them into the record cannot. A launch
+          is what puts a real author on the response and a real agent on its Provenance, instead of a
+          name somebody typed.
+        </LaunchRequiredNote>
       ) : null}
 
       {needsSubject ? (
@@ -677,7 +695,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
           issues={extraction.issues}
           selected={selectedWriteBack}
           onSelectedChange={setSelectedEntries}
-          disabled={results !== null}
+          disabled={results !== null || !canSave}
           results={writeResults}
           isSaving={isSaving}
         />

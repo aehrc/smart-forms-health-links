@@ -5,8 +5,10 @@ import { ArrowLeft, Eye, Inbox, Loader2, Send, Sparkles } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
 import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
-import { fetchPatient, fetchUser, patientDisplay, personDisplay } from '@/fhir/ehrServer';
+import { useLaunchContext } from '@/auth/useLaunchContext';
+import { fetchPatient, patientDisplay } from '@/fhir/ehrServer';
 import {
+  canMintRequest,
   canPrePopulate,
   canUseEncryptedReply,
   canUseOneShotWrite,
@@ -26,6 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { LaunchRequired } from '@/components/LaunchRequired';
 
 /**
  * Create a "please fill this in" SMART Health Link for a form.
@@ -46,33 +49,20 @@ export default function RequestForm() {
   const [subjectDisplay, setSubjectDisplay] = useState('');
 
   /*
-   * An EHR launch from a chart already knows who the request is for. Looking that patient up and
-   * filling both fields is the difference between a launch that means something and one that only
-   * changes which server is written to — being made to search for the patient you launched from is
-   * exactly the friction the launch exists to remove.
-   */
-  const launchPatientRef = session?.patientId ? `Patient/${session.patientId}` : null;
-
-  const { data: launchPatient } = useQuery({
-    queryKey: ['patient', ehrServerUrl, session?.patientId],
-    queryFn: ({ signal }) =>
-      fetchPatient(ehrServerUrl!, session!.patientId!, signal, session),
-    enabled: !!launchPatientRef && !!ehrServerUrl
-  });
-
-  /**
-   * The launched user — their name for the invitation, their resource for population.
+   * An EHR launch from a chart already knows who the request is for, and who is asking. Looking that
+   * patient up and filling both fields is the difference between a launch that means something and one
+   * that only changes which server is written to — being made to search for the patient you launched
+   * from is exactly the friction the launch exists to remove.
    *
-   * One query for both. SDC's `user` launch context is a `Practitioner` rather than a reference, so
-   * pre-population needs the whole resource, and the session badge has always needed the name out of
-   * it; fetching twice for the two halves of one resource would be a round trip for nothing.
+   * Shared with the context strip in the header rather than fetched here, which is also what keeps
+   * SDC's `user` context and the strip's label from being two reads of one resource.
    */
-  const { data: launchedUser } = useQuery({
-    queryKey: ['fhirUser-resource', session?.serverUrl, session?.fhirUser],
-    queryFn: ({ signal }) => fetchUser(session!.serverUrl, session!.fhirUser!, signal, session),
-    enabled: !!session?.fhirUser
-  });
-  const launchedUserName = personDisplay(launchedUser);
+  const {
+    patient: launchPatient,
+    patientReference: launchPatientRef,
+    user: launchedUser,
+    userDisplay: launchedUserName
+  } = useLaunchContext();
 
   /*
    * The patient picker navigates back here with the chosen patient in the query string. Applied via an
@@ -126,6 +116,13 @@ export default function RequestForm() {
   const [isCreating, setIsCreating] = useState(false);
 
   const canHost = canCreateHealthLinks(config);
+  /*
+   * Gated on the session rather than on a destination, unlike every other capability flag here. A
+   * request is not always a write — with `publishRequestTasks` off it touches the EHR not at all — but
+   * it is always a claim about who is asking, and only a launch makes that claim answerable. See
+   * `canMintRequest`.
+   */
+  const mintable = canMintRequest(session);
   const serverReturn = canUseServerReturn(config);
   const encryptedReply = canUseEncryptedReply(config);
   const oneShotWrite = canUseOneShotWrite(config);
@@ -316,117 +313,125 @@ export default function RequestForm() {
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Who is this for?</CardTitle>
-          <CardDescription>
-            Both optional. The reference correlates the answers on your own server; the name is the part
-            a filler can actually read, since it cannot resolve a reference into a server it has no
-            access to.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {ehrServerUrl ? (
-            <div className="space-y-1.5">
+      {!mintable ? (
+        <LaunchRequired title="Sending a request needs a launch">
+          An invitation says who it is from, and asks somebody to hand over health information on the
+          strength of that. Without a launch the only name available is the one in this deployment's
+          config, identical on every request it has ever sent. Signing in makes the requester you.
+        </LaunchRequired>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Who is this for?</CardTitle>
+            <CardDescription>
+              Both optional. The reference correlates the answers on your own server; the name is the part
+              a filler can actually read, since it cannot resolve a reference into a server it has no
+              access to.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {ehrServerUrl ? (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-slate-700">
+                  Search <span className="font-mono">{ehrServerUrl}</span>
+                </p>
+                <PatientPicker
+                  serverUrl={ehrServerUrl}
+                  selectedReference={subject.trim() === '' ? undefined : subject.trim()}
+                  onChoose={(chosen) => {
+                    setSubject(chosen.reference);
+                    setSubjectDisplay(chosen.display);
+                  }}
+                  label="Search patients to address this request to"
+                  allowCreate
+                  prefillName={subjectDisplay}
+                />
+              </div>
+            ) : null}
+
+            <div className="space-y-2">
               <p className="text-xs font-medium text-slate-700">
-                Search <span className="font-mono">{ehrServerUrl}</span>
+                {ehrServerUrl ? 'Or enter it by hand' : 'Subject'}
               </p>
-              <PatientPicker
-                serverUrl={ehrServerUrl}
-                selectedReference={subject.trim() === '' ? undefined : subject.trim()}
-                onChoose={(chosen) => {
-                  setSubject(chosen.reference);
-                  setSubjectDisplay(chosen.display);
-                }}
-                label="Search patients to address this request to"
-                allowCreate
-                prefillName={subjectDisplay}
+              <Input
+                value={subject}
+                onChange={(event) => setSubject(event.target.value)}
+                placeholder="Patient/123"
+                aria-label="Subject reference"
+              />
+              <Input
+                value={subjectDisplay}
+                onChange={(event) => setSubjectDisplay(event.target.value)}
+                placeholder="Jane Citizen"
+                aria-label="Subject name"
               />
             </div>
-          ) : null}
 
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-slate-700">
-              {ehrServerUrl ? 'Or enter it by hand' : 'Subject'}
-            </p>
-            <Input
-              value={subject}
-              onChange={(event) => setSubject(event.target.value)}
-              placeholder="Patient/123"
-              aria-label="Subject reference"
-            />
-            <Input
-              value={subjectDisplay}
-              onChange={(event) => setSubjectDisplay(event.target.value)}
-              placeholder="Jane Citizen"
-              aria-label="Subject name"
-            />
-          </div>
+            {ehrServerUrl ? (
+              <p className="text-xs text-slate-500">
+                Or{' '}
+                <RouterLink
+                  to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ''}`)}`}
+                  className="underline">
+                  browse the full patient list
+                </RouterLink>
+                , which also shows what each one has already answered.
+              </p>
+            ) : null}
 
-          {ehrServerUrl ? (
-            <p className="text-xs text-slate-500">
-              Or{' '}
-              <RouterLink
-                to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ''}`)}`}
-                className="underline">
-                browse the full patient list
-              </RouterLink>
-              , which also shows what each one has already answered.
-            </p>
-          ) : null}
-
-          {config.enablePrePopulate && declaresPopulation ? (
-            <div className="space-y-1.5 border-t border-slate-200 pt-4">
-              <label className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={prePopulateOn}
-                  disabled={!prePopulateAvailable || !!link}
-                  onChange={(event) => setPrePopulateOn(event.target.checked)}
-                />
-                <span>
-                  <span className="inline-flex items-center gap-1.5 font-medium text-slate-900">
-                    <Sparkles className="h-3.5 w-3.5" aria-hidden />
-                    Fill this in from the record first
+            {config.enablePrePopulate && declaresPopulation ? (
+              <div className="space-y-1.5 border-t border-slate-200 pt-4">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={prePopulateOn}
+                    disabled={!prePopulateAvailable || !!link}
+                    onChange={(event) => setPrePopulateOn(event.target.checked)}
+                  />
+                  <span>
+                    <span className="inline-flex items-center gap-1.5 font-medium text-slate-900">
+                      <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                      Fill this in from the record first
+                    </span>
+                    <span className="mt-0.5 block text-xs text-slate-500">
+                      This form declares pre-population, so the record can answer part of it before it
+                      goes out. You check every answer before the link is made.
+                    </span>
                   </span>
-                  <span className="mt-0.5 block text-xs text-slate-500">
-                    This form declares pre-population, so the record can answer part of it before it
-                    goes out. You check every answer before the link is made.
-                  </span>
-                </span>
-              </label>
+                </label>
 
-              {prePopulateAvailable ? null : (
-                <p className="pl-6 text-xs text-amber-800">
-                  {!session
-                    ? 'Sign in through your EHR to read the record.'
-                    : !ehrServerUrl
-                      ? 'No record server is configured to read from.'
-                      : !subjectPatientId
-                        ? 'Choose a patient above — a form can only be filled in from somebody’s record.'
-                        : 'Looking up that patient…'}
-                </p>
+                {prePopulateAvailable ? null : (
+                  <p className="pl-6 text-xs text-amber-800">
+                    {!session
+                      ? 'Sign in through your EHR to read the record.'
+                      : !ehrServerUrl
+                        ? 'No record server is configured to read from.'
+                        : !subjectPatientId
+                          ? 'Choose a patient above — a form can only be filled in from somebody’s record.'
+                          : 'Looking up that patient…'}
+                  </p>
+                )}
+              </div>
+            ) : null}
+
+            <Button onClick={handleCreate} disabled={isCreating || !canHost || isPopulating}>
+              {isCreating ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <Send className="h-4 w-4" aria-hidden />
               )}
-            </div>
-          ) : null}
-
-          <Button onClick={handleCreate} disabled={isCreating || !canHost || isPopulating}>
-            {isCreating ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            ) : (
-              <Send className="h-4 w-4" aria-hidden />
-            )}
-            {isCreating
-              ? 'Encrypting and uploading…'
-              : isPopulating
-                ? 'Reading the record…'
-                : seed
-                  ? 'Create request link, pre-filled'
-                  : 'Create request link'}
-          </Button>
-        </CardContent>
-      </Card>
+              {isCreating
+                ? 'Encrypting and uploading…'
+                : isPopulating
+                  ? 'Reading the record…'
+                  : seed
+                    ? 'Create request link, pre-filled'
+                    : 'Create request link'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {prePopulateOn && populateError ? (
         <Alert tone="error" title="The record could not be read">

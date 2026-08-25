@@ -54,6 +54,7 @@ cannot currently be opened by third-party SHL wallets.
     - [Read and write are separate servers, with no fallback](#read-and-write-are-separate-servers-with-no-fallback)
   - [SMART App Launch](#smart-app-launch)
     - [What it buys](#what-it-buys)
+    - [A launch is required to write](#a-launch-is-required-to-write)
     - [Setting it up](#setting-it-up)
     - [Both launch patterns, one route](#both-launch-patterns-one-route)
     - [The boundary, in one rule](#the-boundary-in-one-rule)
@@ -114,7 +115,7 @@ reimplemented here and checked against transcriptions of its own code.
 | Node | **22 or newer** (Vite 6 and the check scripts target `node22`) |
 | npm | ships with Node |
 | A browser | any current one; the scanner needs camera access and a secure context |
-| A FHIR server | **not required** — the defaults point at public sandboxes |
+| A FHIR server | **not required** — the defaults point at public sandboxes, including one that can complete a launch |
 | A sibling `../smart-forms` checkout | only for `npm run check:roundtrip`, which imports fixtures from it. Not needed to run the app |
 
 ```bash
@@ -140,40 +141,48 @@ demo the QR codes.
 
 #### One machine, two windows (nothing to configure)
 
-1. **Pick a form.** On `/`, search for something small to start with — `sepsis` or
+1. **Sign in.** Click **Launch** in the strip under the nav. The shipped config points at a
+   [smart-launcher-v2](https://github.com/aehrc/smart-launcher-v2) issuer with the practitioner and
+   patient pinned and both interactive screens skipped, so this completes without a single prompt and
+   the strip fills in with who you are and whose chart you are in.
+
+   You can skip it and keep browsing — `/patients`, `/responses` and `/requests` all read
+   anonymously — but you cannot get past step 3, because
+   [writing requires a launch](#a-launch-is-required-to-write).
+2. **Pick a form.** On `/`, search for something small to start with — `sepsis` or
    `medications` — and click **Request** on a result. (`Fill` is the shortcut that skips the
    request leg and just fills the form yourself.)
-2. **Say who it is for.** Optional, but worth doing. Search the EHR for the patient and click them
-   to fill both fields correctly, which also makes step 8 succeed without reconciliation. The two
-   fields underneath still take a reference typed by hand, for a server the app cannot search.
-3. **Create request link.** The app encrypts the entire Questionnaire plus a `Task` into a JWE,
+3. **Say who it is for.** Already filled in from the chart you launched from. Searching the EHR and
+   clicking a different patient overrides it, which also makes step 9 succeed without reconciliation.
+   The two fields underneath still take a reference typed by hand, for a server the app cannot search.
+4. **Create request link.** The app encrypts the entire Questionnaire plus a `Task` into a JWE,
    `POST`s it as a FHIR `Binary`, and shows you a QR code and a copyable `shlink:/…` URL. It also
    publishes the `Task`, so the request now appears under **Sent requests**.
-4. **Copy the link** and open it in a second browser window — ideally a different profile or a
+5. **Copy the link** and open it in a second browser window — ideally a different profile or a
    private window, to make the point that no shared state is involved.
-5. **Fill it in.** The second window resolves nothing from your servers; it decrypts the payload and
+6. **Fill it in.** The second window resolves nothing from your servers; it decrypts the payload and
    renders the form. Note the header: it names who asked and who it is addressed to.
-6. **Return as Health Link.** The filler encrypts the answers into *its own* SHL, hosts them, and
+7. **Return as Health Link.** The filler encrypts the answers into *its own* SHL, hosts them, and
    shows its own QR and link. Copy that.
-7. **Paste it into `/scan`** back in the first window. Reading it needs no infrastructure at all.
-8. **Review and accept.** The answers render read-only. The subject is probed against the EHR
+8. **Paste it into `/scan`** back in the first window. Reading it needs no infrastructure at all.
+9. **Review and accept.** The answers render read-only. The subject is probed against the EHR
    first, so a patient the destination does not hold — or answers that name no patient at all —
    surfaces as a question rather than a failed write or a silently unfiled record. Search the
    destination for the right patient there and then — and if they are genuinely not there, create
    them, which is offered once a search has come back empty. The answers only exist in the browser at
    that point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
    `QuestionnaireResponse` and the `Task`.
-9. **Amend, if you have to.** The form stays read-only — see
+10. **Amend, if you have to.** The form stays read-only — see
    [Amendments are new resources](#amendments-are-new-resources). *Amend these answers* opens an
    editable copy and writes your changes as a **second** response authored by you, joined to the
    first by a `Provenance`. Both versions survive, and the record says who wrote each.
-10. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
+11. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
    flips to **Accepted** — the scanned answers are matched back to the request on `Task.identifier`,
    which is the one key that survives both copies.
 
 #### Two devices, with the camera
 
-Same steps, with the phone doing 5–6 and the laptop doing 7. Two things bite here:
+Same steps, with the phone doing 6–7 and the laptop doing 8. Two things bite here:
 
 - **The link points at `window.location.origin`**, which on the laptop is `http://localhost:5273` —
   a URL the phone cannot open. Set `linkBaseUrl` in `public/config.json` to something the phone can
@@ -186,7 +195,9 @@ Same steps, with the phone doing 5–6 and the laptop doing 7. Two things bite h
 ### What the demo writes, and where
 
 Out of the box, reads and writes go to the **CSIRO EHR sandbox** at `proxy.smartforms.io/fhir`, so
-the loop works with no setup and against the same data smart-forms itself uses. Two consequences:
+the loop works with no setup and against the same data smart-forms itself uses. Reads go there straight
+from `responseServerUrl`; writes go there because that is the server the shipped launch launches
+*against*, behind its `v/r4/sim/…` facade. Two consequences:
 
 - Everything written there is **world-readable, shared with other CSIRO tooling, and wiped when the
   AWS instance restarts** (roughly every 60–90 days). It is for demos. Do not put anything real in
@@ -675,7 +686,7 @@ mistake this app is shaped to avoid.
 | | | |
 | --- | --- | --- |
 | **Forms server** | `smartforms.csiro.au/api/fhir` | Questionnaire **definitions**. Read only, never written to |
-| **EHR** | `proxy.smartforms.io/fhir` | Patients and QuestionnaireResponses. Read *and* written |
+| **EHR** | `proxy.smartforms.io/fhir` | Patients and QuestionnaireResponses. Read anonymously; written only through a launch |
 | **Blob host** | anywhere | Encrypted payloads and reply slots. Need not be trusted |
 
 The EHR is what smart-forms calls the *patient data FHIR API* and what `sdc-populate` takes as its
@@ -686,12 +697,13 @@ The EHR is what smart-forms calls the *patient data FHIR API* and what `sdc-popu
 `Location` headers.
 
 **A launch adds a fourth possibility for the EHR, not a fourth server.** When a session exists, the
-launched server replaces `responseServerUrl` as the EHR — it is the one backed by a token. The forms
+launched server replaces `responseServerUrl` as the EHR — it is the one backed by a token, and the only
+one this app writes to, because [writing requires a launch](#a-launch-is-required-to-write). The forms
 server and the blob host do not move, and must not: the blob host is fetched by a filler holding no
 credentials, and pointing it at an authenticated server would mint links only their author can open.
 See [SMART App Launch](#smart-app-launch).
 
-Three routes read it:
+Three routes read the EHR, and all three work with no session at all:
 
 | Route | Purpose |
 | --- | --- |
@@ -771,7 +783,7 @@ rather than a demo.
 | --- | --- |
 | `formsServerUrl` | **read only.** Questionnaire search and resolve-by-canonical. Never written to |
 | `terminologyServerUrl` | ValueSet expansion, passed straight through to the renderer |
-| `responseServerUrl` | the **EHR**: patients and responses read from it, reviewed responses written to it. **Required to save, and to use `/responses` or `/patients`** |
+| `responseServerUrl` | the **EHR** to read: patients and responses come from it. **Required for `/responses` and `/patients` to show anything.** Reviewed responses are written to the *launched* server, since writing needs a launch and a launch supplies its own base |
 | `blobServerUrl` | where SHL payloads and reply slots are hosted as `Binary`. **Required to create Health Links** |
 | `blobStore` | how payloads are stored. `fhir-binary` is the only implementation |
 | `linkBaseUrl: null` | use `window.location.origin`. Set it when the device opening the link cannot resolve that origin — a phone scanning a laptop's QR, or a reverse proxy on a different host |
@@ -785,7 +797,7 @@ rather than a demo.
 | `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
 | `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
 | `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
-| `enableSmartLaunch` | offer SMART App Launch. **On in the shipped config**, off in the fallback. The app gains `/launch` and `/callback`, EHR calls carry a bearer token, and `fhirUser` supplies a real identity. A launch stays **optional** — the app works fully without one. See [SMART App Launch](#smart-app-launch) |
+| `enableSmartLaunch` | offer SMART App Launch. **On in the shipped config**, off in the fallback. The app gains `/launch` and `/callback`, EHR calls carry a bearer token, and `fhirUser` supplies a real identity. A launch is **required to write** and optional to read. See [SMART App Launch](#smart-app-launch) |
 | `smartIssuerUrl` | the SMART-enabled FHIR base to launch against, **and** the allowlist for the `iss` a launch arrives with. Not the same base as `responseServerUrl` — see below |
 | `smartClientId` | OAuth client id. A **public** client: a static site holds no secret, so PKCE does the binding |
 | `smartScopes` | space-separated scope override. `null` takes the default. Worth setting only to narrow |
@@ -812,15 +824,19 @@ Minimum viable change for a real deployment — the forms and terminology server
 }
 ```
 
-`responseServerUrl` needs `Patient` and `QuestionnaireResponse` read plus `QuestionnaireResponse`,
-`Task` and `Provenance` create. `blobServerUrl` needs only `Binary` create and read, and **need not
-be a server you control** — the payload is a JWE and the key travels only inside the link.
+`responseServerUrl` needs `Patient` and `QuestionnaireResponse` read. The *launched* server is what
+needs `QuestionnaireResponse`, `Task` and `Provenance` create — in the common case where both point at
+the same EHR behind different facades, it needs all of it. `blobServerUrl` needs only `Binary` create
+and read, and **need not be a server you control** — the payload is a JWE and the key travels only
+inside the link.
 
 ### What happens when config is missing
 
 A missing or malformed `config.json` is not fatal: the app falls back to the public CSIRO **forms and
-terminology** servers, with **both write targets `null`**. In that state it reads and renders forms
-but refuses to mint links or save responses, and says so on the surfaces that would need them.
+terminology** servers, with **both write targets `null`** and `enableSmartLaunch` off. In that state it
+reads and renders forms but refuses to mint links or save responses, and says so on the surfaces that
+would need them — twice over now, since a fallback config can neither name a destination nor start a
+launch.
 
 That asymmetry is deliberate. Guessing a write target because config failed to load is worse than
 refusing — it would put patient data on whatever server happened to be named for reading. A check
@@ -832,16 +848,22 @@ asserts the fallback names no write target, and another asserts the *shipped* co
 against it and writes responses to its SMART launch server instead — see `saveQr.ts:133`, which posts
 to `smartClient.state.serverUrl`.
 
-This app has no launch context and therefore no such server, so the write targets **deliberately do
-not fall back to `formsServerUrl`**. Setting them to the forms server is asserted against, because
-quietly putting patient data and encrypted blobs into a shared reference library is the specific
-mistake worth preventing rather than documenting.
+This app has a launch context too, and when there is one the launched server is exactly where responses
+go. What it does not have is a *fallback*: with no launch and no `responseServerUrl`, the write targets
+**deliberately do not fall back to `formsServerUrl`**. Setting them to the forms server is asserted
+against, because quietly putting patient data and encrypted blobs into a shared reference library is the
+specific mistake worth preventing rather than documenting.
+
+The blob host is the half of this that survives a launch unchanged. Responses follow the session;
+payloads and write slots must not, because a filler holding no credentials has to be able to fetch them.
 
 ## SMART App Launch
 
 **On in the shipped config.** A clinician can launch this app from an EHR — or sign in to it
-directly — and the requester's half of the app gains a session. The filler's half is untouched, and a
-launch is never *required*: with no session the app behaves exactly as it did before launches existed.
+directly — and the requester's half of the app gains a session. The filler's half is untouched.
+
+A launch is **required to write** and optional to read: with no session the requester's half is
+read-only. See [A launch is required to write](#a-launch-is-required-to-write) just below.
 
 It is off in `FALLBACK_CONFIG`, which is what a deployment gets when `config.json` fails to load. That
 split runs through every capability here and is deliberate — what ships is a chosen sandbox, whereas a
@@ -854,28 +876,51 @@ Full detail, including the trust boundary and the scope rationale, is in
 
 | | Without a launch | With a launch |
 | --- | --- | --- |
-| EHR base URL | `responseServerUrl` from config | The launched server |
-| EHR requests | anonymous | `Authorization: Bearer …` |
-| Who amended a response | a name typed into a box | `Practitioner/…`, vouched for by the authorisation server |
-| Who a request is from | `senderName` from config | the launched user |
-| Patient on a new request | searched for | already filled in, from the chart |
+| Writing anything to the EHR | **refused** | permitted |
+| Reading the EHR | anonymous, and still works | `Authorization: Bearer …` |
+| EHR base URL | `responseServerUrl` from config | the launched server |
+| Who amended a response | — | `Practitioner/…`, vouched for by the authorisation server |
+| Who a request is from | — | the launched user |
+| Patient on a new request | — | already filled in, from the chart |
 
-The third row is the one worth having. Before a launch, `Provenance.agent.who` carried only a
-`display` string somebody typed; it recorded a claim rather than an attribution. A session adds
-`who.reference`, and that is the difference between the two.
+The fourth row is why the first one reads as it does. `Provenance.agent.who` used to carry only a
+`display` string somebody typed — a claim rather than an attribution. A session adds `who.reference`,
+and rather than offering both and letting a deployment discover the difference, the claim-only version
+is now refused.
+
+### A launch is required to write
+
+Gated: minting a request, accepting answers, amending them, creating a patient, writing back extracted
+resources, and pre-populating a form from the record.
+
+Not gated: everything else. `/patients`, `/responses` and `/requests` list anonymously exactly as
+before, and **the filler's half is untouched** — somebody holding nothing but a link has no account to
+log into, which is the constraint the whole app is shaped around. That is also why the check sits at the
+requester's own call sites rather than in `src/fhir/submit.ts`, whose `resolveDestinations` also serves
+the filler; `docs/smart-app-launch.md` has the full reasoning.
+
+A gated screen says so in place and offers a launch, rather than redirecting: a silent bounce to a login
+hides why it happened, and against a misconfigured issuer it loops. The screen you started from is
+remembered, so a launch comes back to it.
 
 ### Setting it up
 
 ```json
 {
   "enableSmartLaunch": true,
-  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
+  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/sim/WzIsImV4YW1wbGUtaHlwZXJ0ZW5zaW9uIiwi…/fhir",
   "smartClientId": "smart-forms-health-links"
 }
 ```
 
-Then open **Launch setup** in the app's header — `/launch/setup`, linked from every screen because the
-person who needs it is the one whose launch does not work yet. It lists everything the authorisation
+That is the shipped issuer, and the `v/r4/sim/…` segment is not decoration: a *standalone* launch
+against smart-launcher-v2 needs its options in the issuer path, and the CSIRO deployment serves no
+launcher screens, so the demo pins a practitioner and a patient and skips both. It is what makes step 1
+of the quick start a single click. An **EHR** launch works against the plain `v/r4/fhir` base as well.
+Both quirks are in [`docs/smart-app-launch.md`](docs/smart-app-launch.md#standalone-launch-against-smart-launcher-v2-needs-a-sim-issuer).
+
+Then open **Launch setup** in the context strip under the nav — `/launch/setup`, reachable from every
+screen because the person who needs it is the one whose launch does not work yet. It lists everything the authorisation
 server needs — launch URL, redirect URI, client id, issuer and the full scope list — generated from
 that deployment's own config, so it is correct for that build and that host in a way this file cannot
 be. It is also the page to send to whoever administers the OAuth client, which is often not you.
@@ -1001,6 +1046,8 @@ src/
   auth/
     smartSession.ts    the OAuth flow — the only module that imports fhirclient
     SmartContext.tsx   the session as React context, and the EHR base resolver
+    useLaunchContext.ts  the patient and user a launch put in context, resolved once and shared
+    returnTo.ts        the screen a gate sent you from, so a launch comes back to it
     routes.ts          /launch, /callback and /launch/setup, shared so redirect_uri cannot drift
     scopes.ts          scope policy, kept away from fhirclient so checks can reach it
   components/
@@ -1011,7 +1058,8 @@ src/
     CreatePatientForm.tsx  registering somebody the destination server does not hold
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
     WriteBackPanel.tsx what extraction produced, as a list to tick
-    SessionBadge.tsx   who is signed in, and to which server
+    LaunchContextBar.tsx  who is signed in, whose chart, and which server — the strip under the nav
+    LaunchRequired.tsx    what a launch is needed for, and the two ways out of not having one
     SmartRegistration.tsx  what a deployer must register, derived from live config
     ScopeWarning.tsx   says so when the server granted less than was asked for
     ShareLinkPanel.tsx QR + copyable link
@@ -1100,11 +1148,11 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 - **Links this app mints carry no passcode and cannot be revoked.** `U` cannot be combined with `P`,
   and a hosted `Binary` has no per-recipient variation. Reading a passcode-protected manifest link
   works fine; minting one does not.
-- **SMART App Launch is a public client, and optional.** A static site holds no secret, so this is a
+- **SMART App Launch is a public client.** A static site holds no secret, so this is a
   public client with PKCE rather than a confidential one; there is no backend to keep a secret in. A
-  launch is never *required* — every requester surface still works unauthenticated, because the
-  filler's half of the app has no credentials by construction and removing that would remove the
-  point of the design. A confidential variant with a Fastify backend-for-frontend was prototyped in
+  launch is required to *write* but never to read, and the filler's half needs none at all — it has no
+  credentials by construction, and removing that would remove the point of the design. A confidential
+  variant with a Fastify backend-for-frontend was prototyped in
   [PR #5](https://github.com/aehrc/smart-forms-health-links/pull/5) and closed unmerged. See
   [SMART App Launch](#smart-app-launch).
 - **A pre-filled request weakens what `PATAST` means.** Answers return stamped patient-asserted,
@@ -1138,9 +1186,10 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 322 checks: codecs, JWE, reply crypto, foreign links, passcodes,
-                         # the SMART token boundary and its scopes, form data extraction,
-                         # pre-population and the request/response discriminator — no network
+npm run check:roundtrip  # 333 checks: codecs, JWE, reply crypto, foreign links, passcodes,
+                         # the SMART token boundary, its scopes and what a launch gates,
+                         # form data extraction, pre-population and the request/response
+                         # discriminator — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.

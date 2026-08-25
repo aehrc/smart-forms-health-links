@@ -6,11 +6,19 @@ config, off in the fallback.**
 **Audience:** anyone deploying this app against a real EHR, or changing the code that touches an
 access token.
 
-This app was built to work with no identity at all. That is not an oversight to be corrected: the
-whole design turns on a filler being able to complete a form with no account, no login, and no
-network path to the requester's servers. SMART App Launch does not change that — it is enabled in the
-shipped config, but a session is still something the app runs *without* whenever there isn't one. It adds a session to
-the *requester's* half of the app, and leaves the filler's half exactly as it was.
+This app was built to work with no identity at all. Half of that is not an oversight to be corrected:
+the whole design turns on a filler being able to complete a form with no account, no login, and no
+network path to the requester's servers. SMART App Launch does not change that, and must not.
+
+The other half was a mistake, and this is the document where it gets corrected. The same
+no-identity-needed posture had leaked into the *requester's* side, where an unlaunched visitor could
+mint invitations, file answers into a record, amend somebody else's response, register a patient and
+write back extracted resources — anonymously, against a server named in a config file. It worked only
+because the default sandbox does not care.
+
+So a launch is now **required to write, and optional to read**. The requester's half is read-only
+without one: it still lists patients, responses and sent requests anonymously, and refuses every write.
+The filler's half is untouched.
 
 Everything below is about which half is which, and what must never cross between them.
 
@@ -18,14 +26,82 @@ Everything below is about which half is which, and what must never cross between
 
 | | Without a launch | With a launch |
 | --- | --- | --- |
+| **Writing anything to the EHR** | **Refused** | Permitted |
+| Reading the EHR | Anonymous, and still works | `Authorization: Bearer …` |
 | EHR base URL | `responseServerUrl` from `config.json` | The launched server |
-| EHR requests | Anonymous | `Authorization: Bearer …` |
-| Who amended a response | A name typed into a box | `Practitioner/…`, vouched for by the authorisation server |
-| Who a request is from | `senderName` from `config.json` | The launched user |
-| Patient on a new request | Searched for | Already filled in, from the chart |
+| Who amended a response | — | `Practitioner/…`, vouched for by the authorisation server |
+| Who a request is from | — | The launched user |
+| Patient on a new request | — | Already filled in, from the chart |
+
+The last three rows used to say "a name typed into a box", "`senderName` from `config.json`" and
+"searched for". Those were the answers when an unlaunched requester could write; the refusal in the
+first row is what replaced them.
 
 Nothing else moves. In particular the forms catalogue, the SHL payload host and the one-shot write
 slot stay exactly where they were, and stay anonymous.
+
+## What a launch gates
+
+Two predicates in `src/lib/config.ts`, siblings of the `canUse…` family already there:
+
+| | Asks for | Enforced at |
+| --- | --- | --- |
+| `canWriteToRecord(session, ehrServerUrl)` | A session **and** somewhere to write | `ReviewResponse` (accept, write-back), `CreatePatientForm` |
+| `canMintRequest(session)` | A session, and nothing else | `RequestForm` |
+
+`canMintRequest` asks for no destination, which looks like an oversight and is not. With
+`publishRequestTasks` off, minting touches the EHR not at all — the payload goes to the blob host,
+which is untrusted by design. It is gated on the *other* thing a launch supplies: an invitation says
+who it is from, and `senderName` is one string in a config file, identical on every request the
+deployment has ever sent. The filler is being asked to hand over health information on the strength of
+that name.
+
+### The check is in the UI, and that is deliberate
+
+Not in `src/fhir/submit.ts`, which is where it would belong if the question were only "may this
+process write". Three reasons, and the first is the one that matters:
+
+- **`resolveDestinations` also serves the filler.** With `enableServerReturn` on, the invitation itself
+  tells a filler to `POST` answers to the endpoint the Questionnaire declares. A check in the fhir
+  layer would refuse the person holding a link — the exact party this architecture exists to serve.
+- **The check harness drives `submit.ts` directly.** `check:e2e-shl`, `check:amend`, `check:patient`
+  and `check:writeback` all write without a session, and they still pass unchanged. That they do is the
+  evidence the gate landed in the right place.
+- **`authedFetch` owns the other boundary.** It answers "may this token go *there*", by origin. Keeping
+  "may this visitor write at all" out of it keeps that file about one question.
+
+### What is not gated
+
+Reads. `/patients`, `/responses` and `/requests` list anonymously exactly as they did, so a deployment
+pointed at a public sandbox is still browsable with no setup at all. `useEhrServerUrl` keeps its
+`?? responseServerUrl` fallback.
+
+Amendment has no check of its own, because it cannot be reached without one: `amendTargets` comes from
+a write `ReviewResponse` has already performed, so `canWriteToRecord` was satisfied before the button
+existed. `ReviewResponse.tsx` says so at `canAmend`, because seeding `results` from a prop would
+quietly break that chain.
+
+### Coming back afterwards
+
+A gate offers a launch in place rather than redirecting to one — a screen that silently bounces
+somebody to a login has hidden the reason, and against a misconfigured issuer it bounces them into a
+loop. The intended path is remembered in `src/auth/returnTo.ts` and consumed by `Callback`, so a launch
+started from `/request/abc` returns there rather than to the form list.
+
+It travels in `sessionStorage` rather than through the flow, because `redirect_uri` is registered
+exactly and `redirectUri` strips the query and fragment on purpose. It is validated on the way out even
+though only this app writes it: `//evil.example/x` is a valid protocol-relative URL, and handing one to
+`navigate` would turn "come back here" into an open redirect. `check:roundtrip` asserts that.
+
+### Seeing what is set
+
+`src/components/LaunchContextBar.tsx` renders under the nav on every route: the launched user, the
+patient in context, the server being written to, and — with no session — the fact that the app is
+reading anonymously and read-only. It replaced `SessionBadge`, which said the same thing in fewer words
+from inside a nav row that had run out of width.
+
+Unlike `ScopeWarning` below it, the strip renders in every state including the empty one. "No session"
+is not an absence here, it is a fact about what the next click can do.
 
 ## The boundary
 
@@ -187,9 +263,9 @@ user/MedicationStatement.cu user/Immunization.cu user/Procedure.cu user/Encounte
 `launch` in a single request — see the last bullet. Registering only what one launch pattern asks for
 is the mistake that costs an afternoon.
 
-This list is generated by the app itself at `/launch/setup` — **Launch setup** in the header, on every
-screen — which is the copy to trust: it reflects the deployment's own `smartScopes` override, and a
-document cannot.
+This list is generated by the app itself at `/launch/setup` — **Launch setup** in the context strip
+under the nav, on every screen — which is the copy to trust: it reflects the deployment's own
+`smartScopes` override, and a document cannot.
 
 - **`user/`, not `patient/`.** `/patients` and `/responses` search across the server. A `patient/`
   grant is scoped to the one patient in context and would leave both routes empty.
@@ -225,6 +301,16 @@ Where a response is written, highest first:
 A launch outranks configuration because it is the one that knows. It still loses to the
 Questionnaire, which is unchanged behaviour.
 
+**Level 3 is now unreachable from the app**, and it is worth being explicit about why rather than
+letting a reader discover it. `resolveDestinations` falls to `responseServerUrl` only when there is no
+session — and with no session the app will not write at all. So configuration still supplies the EHR
+base the requester *reads*, and no longer supplies one it writes to. The level stays documented and
+stays in the code because the Node check scripts pass no session and reach it, which is how the write
+path is exercised offline from a launch.
+
+A deployment that wants a configured write destination back has to want unattributable writes back with
+it; that is the trade this gate exists to refuse.
+
 `blobServerUrl` and `writeSlotServerUrl` are **not** part of this. In the shipped `config.json` they
 happen to be the same string as `responseServerUrl`, which makes this easy to get wrong — but they are
 transport, reachable by a filler holding no credentials, and moving them onto an authenticated server
@@ -237,5 +323,10 @@ would mint links that only their author can open.
   [PR #5](https://github.com/aehrc/smart-forms-health-links/pull/5) and closed unmerged — worth
   reading if a deployment needs one.
 - **No token binding to an invitation.** The session authorises the clinician, not the link.
-- **No launch required.** Every requester surface still works unauthenticated, and the filler's half
-  is untouched. A launch is an upgrade, not a gate.
+- **No gate on reading.** A launch is required to write and optional to read, so an unlaunched
+  requester still browses patients, responses and sent requests — anonymously, against
+  `responseServerUrl`. Narrowing that further is a deployment's decision, not this app's: point
+  `responseServerUrl` at nothing and there is nothing to read.
+- **No gate on the filler, ever.** Somebody holding nothing but a link has no account to log into, and
+  every channel that serves them stays anonymous. This is the constraint that decides where the write
+  gate lives — see [What a launch gates](#what-a-launch-gates).

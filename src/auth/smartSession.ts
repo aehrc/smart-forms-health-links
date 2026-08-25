@@ -14,9 +14,11 @@ import { buildScopes } from './scopes';
  * report unusable `Location` headers (`src/fhir/blobStore.ts`). So this file yields a bearer token and
  * a server URL, and `src/fhir/authedFetch.ts` decides where they may be sent.
  *
- * A session is optional throughout. The app was built to work with no identity at all, and the filler
- * half of it still must: someone holding nothing but a link has no account to log into. Every consumer
- * therefore takes `SmartSession | null` and has to mean something sensible for `null`.
+ * A session is optional at this layer, and stays so on purpose. Reading the EHR works without one, and
+ * the filler's half of the app has no account to log into at all — someone holding nothing but a link
+ * never will. So every consumer here takes `SmartSession | null` and has to mean something sensible for
+ * `null`; the refusal to *write* without one lives a layer up, at the requester's own call sites. See
+ * `canWriteToRecord` in `src/lib/config.ts` for why it is there and not here.
  */
 
 /**

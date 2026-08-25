@@ -60,7 +60,8 @@ export interface BuildAmendmentOptions {
   amender: string;
   /**
    * The amender as a FHIR reference, e.g. `Practitioner/123`, when a SMART launch established who they
-   * are. Optional, because the app works unauthenticated and a typed name is still better than nothing.
+   * are. Optional even though an amendment now requires a launch: `fhirUser` is a scope like any other
+   * and a server may decline to grant it, so a typed name remains the fallback.
    *
    * When present it is the difference between an attribution and a claim. `who.display` alone records
    * a string somebody typed into a box; `who.reference` records a person the authorisation server

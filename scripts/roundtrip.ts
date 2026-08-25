@@ -21,11 +21,14 @@ import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhi
 import {
   DEFAULT_SMART_SCOPES,
   FALLBACK_CONFIG,
+  canMintRequest,
   canUseEncryptedReply,
   canUseSmartLaunch,
+  canWriteToRecord,
   isAppConfig,
   type AppConfig
 } from '../src/lib/config';
+import { safeReturnPath } from '../src/auth/returnTo';
 import { isLaunchedServer } from '../src/fhir/authedFetch';
 import {
   buildScopes,
@@ -1909,6 +1912,50 @@ check(
   !isLaunchedServer('not a url', EHR),
   'failing closed costs an unauthenticated request; failing open costs the token'
 );
+
+console.log('\n--- SMART App Launch: what a launch gates ---');
+
+/*
+ * A launch is required to *write* and optional to read, which is a policy easy to invert by accident.
+ * These pin both halves: no session refuses, and a session with nowhere to write still refuses.
+ *
+ * Asserted here rather than trusted to the components, because the failure mode is silent. A gate that
+ * accidentally passes does not throw — it writes an unattributable resource to somebody's record.
+ */
+const launched = { serverUrl: EHR };
+
+check('gate/writeNeedsASession', !canWriteToRecord(null, EHR));
+check(
+  'gate/writeNeedsADestination',
+  !canWriteToRecord(launched, null),
+  'a launch with no resolved EHR base has nowhere to put anything'
+);
+check('gate/writeAllowedWhenLaunchedAndPointed', canWriteToRecord(launched, EHR));
+check('gate/mintNeedsASession', !canMintRequest(null));
+check(
+  'gate/mintNeedsNoDestination',
+  canMintRequest(launched),
+  'minting is gated on identity, not on a write — with publishRequestTasks off it touches no EHR'
+);
+
+/*
+ * The return path a gate remembers. Validated rather than trusted because `navigate` treats a
+ * protocol-relative URL as a different site, which would turn "come back here after signing in" into
+ * an open redirect.
+ */
+check('returnTo/keepsAPath', safeReturnPath('/request/abc') === '/request/abc');
+check(
+  'returnTo/keepsTheQueryString',
+  safeReturnPath('/responses?subject=Patient%2F1') === '/responses?subject=Patient%2F1'
+);
+check(
+  'returnTo/refusesProtocolRelative',
+  safeReturnPath('//evil.example/x') === '/',
+  '`//host/path` is a valid URL and would leave the site entirely'
+);
+check('returnTo/refusesAbsolute', safeReturnPath('https://evil.example/x') === '/');
+check('returnTo/refusesRelative', safeReturnPath('request/abc') === '/');
+check('returnTo/defaultsWhenAbsent', safeReturnPath(null) === '/' && safeReturnPath('') === '/');
 
 console.log('\n--- SMART App Launch: scopes ---');
 
