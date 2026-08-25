@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, FilePlus2, Loader2, PencilLine, Save, ShieldCheck, X } from 'lucide-react';
 import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
@@ -17,6 +17,10 @@ import {
   type SubmitResult
 } from '@/fhir/submit';
 import { buildAmendment } from '@/fhir/amend';
+import { extractFromResponse, extractMechanism } from '@/fhir/extract';
+import { submitExtractedBundle, type BundleWriteResult } from '@/fhir/writeBundle';
+import { describeEntries, filterBundle } from '@/lib/extractedEntries';
+import WriteBackPanel from '@/components/WriteBackPanel';
 import { taskCorrelationId } from '@/link/exchange';
 import type { OutstandingRequest } from '@/lib/requestStore';
 import FormRenderer from '@/components/FormRenderer';
@@ -239,6 +243,72 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   const needsSubject = results === null && canSave && (subjectCheck === 'missing' || !hasSubject);
   const searchServer = destinations[0];
 
+  /*
+   * Form data extraction — what these answers would put *in the record*, as opposed to what the record
+   * says was asked. See `src/fhir/extract.ts`.
+   *
+   * Gated on config and on the form declaring extraction at all. Most do not, and the panel must be
+   * absent rather than empty for those: an empty write-back box reads as "this form found nothing
+   * clinically relevant", which is a much stronger claim than "this form has no templates".
+   */
+  const mechanism = config.enableWriteBack ? extractMechanism(questionnaire) : null;
+  const [writeResults, setWriteResults] = useState<BundleWriteResult[] | null>(null);
+
+  /*
+   * Keyed on the *reconciled subject*, not on the response object.
+   *
+   * Two reasons, and both have bitten this file before. `reconciledResponse()` builds a fresh object
+   * every render, so keying on it would re-extract in a loop — the same by-reference trap documented
+   * at `useBuildForm` above. And the subject genuinely is an input: extraction files its Conditions
+   * against whoever the answers are about, so repointing the patient has to produce a new extraction
+   * rather than a stale one aimed at the filler's own local key.
+   */
+  const {
+    data: extraction,
+    isPending: isExtracting,
+    error: extractError
+  } = useQuery({
+    queryKey: [
+      'extract',
+      questionnaire?.url ?? questionnaire?.id ?? null,
+      questionnaire?.version ?? null,
+      response.authored ?? null,
+      originalSubject ?? null,
+      subjectOverride.trim(),
+      clearSubject
+    ],
+    queryFn: () =>
+      extractFromResponse({
+        // The reconciled copy, never `response`. A Condition filed against a patient the destination
+        // does not hold is exactly the failure the reconciliation step above exists to prevent.
+        response: reconciledResponse(),
+        questionnaire: questionnaire!,
+        originalSubject
+      }),
+    enabled: mechanism !== null && questionnaire !== undefined,
+    retry: false
+  });
+
+  const extractedRows = useMemo(
+    () => (extraction ? describeEntries(extraction.bundle) : []),
+    [extraction]
+  );
+
+  /*
+   * `null` means "nothing chosen yet", which renders as everything chosen. Holding it that way rather
+   * than seeding a Set lets a re-extraction reset the choice without an effect racing the render: a
+   * selection made against the previous patient's entries must not survive into the new ones.
+   */
+  const [selectedEntries, setSelectedEntries] = useState<Set<number> | null>(null);
+  useEffect(() => {
+    setSelectedEntries(null);
+  }, [extraction]);
+
+  const selectedWriteBack = useMemo(
+    () => selectedEntries ?? new Set(extractedRows.map((row) => row.index)),
+    [selectedEntries, extractedRows]
+  );
+
   async function handleAccept() {
     setError(null);
     setIsSaving(true);
@@ -254,6 +324,34 @@ export default function ReviewResponse(props: ReviewResponseProps) {
       setResults(submitted);
       if (submitted.some((result) => result.responseId)) {
         onSaved?.();
+      }
+
+      /*
+       * Write-back is the second phase, and deliberately so.
+       *
+       * The response goes first because it is the clinical content and the thing the reviewer actually
+       * accepted; the extracted resources are a derived convenience. If this half fails the answers are
+       * still safely on record, which is why a failure here is reported as a warning rather than thrown
+       * — the same ordering and posture smart-forms takes in `RendererSaveAsFinalWriteBackDialog`.
+       *
+       * Sent only to servers that took the response. Writing a Condition to a server holding no
+       * QuestionnaireResponse to explain it would leave a clinical assertion with no provenance at all.
+       */
+      if (extraction && selectedWriteBack.size > 0) {
+        const bundle = filterBundle(extraction.bundle, selectedWriteBack);
+        const targets = submitted
+          .filter((result) => result.responseId)
+          .map((result) => result.serverUrl);
+
+        if (targets.length > 0) {
+          setWriteResults(
+            await Promise.all(
+              targets.map((serverUrl) =>
+                submitExtractedBundle({ serverUrl, bundle, session })
+              )
+            )
+          );
+        }
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -365,7 +463,11 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             ) : (
               <Save className="h-4 w-4" aria-hidden />
             )}
-            {isSaving ? 'Saving…' : 'Accept and save'}
+            {isSaving
+              ? 'Saving…'
+              : selectedWriteBack.size > 0
+                ? `Accept, save and write back ${selectedWriteBack.size}`
+                : 'Accept and save'}
           </Button>
         ) : null}
       </div>
@@ -540,6 +642,36 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                   'sdc-questionnaire-endpoint — if it declares one — was not consulted.')}
           </p>
         </Alert>
+      ) : null}
+
+      {mechanism !== null && isExtracting ? (
+        <p className="flex items-center gap-2 text-sm text-slate-500">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          Working out what these answers would add to the record…
+        </p>
+      ) : null}
+
+      {mechanism !== null && extractError ? (
+        <Alert tone="warning" title="Could not work out what to write back">
+          <p>{extractError instanceof Error ? extractError.message : String(extractError)}</p>
+          <p className="mt-1">
+            The answers can still be accepted and stored. Only the extra step of turning them into
+            resources on the record is unavailable.
+          </p>
+        </Alert>
+      ) : null}
+
+      {extraction ? (
+        <WriteBackPanel
+          mechanism={extraction.mechanism}
+          rows={extractedRows}
+          issues={extraction.issues}
+          selected={selectedWriteBack}
+          onSelectedChange={setSelectedEntries}
+          disabled={results !== null}
+          results={writeResults}
+          isSaving={isSaving}
+        />
       ) : null}
 
       {saved.length > 0 ? (

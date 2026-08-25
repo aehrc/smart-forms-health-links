@@ -15,9 +15,12 @@
     "check:e2e-write": "esbuild scripts/e2eWrite.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-write.mjs --log-level=warning && node node_modules/.cache/e2e-write.mjs",
     "check:amend": "esbuild scripts/e2eAmend.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-amend.mjs --log-level=warning && node node_modules/.cache/e2e-amend.mjs",
     "check:patient": "esbuild scripts/e2ePatient.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-patient.mjs --log-level=warning && node node_modules/.cache/e2e-patient.mjs",
-    "check:smart": "esbuild scripts/checkSmartConfig.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/check-smart.mjs --log-level=warning && node node_modules/.cache/check-smart.mjs"
+    "check:smart": "esbuild scripts/checkSmartConfig.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/check-smart.mjs --log-level=warning && node node_modules/.cache/check-smart.mjs",
+    "check:writeback": "esbuild scripts/e2eWriteBack.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-writeback.mjs --log-level=warning && node node_modules/.cache/e2e-writeback.mjs",
+    "mint:review": "esbuild scripts/mintReviewLink.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/mint-review.mjs --log-level=warning && node node_modules/.cache/mint-review.mjs"
   },
   "dependencies": {
+    "@aehrc/sdc-template-extract": "^1.0.15",
     "@aehrc/smart-forms-renderer": "^1.4.0",
     "@tanstack/react-query": "^5.90.5",
     "@zxing/browser": "^0.1.5",

@@ -84,10 +84,19 @@ import {
 import { findRequestForTask, mergeSentRequests, whyNotCollectable } from '../src/lib/sentRequests';
 import type { OutstandingRequest } from '../src/lib/requestStore';
 import { JOSE_CONTENT_TYPE, inMemoryBlobStore } from '../src/fhir/blobStore';
+/*
+ * From `templateExtract`, not `extract`: its sibling imports the renderer, which is a browser bundle
+ * with CSS and fonts in it and does not bundle for Node. Same split, and same reason, as `scopes.ts`
+ * above. Observation-based extraction is therefore checked by the renderer's own suite, not here.
+ */
+import { canTemplateExtract, retargetSubject, templateExtract } from '../src/fhir/templateExtract';
+import { describeEntries, describeResource, filterBundle } from '../src/lib/extractedEntries';
 
 import { QRSepsisRisk } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRSepsisRisk';
 import { QRRegularMedications } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRRegularMedications';
 import { QRMedicalHistoryCurrentProblems } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaireResponses/QRMedicalHistoryCurrentProblems';
+import { QSepsisRisk } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaires/QSepsisRisk';
+import { QMedicalHistoryCurrentProblemsWithPatch } from '../../smart-forms/packages/sdc-template-extract/src/SDCExtractQuestionnaireResponseOperation/tests/resources/questionnaires/QMedicalHistoryCurrentProblemsWithPatch';
 
 const BASE_URL = 'https://links.example.org';
 
@@ -225,6 +234,11 @@ if (isAppConfig(shippedConfig)) {
     'channel D is part of the shipped demo'
   );
   check(
+    'config/shippedConfigOffersWriteBack',
+    shippedConfig.enableWriteBack === true,
+    'writing extracted resources into the record is part of the shipped demo'
+  );
+  check(
     'config/shippedConfigOffersSmartLaunch',
     shippedConfig.enableSmartLaunch === true &&
       typeof shippedConfig.smartIssuerUrl === 'string' &&
@@ -246,7 +260,8 @@ check(
   'config/fallbackOffersNoCapabilities',
   !FALLBACK_CONFIG.enableOneShotWrite &&
     !FALLBACK_CONFIG.enableSmartLaunch &&
-    !FALLBACK_CONFIG.enableServerReturn,
+    !FALLBACK_CONFIG.enableServerReturn &&
+    !FALLBACK_CONFIG.enableWriteBack,
   'the shipped config enabling these must not drag the fallback along with it'
 );
 
@@ -1901,10 +1916,46 @@ check(
     !ehrScopes.some((scope) => scope.startsWith('patient/')),
   '/patients and /responses search across the server, which a patient/ grant cannot do'
 );
+/*
+ * The no-update invariant, narrowed rather than dropped.
+ *
+ * It used to be absolute: no scope carried `u` or `d`. Form data extraction broke half of it honestly
+ * — template-based extraction emits `PUT` and `PATCH` entries, because a form recording a resolved
+ * allergy is amending something that already exists and there is no create-only way to say that. So
+ * `u` is now permitted, on exactly the clinical resource types extraction writes and nothing else.
+ *
+ * The two halves that still hold are the ones worth protecting. Nothing is ever deleted. And the
+ * resources the app *authors* — the response, its Task, its Provenance, and any Patient it registers —
+ * are still create-only, which is what `src/fhir/amend.ts` exists to make possible: an amendment is a
+ * new resource joined by a Provenance, never an edit of the one that arrived.
+ */
+const WRITE_BACK_TYPES = [
+  'Condition',
+  'Observation',
+  'AllergyIntolerance',
+  'MedicationStatement',
+  'Immunization',
+  'Procedure',
+  'Encounter'
+];
+
 check(
-  'scopes/noUpdateOrDeleteOnTheEhr',
-  !ehrScopes.some((scope) => /^user\/[A-Za-z]+\.[a-z]*[ud]/.test(scope)),
-  'the app creates, reads and searches; the only PUT in it goes to an unauthenticated write slot'
+  'scopes/noDeleteOnTheEhr',
+  !ehrScopes.some((scope) => /^user\/[A-Za-z]+\.[a-z]*d/.test(scope)),
+  'the app never deletes anything on the EHR'
+);
+check(
+  'scopes/noUpdateOnResourcesTheAppAuthors',
+  !ehrScopes.some((scope) => {
+    const match = /^user\/([A-Za-z]+)\.([a-z]*)$/.exec(scope);
+    return !!match && match[2].includes('u') && !WRITE_BACK_TYPES.includes(match[1]);
+  }),
+  'only form data extraction updates anything; responses and Tasks stay create-only'
+);
+check(
+  'scopes/writeBackCanCreateAndUpdate',
+  WRITE_BACK_TYPES.every((type) => ehrScopes.includes(`user/${type}.cu`)),
+  'template extraction emits POST, PUT and PATCH entries and needs all three'
 );
 check(
   'scopes/onlineNotOffline',
@@ -1964,6 +2015,164 @@ check(
     responseServerUrl: 'https://configured.test/fhir',
     session: launchedSession
   })[0] === 'https://declared.test/fhir'
+);
+
+console.log('\n--- Form data extraction ---');
+
+/*
+ * Extraction is the one part of the app that reads a form's *authoring* rather than its answers, so
+ * the checks worth having offline are about classification and about the two transformations this app
+ * adds on top of the engine. The engine itself is `@aehrc/sdc-template-extract`, which has its own
+ * suite in the monorepo; re-testing it here would be duplicating someone else's work.
+ */
+
+check('extract/templateFormIsRecognised', canTemplateExtract(QSepsisRisk));
+check(
+  'extract/formWithNoExtractionIsNotRecognised',
+  !canTemplateExtract(detectionQuestionnaire),
+  'most forms declare no extraction, and the panel must be absent rather than empty for those'
+);
+check('extract/undefinedFormIsNotRecognised', !canTemplateExtract(undefined));
+
+const sepsisExtraction = await templateExtract(QRSepsisRisk, QSepsisRisk);
+
+check(
+  'extract/producesATransactionBundle',
+  sepsisExtraction.bundle.resourceType === 'Bundle' && sepsisExtraction.bundle.type === 'transaction',
+  'the write posts this to the server base, which only accepts a transaction or a batch'
+);
+check(
+  'extract/producesEntries',
+  (sepsisExtraction.bundle.entry ?? []).length > 0
+);
+
+const sepsisRows = describeEntries(sepsisExtraction.bundle);
+
+check(
+  'extract/everyRowIsDescribed',
+  sepsisRows.length > 0 &&
+    sepsisRows.every((row) => row.display.trim() !== '' && row.resourceType !== 'Unknown'),
+  'a row a clinician cannot read is a row they cannot make a decision about'
+);
+check(
+  'extract/everyRowIsNewOrUpdate',
+  sepsisRows.every((row) => row.method === 'new' || row.method === 'update')
+);
+check(
+  'extract/noRowFallsBackToItsBareType',
+  sepsisRows.every((row) => row.display !== row.resourceType),
+  'this form emits ServiceRequests, and two rows both reading "ServiceRequest" are two rows nobody can choose between'
+);
+
+/*
+ * FHIRPatch entries are the case the per-entry UI has to be honest about: one checkbox standing for
+ * several operations. The count is what the panel says out loud, so it has to be there.
+ */
+const patchExtraction = await templateExtract(
+  QRMedicalHistoryCurrentProblems,
+  QMedicalHistoryCurrentProblemsWithPatch
+);
+const patchRows = describeEntries(patchExtraction.bundle);
+
+check(
+  'extract/patchEntriesReportTheirOperationCount',
+  patchRows.some((row) => (row.patchOperationCount ?? 0) > 0),
+  'the panel promises "n changes, written together or not at all" and needs n'
+);
+check(
+  'extract/patchEntriesAreUpdates',
+  patchRows
+    .filter((row) => row.patchOperationCount !== undefined)
+    .every((row) => row.method === 'update' && row.target !== undefined),
+  'a patch changes something that already exists, and the reviewer should see what'
+);
+
+// --- filterBundle -----------------------------------------------------------
+
+const firstOnly = filterBundle(sepsisExtraction.bundle, new Set([0]));
+
+check(
+  'extract/filterKeepsTransactionType',
+  firstOnly.type === 'transaction' && (firstOnly.entry ?? []).length === 1
+);
+check(
+  'extract/filterKeepsTheGeneratedTag',
+  JSON.stringify(firstOnly.meta) === JSON.stringify(sepsisExtraction.bundle.meta),
+  'the engine tags what it generated, and an auditor should still see that on what was written'
+);
+check(
+  'extract/filterOfNothingIsEmpty',
+  (filterBundle(sepsisExtraction.bundle, new Set()).entry ?? []).length === 0
+);
+check(
+  'extract/filterPreservesBundleOrder',
+  JSON.stringify(filterBundle(sepsisExtraction.bundle, new Set([1, 0])).entry) ===
+    JSON.stringify((sepsisExtraction.bundle.entry ?? []).slice(0, 2)),
+  'template extraction can emit a POST that a later PATCH targets; tick order must not reorder them'
+);
+
+// --- retargetSubject --------------------------------------------------------
+
+/*
+ * The safety net for the one thing that has no counterpart in smart-forms: answers arriving from an
+ * app that names the patient in its own terms. See `src/fhir/extract.ts`.
+ */
+const strayBundle: Bundle = {
+  resourceType: 'Bundle',
+  type: 'transaction',
+  entry: [
+    {
+      resource: {
+        resourceType: 'Condition',
+        subject: { reference: 'Patient/filler-local-key', display: 'Their name for them' }
+      },
+      request: { method: 'POST', url: 'Condition' }
+    },
+    {
+      resource: {
+        resourceType: 'Observation',
+        status: 'final',
+        code: { text: 'unrelated' },
+        subject: { reference: 'Patient/somebody-else' },
+        performer: [{ reference: 'Practitioner/filler-local-key' }]
+      },
+      request: { method: 'POST', url: 'Observation' }
+    }
+  ]
+};
+
+const retargeted = retargetSubject(
+  strayBundle,
+  { ...QRSepsisRisk, subject: { reference: 'Patient/999', display: 'Chosen Patient' } },
+  'Patient/filler-local-key'
+);
+const retargetedEntries = retargeted.entry ?? [];
+
+check(
+  'extract/retargetRewritesTheOriginalSubject',
+  JSON.stringify((retargetedEntries[0]?.resource as { subject?: unknown })?.subject) ===
+    JSON.stringify({ reference: 'Patient/999', display: 'Chosen Patient' }),
+  'a Condition filed against the filler\'s own key is the failure reconciliation exists to prevent'
+);
+check(
+  'extract/retargetLeavesOtherSubjectsAlone',
+  (retargetedEntries[1]?.resource as { subject?: { reference?: string } })?.subject?.reference ===
+    'Patient/somebody-else'
+);
+check(
+  'extract/retargetIgnoresNonSubjectSlots',
+  JSON.stringify((retargetedEntries[1]?.resource as { performer?: unknown })?.performer) ===
+    JSON.stringify([{ reference: 'Practitioner/filler-local-key' }]),
+  'the same string in a performer is a different claim and is not ours to rewrite'
+);
+check(
+  'extract/retargetIsANoOpWithoutAnOriginal',
+  retargetSubject(strayBundle, QRSepsisRisk, undefined) === strayBundle
+);
+
+check(
+  'extract/unknownResourceStillReads',
+  describeResource(undefined) === 'Unknown resource'
 );
 
 console.log(
