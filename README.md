@@ -202,6 +202,7 @@ Point `responseServerUrl` at your own server for anything beyond a demo. See
 | `/fill/:id`        | Fill a form directly and emit a Health Link from the answers                |
 | `/view#<link>`     | Open any link — **dispatches on payload**: fill a request, or review a response |
 | `/scan`            | Read a QR with the camera, or paste a link — **how answers come back**       |
+| `/launch/setup`    | What to register with an authorisation server, generated from this build     |
 
 `/view` deliberately decides what to show from the payload rather than the route, because a scanner
 cannot know whether it just scanned a request or a completed response. A link fragment arriving at
@@ -812,12 +813,29 @@ The third row is the one worth having. Before a launch, `Provenance.agent.who` c
 }
 ```
 
-Register `https://your-host/callback` as the redirect URI and `https://your-host/launch` as the app's
-launch URL. Then check the issuer before trying a real launch:
+Then open **`/launch/setup`** in the deployed app. It lists everything the authorisation server needs
+— launch URL, redirect URI, client id, issuer and the full scope list — generated from that
+deployment's own config, so it is correct for that build and that host in a way this file cannot be.
+It is also the page to send to whoever administers the OAuth client, which is often not you.
+
+Two things it will tell you that are easy to get wrong:
+
+- **Register `launch` *and* `launch/patient`.** No single request names both — `buildScopes` swaps one
+  for the other — so a registration copied from an observed EHR launch half-works, and fails only when
+  somebody opens `/launch` directly.
+- **Write-back needs `u`.** Seven `user/*.cu` scopes exist solely for
+  [form data extraction](#answers-become-resources). Omitting them from the registration fails the
+  whole launch with `invalid_scope`; set `enableWriteBack: false` or narrow `smartScopes` if you do
+  not want the feature.
+
+Then check the issuer before trying a real launch:
 
 ```bash
 npm run check:smart
 ```
+
+If a launch fails anyway, the error screen shows the same registration panel inline — the failure and
+the fix on one page.
 
 **`smartIssuerUrl` is not `responseServerUrl`.** It has to be a base that actually serves
 `.well-known/smart-configuration`, and a plain FHIR server does not — it parses `.well-known` as a
@@ -917,11 +935,12 @@ src/
   App.tsx              routes, and the root-fragment → /view forward
   routes/              one file per route: FormList, RequestForm, Requests,
                        ResponseList, PatientList, FillForm, ViewLink, Scan,
-                       Launch, Callback
+                       Launch, LaunchSetup, Callback
   auth/
     smartSession.ts    the OAuth flow — the only module that imports fhirclient
     SmartContext.tsx   the session as React context, and the EHR base resolver
-    routes.ts          /launch and /callback, shared so redirect_uri cannot drift
+    routes.ts          /launch, /callback and /launch/setup, shared so redirect_uri cannot drift
+    scopes.ts          scope policy, kept away from fhirclient so checks can reach it
   components/
     FormRenderer.tsx   the smart-forms-renderer composition
     FillFromRequest.tsx  the filler's side: render, then return answers
@@ -931,6 +950,8 @@ src/
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
     WriteBackPanel.tsx what extraction produced, as a list to tick
     SessionBadge.tsx   who is signed in, and to which server
+    SmartRegistration.tsx  what a deployer must register, derived from live config
+    ScopeWarning.tsx   says so when the server granted less than was asked for
     ShareLinkPanel.tsx QR + copyable link
   link/
     codec.ts           the LinkCodec interface and codec selection
@@ -1040,7 +1061,7 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 274 checks: codecs, JWE, reply crypto, foreign links, passcodes,
+npm run check:roundtrip  # 284 checks: codecs, JWE, reply crypto, foreign links, passcodes,
                          # the SMART token boundary and its scopes, form data extraction — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 

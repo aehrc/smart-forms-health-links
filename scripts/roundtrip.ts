@@ -26,7 +26,7 @@ import {
   type AppConfig
 } from '../src/lib/config';
 import { isLaunchedServer } from '../src/fhir/authedFetch';
-import { buildScopes } from '../src/auth/scopes';
+import { buildScopes, isWriteBackScope, missingScopes, registrationScopes } from '../src/auth/scopes';
 import { bespokeCodec } from '../src/link/bespokeCodec';
 import { shlCodec } from '../src/link/shlCodec';
 import {
@@ -1965,6 +1965,73 @@ check(
 check(
   'scopes/overrideIsHonoured',
   buildScopes({ ...FALLBACK_CONFIG, smartScopes: 'launch openid' }, false) === 'launch openid'
+);
+
+/*
+ * What a client *registration* must allow, which is not what any one launch requests. `launch` and
+ * `launch/patient` never appear together in a single authorize call, so a registration copied from an
+ * observed EHR launch is missing the standalone half — and fails only when somebody opens `/launch`
+ * directly, which is exactly the sort of gap that reaches production.
+ */
+const registration = registrationScopes(FALLBACK_CONFIG);
+
+check(
+  'scopes/registrationCoversBothLaunchPatterns',
+  registration.includes('launch') && registration.includes('launch/patient'),
+  'neither request names both, but a registration allowing only one half-works'
+);
+check(
+  'scopes/registrationIsASupersetOfEveryLaunch',
+  [...ehrScopes, ...buildScopes(FALLBACK_CONFIG, true).split(' ')].every((scope) =>
+    registration.includes(scope)
+  )
+);
+check(
+  'scopes/registrationHasNoDuplicates',
+  new Set(registration).size === registration.length,
+  'it is rendered for a human to copy, and a repeated entry reads as a mistake'
+);
+check(
+  'scopes/registrationHonoursAnOverride',
+  registrationScopes({ ...FALLBACK_CONFIG, smartScopes: 'openid fhirUser' }).join(' ') ===
+    'openid fhirUser launch/patient',
+  'a deployment that narrowed its scopes must not be shown the defaults'
+);
+
+check(
+  'scopes/writeBackScopesAreRecognised',
+  isWriteBackScope('user/Condition.cu') && isWriteBackScope('user/Encounter.cu')
+);
+check(
+  'scopes/readOnlyScopesAreNotWriteBack',
+  !isWriteBackScope('user/Patient.crs') &&
+    !isWriteBackScope('user/Provenance.cr') &&
+    !isWriteBackScope('launch') &&
+    !isWriteBackScope('openid'),
+  'the banner tells a user which half of a narrowed grant they lost, so this must not over-match'
+);
+
+/*
+ * A server may grant less than was asked for without erroring at all. The banner exists because that
+ * is silent until a write is refused mid-consultation.
+ */
+check(
+  'scopes/missingIsEmptyWhenFullyGranted',
+  missingScopes('launch openid user/Condition.cu', 'launch openid user/Condition.cu').length === 0
+);
+check(
+  'scopes/missingReportsWhatWasNarrowed',
+  missingScopes('launch openid user/Condition.cu', 'launch openid').join(' ') === 'user/Condition.cu'
+);
+check(
+  'scopes/missingIsSilentWhenNothingWasEnumerated',
+  missingScopes('launch openid user/Condition.cu', '').length === 0,
+  'an empty grant means the server declined to enumerate, not that it granted nothing'
+);
+check(
+  'scopes/missingIgnoresExtrasTheServerAdded',
+  missingScopes('launch', 'launch openid offline_access').length === 0,
+  'a server granting more than was asked for is not a problem to report'
 );
 
 console.log('\n--- SMART App Launch: config guards ---');

@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { completeLaunch } from '@/auth/smartSession';
 import { useSmart } from '@/auth/SmartContext';
-import { LAUNCH_PATH } from '@/auth/routes';
+import { LAUNCH_PATH, LAUNCH_SETUP_PATH } from '@/auth/routes';
 import { Alert } from '@/components/ui/alert';
+import SmartRegistration from '@/components/SmartRegistration';
 
 /**
  * Where the authorisation server sends the user back — this is the registered `redirect_uri`.
@@ -48,11 +49,27 @@ export default function Callback() {
   }, [navigate, setSession]);
 
   if (error) {
+    /*
+     * `invalid_scope` is the one failure whose fix is not in this app at all — it means the OAuth
+     * client's registration does not allow what was requested, so nothing in `config.json` will help.
+     * Matched on the error code rather than the prose, which every authorisation server words
+     * differently.
+     */
+    const isScopeFailure = /invalid_scope/i.test(error);
+
     return (
-      <div className="py-8">
-        <h1 className="mb-3 text-xl font-semibold text-slate-900">Sign-in failed</h1>
+      <div className="space-y-4 py-8">
+        <h1 className="text-xl font-semibold text-slate-900">Sign-in failed</h1>
         <Alert tone="error" title="The launch could not be completed">
           <p>{error}</p>
+          {isScopeFailure ? (
+            <p className="mt-2">
+              This is a <strong>client registration</strong> problem rather than a configuration one:
+              the authorisation server is refusing scopes this client is not permitted to ask for.
+              Register the full list below, or narrow what the app requests with{' '}
+              <span className="font-mono text-xs">smartScopes</span>.
+            </p>
+          ) : null}
           <p className="mt-2">
             <a href={LAUNCH_PATH} className="underline">
               Try again
@@ -60,6 +77,20 @@ export default function Callback() {
             , or carry on without signing in — the app works unauthenticated.
           </p>
         </Alert>
+
+        {/*
+          * Inlined rather than linked. Somebody reading this has just had a launch fail and is looking
+          * for what to change; making them navigate first is a step at which people give up.
+          */}
+        <SmartRegistration />
+
+        <p className="text-xs text-slate-500">
+          This is also at{' '}
+          <a href={LAUNCH_SETUP_PATH} className="underline">
+            {LAUNCH_SETUP_PATH}
+          </a>
+          , which is worth sending to whoever administers the OAuth client.
+        </p>
       </div>
     );
   }

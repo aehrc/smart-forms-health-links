@@ -9,10 +9,12 @@ import PatientList from './routes/PatientList';
 import ViewLink from './routes/ViewLink';
 import Scan from './routes/Scan';
 import Launch from './routes/Launch';
+import LaunchSetup from './routes/LaunchSetup';
 import Callback from './routes/Callback';
 import { LINK_CODECS } from './link/registry';
-import { CALLBACK_PATH, LAUNCH_PATH } from './auth/routes';
+import { CALLBACK_PATH, LAUNCH_PATH, LAUNCH_SETUP_PATH } from './auth/routes';
 import SessionBadge from './components/SessionBadge';
+import ScopeWarning from './components/ScopeWarning';
 
 /** Does the current fragment look like a link payload from any registered codec? */
 function fragmentHasLink(hash: string): boolean {
@@ -74,7 +76,12 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <Header />
-      <main className="mx-auto max-w-5xl px-4 py-6">
+      <main className="mx-auto max-w-5xl space-y-4 px-4 py-6">
+        {/*
+          * Above the routes rather than inside them. A narrowed grant affects whichever screen the
+          * user happens to reach, and it renders nothing at all when there is nothing to report.
+          */}
+        <ScopeWarning />
         <Routes>
           <Route path="/" element={<FormList />} />
           <Route path="/fill/:questionnaireId" element={<FillForm />} />
@@ -84,6 +91,8 @@ export default function App() {
           <Route path="/patients" element={<PatientList />} />
           <Route path="/view" element={<ViewLink />} />
           <Route path="/scan" element={<Scan />} />
+          {/* Before /launch only for readability; both are exact paths and cannot shadow each other. */}
+          <Route path={LAUNCH_SETUP_PATH} element={<LaunchSetup />} />
           <Route path={LAUNCH_PATH} element={<Launch />} />
           <Route path={CALLBACK_PATH} element={<Callback />} />
           <Route path="*" element={<Navigate to="/" replace />} />
