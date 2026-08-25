@@ -210,11 +210,45 @@ if (isAppConfig(shippedConfig)) {
       typeof shippedConfig.blobServerUrl === 'string',
     'a clone with no setup must be able to mint a link and save a reviewed response'
   );
+
+  /*
+   * The shipped demo offers channel D and a SMART launch. Asserted for the same reason the write
+   * targets are: they are features of the demo, and an edit that quietly switches one off should fail
+   * a check here rather than a demonstration later.
+   *
+   * Note this is the *shipped* config, not FALLBACK_CONFIG — which must stay off, and is checked
+   * separately below. The two pull in opposite directions on purpose.
+   */
+  check(
+    'config/shippedConfigOffersOneShotWrite',
+    shippedConfig.enableOneShotWrite === true,
+    'channel D is part of the shipped demo'
+  );
+  check(
+    'config/shippedConfigOffersSmartLaunch',
+    shippedConfig.enableSmartLaunch === true &&
+      typeof shippedConfig.smartIssuerUrl === 'string' &&
+      typeof shippedConfig.smartClientId === 'string',
+    'a launch needs an issuer and a client id as well as the flag'
+  );
 }
 
 // The fallback used when config.json is missing or malformed must NOT name a write target: silently
 // writing to some server because config failed to load is worse than refusing.
 check('config/fallbackHasNoWriteTargets', FALLBACK_CONFIG.responseServerUrl === null && FALLBACK_CONFIG.blobServerUrl === null);
+
+/*
+ * And it must hand out no capability either, however the shipped config is set. A config that failed
+ * to load knows nothing about the deployment it landed in, so offering a filler a write slot or
+ * starting an OAuth flow against a guessed issuer are both things it must not do.
+ */
+check(
+  'config/fallbackOffersNoCapabilities',
+  !FALLBACK_CONFIG.enableOneShotWrite &&
+    !FALLBACK_CONFIG.enableSmartLaunch &&
+    !FALLBACK_CONFIG.enableServerReturn,
+  'the shipped config enabling these must not drag the fallback along with it'
+);
 
 // ---------------------------------------------------------------------------
 // JWE (alg=dir, enc=A256GCM) — the crypto layer SMART Health Links requires.

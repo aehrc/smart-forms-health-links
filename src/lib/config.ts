@@ -104,7 +104,11 @@ export interface AppConfig {
   /**
    * Offer the one-shot write channel (channel D) on requests this app mints.
    *
-   * Off by default, like the other two declared channels. With it on, each request pre-allocates an
+   * **On** in the shipped `config.json`, off in {@link FALLBACK_CONFIG}. The distinction is the point:
+   * what ships is a chosen sandbox where this channel is part of the demo, whereas the fallback is a
+   * config that failed to load and must hand out no capability it was not explicitly asked for.
+   *
+   * With it on, each request pre-allocates an
    * empty `QuestionnaireResponse` on {@link writeSlotServerUrl} and the invitation names its absolute
    * URL, an `If-Match` ETag, and a write token. A filler holding the link may `PUT` the completed
    * answers there **once** — the second attempt is refused by the server's own optimistic locking,
@@ -158,7 +162,11 @@ export interface AppConfig {
   /**
    * Offer SMART App Launch, so the EHR is discovered from a launch rather than named in config.
    *
-   * Off by default, like every other capability here. With it on, the app gains `/launch` and
+   * **On** in the shipped `config.json`, off in {@link FALLBACK_CONFIG} — same split, same reason as
+   * {@link enableOneShotWrite}: a deployment whose config failed to load has no issuer and no client
+   * id, so it could not start a flow even if this were true.
+   *
+   * With it on, the app gains `/launch` and
    * `/callback`, and a clinician who arrives through either one gets a session: EHR calls carry a
    * bearer token, and `fhirUser` supplies a real identity for attribution instead of a typed name.
    *
@@ -215,12 +223,13 @@ export const FALLBACK_CONFIG: AppConfig = {
   enableServerReturn: false,
   // Deferred, not removed. The primary return path is a link the filler mints. See the field docs.
   enableEncryptedReply: false,
-  // Off unless asked for: it hands a filler a capability to write. See the field docs above.
+  // Off in the *fallback* even though the shipped config enables it: a config that failed to load must
+  // hand out no write capability. See the field docs above.
   enableOneShotWrite: false,
   writeSlotServerUrl: null,
   linkLifetimeDays: 30,
   publishRequestTasks: true,
-  // Off unless asked for, and inert without an issuer and a client id. See the field docs above.
+  // Off in the *fallback*, and inert regardless without an issuer and a client id. See the field docs.
   enableSmartLaunch: false,
   smartIssuerUrl: null,
   smartClientId: null,

@@ -22,25 +22,50 @@ cannot currently be opened by third-party SHL wallets.
 
 ## Contents
 
-- [What this demonstrates](#what-this-demonstrates)
-- [Quick start](#quick-start) — install, then walk the round trip end to end
-- [What it does](#what-it-does) — the routes
-- [The round trip](#the-round-trip) — ten steps, with measured sizes
-- [Four ways to return answers](#four-ways-to-return-answers) — and why A is the default
-- [Amendments are new resources](#amendments-are-new-resources) — why the review screen is read-only
-- [Creating a patient at review time](#creating-a-patient-at-review-time) — the duplicate problem
-- [How links work](#how-links-work)
-- [Two transports, one interface](#two-transports-one-interface)
-- [Three servers, three jobs](#three-servers-three-jobs)
-- [Configuration](#configuration)
-- [SMART App Launch](#smart-app-launch) — optional identity for the requester's half
-- [Deploying](#deploying)
-- [Repo layout](#repo-layout)
-- [Known limitations](#known-limitations)
-- [Checks](#checks)
-- [Notes](#notes) — the gotchas worth knowing before changing anything
-- [Provenance](#provenance)
-- [Licence](#licence)
+- [Smart Forms Health Links](#smart-forms-health-links)
+  - [Contents](#contents)
+  - [What this demonstrates](#what-this-demonstrates)
+  - [Quick start](#quick-start)
+    - [Prerequisites](#prerequisites)
+    - [Walk the round trip](#walk-the-round-trip)
+      - [One machine, two windows (nothing to configure)](#one-machine-two-windows-nothing-to-configure)
+      - [Two devices, with the camera](#two-devices-with-the-camera)
+    - [What the demo writes, and where](#what-the-demo-writes-and-where)
+  - [What it does](#what-it-does)
+  - [The round trip](#the-round-trip)
+  - [Four ways to return answers](#four-ways-to-return-answers)
+    - [Reading a link this app did not write](#reading-a-link-this-app-did-not-write)
+    - [Why the reply is encrypted to a public key](#why-the-reply-is-encrypted-to-a-public-key)
+    - [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel)
+  - [Amendments are new resources](#amendments-are-new-resources)
+  - [Creating a patient at review time](#creating-a-patient-at-review-time)
+    - [The caching proxy, which is not a footnote](#the-caching-proxy-which-is-not-a-footnote)
+  - [How links work](#how-links-work)
+    - [Two consequences of using the fragment](#two-consequences-of-using-the-fragment)
+  - [Two transports, one interface](#two-transports-one-interface)
+    - [`sfhl:/` is legacy and decode-only](#sfhl-is-legacy-and-decode-only)
+  - [Three servers, three jobs](#three-servers-three-jobs)
+    - [Sent requests come from two places at once](#sent-requests-come-from-two-places-at-once)
+  - [Configuration](#configuration)
+    - [Pointing it at your own servers](#pointing-it-at-your-own-servers)
+    - [What happens when config is missing](#what-happens-when-config-is-missing)
+    - [Read and write are separate servers, with no fallback](#read-and-write-are-separate-servers-with-no-fallback)
+  - [SMART App Launch](#smart-app-launch)
+    - [What it buys](#what-it-buys)
+    - [Setting it up](#setting-it-up)
+    - [Both launch patterns, one route](#both-launch-patterns-one-route)
+    - [The boundary, in one rule](#the-boundary-in-one-rule)
+  - [Deploying](#deploying)
+    - [Container and Kubernetes](#container-and-kubernetes)
+  - [Repo layout](#repo-layout)
+  - [Known limitations](#known-limitations)
+    - [⚠️ The links we mint cannot be opened by other SHL apps](#️-the-links-we-mint-cannot-be-opened-by-other-shl-apps)
+    - [Other limitations, by design or otherwise](#other-limitations-by-design-or-otherwise)
+  - [Checks](#checks)
+    - [`check:roundtrip` needs a sibling smart-forms checkout](#checkroundtrip-needs-a-sibling-smart-forms-checkout)
+  - [Notes](#notes)
+  - [Provenance](#provenance)
+  - [Licence](#licence)
 
 ## What this demonstrates
 
@@ -250,7 +275,7 @@ only what this app *mints*. A request from a third party that offers a reply des
 answerable here regardless, because refusing to honour someone else's return channel would strand
 their answers rather than protect anyone.
 
-**D is C's answer for a filler that cannot do crypto**, and is off by default
+**D is C's answer for a filler that cannot do crypto**, and is on in the shipped config
 (`enableOneShotWrite`). The request pre-allocates an empty `QuestionnaireResponse` on the blob server
 and carries its address, the version it is at, and a token. The filler `PUT`s the answers there with
 `If-Match`; the requester polls the slot, reviews, and only then writes to the record. Turn it on
@@ -593,9 +618,7 @@ Runtime config is fetched from `/config.json` at boot — the same pattern as
 different servers without rebuilding**. The file lives at `public/config.json` in the repo and lands
 at `dist/config.json` in a build, where it can be edited in place.
 
-This is what ships, and it is a working demo as-is. The SMART issuer and client id are pre-filled but
-`enableSmartLaunch` is off, so a launch is one flag away rather than a button that points at a
-sandbox nobody registered this app with:
+This is what ships, and it is a working demo as-is:
 
 ```json
 {
@@ -610,11 +633,11 @@ sandbox nobody registered this app with:
   "senderName": null,
   "enableServerReturn": false,
   "enableEncryptedReply": false,
-  "enableOneShotWrite": false,
+  "enableOneShotWrite": true,
   "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
   "publishRequestTasks": true,
-  "enableSmartLaunch": false,
+  "enableSmartLaunch": true,
   "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
   "smartClientId": "smart-forms-health-links",
   "smartScopes": null
@@ -638,11 +661,11 @@ rather than a demo.
 | `senderName` | `Task.requester.display`. An invitation that cannot say who sent it is one a patient has reason to decline |
 | `enableServerReturn` | offer channel B. **Off by default** — it accepts answers without review |
 | `enableEncryptedReply` | offer channel C, the encrypted reply slot. **Off by default** — answers come back as a link the filler mints. Turn it on when a filler may have no way to show you a QR code. Requires `blobServerUrl` |
-| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **Off by default.** Turn it on for fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
+| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **On in the shipped config**, off in the fallback. For fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
 | `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
 | `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
 | `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
-| `enableSmartLaunch` | offer SMART App Launch. **Off by default.** With it on, the app gains `/launch` and `/callback`, EHR calls carry a bearer token, and `fhirUser` supplies a real identity. A launch stays **optional** — see [SMART App Launch](#smart-app-launch) |
+| `enableSmartLaunch` | offer SMART App Launch. **On in the shipped config**, off in the fallback. The app gains `/launch` and `/callback`, EHR calls carry a bearer token, and `fhirUser` supplies a real identity. A launch stays **optional** — the app works fully without one. See [SMART App Launch](#smart-app-launch) |
 | `smartIssuerUrl` | the SMART-enabled FHIR base to launch against, **and** the allowlist for the `iss` a launch arrives with. Not the same base as `responseServerUrl` — see below |
 | `smartClientId` | OAuth client id. A **public** client: a static site holds no secret, so PKCE does the binding |
 | `smartScopes` | space-separated scope override. `null` takes the default. Worth setting only to narrow |
@@ -696,9 +719,13 @@ mistake worth preventing rather than documenting.
 
 ## SMART App Launch
 
-**Off by default.** With `enableSmartLaunch` set, a clinician can launch this app from an EHR — or
-sign in to it directly — and the requester's half of the app gains a session. The filler's half is
-untouched, and a launch is never required.
+**On in the shipped config.** A clinician can launch this app from an EHR — or sign in to it
+directly — and the requester's half of the app gains a session. The filler's half is untouched, and a
+launch is never *required*: with no session the app behaves exactly as it did before launches existed.
+
+It is off in `FALLBACK_CONFIG`, which is what a deployment gets when `config.json` fails to load. That
+split runs through every capability here and is deliberate — what ships is a chosen sandbox, whereas a
+config that failed to load must assume nothing.
 
 Full detail, including the trust boundary and the scope rationale, is in
 [`docs/smart-app-launch.md`](docs/smart-app-launch.md).

@@ -1,14 +1,15 @@
 # SMART App Launch
 
 **Status:** implemented in
-[smart-forms-health-links](https://github.com/aehrc/smart-forms-health-links) — **and off by default
-there.**
+[smart-forms-health-links](https://github.com/aehrc/smart-forms-health-links) — **on in the shipped
+config, off in the fallback.**
 **Audience:** anyone deploying this app against a real EHR, or changing the code that touches an
 access token.
 
 This app was built to work with no identity at all. That is not an oversight to be corrected: the
 whole design turns on a filler being able to complete a form with no account, no login, and no
-network path to the requester's servers. SMART App Launch does not change that. It adds a session to
+network path to the requester's servers. SMART App Launch does not change that — it is enabled in the
+shipped config, but a session is still something the app runs *without* whenever there isn't one. It adds a session to
 the *requester's* half of the app, and leaves the filler's half exactly as it was.
 
 Everything below is about which half is which, and what must never cross between them.

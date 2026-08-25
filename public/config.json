@@ -10,11 +10,11 @@
   "senderName": null,
   "enableServerReturn": false,
   "enableEncryptedReply": false,
-  "enableOneShotWrite": false,
+  "enableOneShotWrite": true,
   "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
   "publishRequestTasks": true,
-  "enableSmartLaunch": false,
+  "enableSmartLaunch": true,
   "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
   "smartClientId": "smart-forms-health-links",
   "smartScopes": null
