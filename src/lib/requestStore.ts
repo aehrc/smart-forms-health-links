@@ -90,6 +90,15 @@ export interface OutstandingRequest {
   serverTaskUrl?: string;
   /** Whether the invitation offered channel B — the direct, unreviewed write. */
   serverReturnOffered?: boolean;
+  /**
+   * Whether the form went out with answers already filled in from the record.
+   *
+   * Kept for the reviewer's sake rather than the protocol's. Answers returned against a pre-filled
+   * request and answers typed from scratch arrive as the same resource, carrying the same
+   * patient-asserted label, and nothing on the return leg distinguishes them — so the only record
+   * that a head start was given is the one made here, when it was.
+   */
+  prePopulated?: boolean;
   /** Set once a reply has been collected and accepted, so the row stops asking to be checked. */
   collectedAt?: string;
 }

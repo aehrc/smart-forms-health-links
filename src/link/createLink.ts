@@ -1,4 +1,4 @@
-import type { Questionnaire, Task } from 'fhir/r4';
+import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
 import type { AppConfig } from '@/lib/config';
 import {
@@ -82,6 +82,13 @@ export interface CreateRequestOptions {
   session?: SmartSession | null;
   /** Who the request appears to come from, overriding `senderName`. The launched user, in practice. */
   requesterDisplay?: string;
+  /**
+   * Answers filled in from the record and kept by the clinician, when pre-population was used.
+   *
+   * Already pruned to the ticked rows by the time it arrives — this layer seals what it is given and
+   * does not decide what belongs in it.
+   */
+  prePopulated?: QuestionnaireResponse;
 }
 
 export interface CreatedRequest {
@@ -124,6 +131,12 @@ export interface CreatedRequest {
  * By default the only return channel is the one that needs no arrangement at all: the filler mints
  * its own SMART Health Link and the requester scans it back. Nothing about that has to be described
  * in the invitation, so a default request is just the form.
+ *
+ * When the requester pre-filled the form, `prePopulated` rides along as a seed inside the same
+ * payload. It changes nothing about the filler's position — they still hold only a link — but it does
+ * change what the payload *is*, from a public questionnaire plus a name to an extract from a chart.
+ * `publishRequestTask` is unaffected by design: it names the three fields it wants rather than
+ * spreading what it is given, so no answer ever reaches the tracking Task on a shared server.
  *
  * Ordering matters for the channels that *are* described inside the payload, when they are enabled.
  * A slot URL cannot be added to a link that has already been sealed and uploaded, so the slot is
@@ -241,7 +254,8 @@ export async function createRequestLink(
       writeDescriptor,
       // Named in the invitation only when the filler is actually invited to write there. Tracking is
       // ours; there is no reason to tell a filler about a Task it must not touch.
-      serverTaskUrl: serverReturn ? serverTaskUrl : undefined
+      serverTaskUrl: serverReturn ? serverTaskUrl : undefined,
+      prePopulated: options.prePopulated
     }
   );
 

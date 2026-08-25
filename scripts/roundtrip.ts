@@ -19,6 +19,7 @@ import {
 } from 'node:crypto';
 import type { Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import {
+  DEFAULT_SMART_SCOPES,
   FALLBACK_CONFIG,
   canUseEncryptedReply,
   canUseSmartLaunch,
@@ -26,7 +27,16 @@ import {
   type AppConfig
 } from '../src/lib/config';
 import { isLaunchedServer } from '../src/fhir/authedFetch';
-import { buildScopes, isWriteBackScope, missingScopes, registrationScopes } from '../src/auth/scopes';
+import {
+  buildScopes,
+  isPrePopulateScope,
+  isWriteBackScope,
+  mergePermissions,
+  missingScopes,
+  registrationScopes
+} from '../src/auth/scopes';
+import { populatedRows, pruneAnswers } from '../src/lib/answerRows';
+import { questionnaireDeclaresPopulation } from '../src/fhir/populate';
 import { bespokeCodec } from '../src/link/bespokeCodec';
 import { shlCodec } from '../src/link/shlCodec';
 import {
@@ -67,6 +77,7 @@ import {
   buildResponseBundle,
   buildWriteResponse,
   isRequestBundle,
+  parseRequestBundle,
   parseResponseBundle,
   responseCanonical,
   taskCorrelationId
@@ -1999,6 +2010,60 @@ check(
 );
 
 check(
+  'scopes/prePopulateOffIsByteIdentical',
+  buildScopes({ ...FALLBACK_CONFIG, enablePrePopulate: false }, false) === DEFAULT_SMART_SCOPES,
+  'turning the feature off must leave the consent screen exactly as it was'
+);
+check(
+  'scopes/prePopulateMergesWithExtraction',
+  buildScopes({ ...FALLBACK_CONFIG, enablePrePopulate: true }, false).split(' ').filter(
+    (scope) => scope.startsWith('user/Condition.')
+  ).join(' ') === 'user/Condition.crus',
+  'extraction wants c+u and population wants r+s on the same type; one scope, asked once'
+);
+check(
+  'scopes/prePopulateAddsUngrantedReads',
+  buildScopes({ ...FALLBACK_CONFIG, enablePrePopulate: true }, false).includes(
+    'user/MedicationRequest.rs'
+  ),
+  'types the catalogue queries but the app never wrote'
+);
+check(
+  'scopes/smartScopesStillWinsOverPrePopulate',
+  buildScopes(
+    { ...FALLBACK_CONFIG, enablePrePopulate: true, smartScopes: 'launch openid' },
+    false
+  ) === 'launch openid',
+  'an explicit list is a statement, not a starting point'
+);
+check(
+  'scopes/mergePreservesOrderAndPassesNonResourceScopes',
+  mergePermissions(['launch', 'user/Condition.cu', 'openid', 'user/Condition.rs']).join(' ') ===
+    'launch user/Condition.crus openid'
+);
+check(
+  'scopes/mergeKeepsWildcardsAsWildcards',
+  mergePermissions(['user/*.*', 'user/*.rs']).join(' ') === 'user/*.*',
+  'spelling a wildcard out as letters would be a different string, and missingScopes compares strings'
+);
+check(
+  'scopes/prePopulateScopesAreRecognised',
+  isPrePopulateScope('user/Condition.crus') && isPrePopulateScope('user/MedicationRequest.rs')
+);
+check(
+  'scopes/prePopulateAndWriteBackOverlapOnMergedScopes',
+  isPrePopulateScope('user/Condition.crus') && isWriteBackScope('user/Condition.crus'),
+  'one refused scope costs both features, and the banner must be free to say so twice'
+);
+check(
+  'scopes/coreScopesAreNeitherFeature',
+  !isPrePopulateScope('user/Patient.crs') &&
+    !isPrePopulateScope('launch') &&
+    !isWriteBackScope('user/Patient.crs'),
+  'losing the patient picker is not losing a feature, and must not be reported as one'
+);
+
+check(
   'scopes/writeBackScopesAreRecognised',
   isWriteBackScope('user/Condition.cu') && isWriteBackScope('user/Encounter.cu')
 );
@@ -2240,6 +2305,264 @@ check(
 check(
   'extract/unknownResourceStillReads',
   describeResource(undefined) === 'Unknown resource'
+);
+
+/* ------------------------------------------------------------------ pre-population */
+
+console.log('\n--- Pre-population ---');
+
+const populatableForm: Questionnaire = {
+  resourceType: 'Questionnaire',
+  status: 'active',
+  url: 'http://example.org/Questionnaire/populatable',
+  version: '1.0.0',
+  extension: [
+    {
+      url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext',
+      extension: [
+        { url: 'name', valueCoding: { code: 'patient' } },
+        { url: 'type', valueCode: 'Patient' }
+      ]
+    }
+  ],
+  item: [{ linkId: 'name', type: 'string', text: 'Name' }]
+};
+
+const plainForm: Questionnaire = {
+  resourceType: 'Questionnaire',
+  status: 'active',
+  url: 'http://example.org/Questionnaire/plain',
+  version: '1.0.0',
+  item: [{ linkId: 'name', type: 'string', text: 'Name' }]
+};
+
+check(
+  'prePopulate/declaredFormIsRecognised',
+  questionnaireDeclaresPopulation(populatableForm)
+);
+check(
+  'prePopulate/formWithNoMachineryIsNot',
+  !questionnaireDeclaresPopulation(plainForm) && !questionnaireDeclaresPopulation(undefined),
+  '26 of the 138 catalogue forms declare nothing, and the toggle must be absent rather than inert'
+);
+check(
+  'prePopulate/itemLevelExpressionCounts',
+  questionnaireDeclaresPopulation({
+    ...plainForm,
+    item: [
+      {
+        linkId: 'name',
+        type: 'string',
+        extension: [
+          {
+            url: 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression',
+            valueExpression: { language: 'text/fhirpath', expression: "%patient.name.given.first()" }
+          }
+        ]
+      }
+    ]
+  }),
+  'the machinery can be entirely item-level, with nothing at the root to find'
+);
+
+/*
+ * A populated response with a repeating group, which is the shape that decided the whole design:
+ * `Questionnaire.item.initial` cannot express two instances, and this can.
+ */
+const populatedSeed: QuestionnaireResponse = {
+  resourceType: 'QuestionnaireResponse',
+  status: 'in-progress',
+  questionnaire: 'http://example.org/Questionnaire/populatable|1.0.0',
+  item: [
+    { linkId: 'name', text: 'Name', answer: [{ valueString: 'Jane Citizen' }] },
+    {
+      linkId: 'problems',
+      text: 'Problems',
+      item: [{ linkId: 'condition', text: 'Condition', answer: [{ valueString: 'Asthma' }] }]
+    },
+    {
+      linkId: 'problems',
+      text: 'Problems',
+      item: [{ linkId: 'condition', text: 'Condition', answer: [{ valueString: 'Eczema' }] }]
+    }
+  ]
+};
+
+const seedRows = populatedRows(populatedSeed);
+check('prePopulate/rowsFlattenEveryAnswer', seedRows.length === 3);
+check(
+  'prePopulate/repeatedGroupsGetDistinctPaths',
+  new Set(seedRows.map((row) => row.path)).size === seedRows.length,
+  'a repeating group repeats its children linkIds, so linkId alone cannot key a selection'
+);
+check(
+  'prePopulate/repeatedGroupsAreNumberedForTheReader',
+  seedRows[1].groups.join('') === 'Problems 1' && seedRows[2].groups.join('') === 'Problems 2',
+  'six rows labelled "Condition" are six rows nobody can choose between'
+);
+check(
+  'prePopulate/singleGroupsAreNotNumbered',
+  populatedRows({
+    ...populatedSeed,
+    item: [populatedSeed.item![1]]
+  })[0].groups.join('') === 'Problems',
+  '"Problems 1" reads as a distinction when there is nothing to distinguish it from'
+);
+
+const keptOne = pruneAnswers(
+  populatedSeed,
+  new Set(seedRows.filter((row) => row.value !== 'Eczema').map((row) => row.path))
+);
+check('prePopulate/pruneDropsUntickedAnswers', populatedRows(keptOne).length === 2);
+check(
+  'prePopulate/pruneDropsTheEmptiedGroup',
+  keptOne.item?.filter((item) => item.linkId === 'problems').length === 1,
+  'an item present but empty reads to the filler as a question already visited and left blank'
+);
+check(
+  'prePopulate/pruneDoesNotMutateItsInput',
+  populatedRows(populatedSeed).length === 3,
+  'RequestForm holds this as query data; a mutation would prune it permanently on the first untick'
+);
+check(
+  'prePopulate/pruningEverythingLeavesNoItems',
+  pruneAnswers(populatedSeed, new Set()).item === undefined
+);
+
+/*
+ * The discriminator. Every assertion the old absence-based rule justified must still hold, which is
+ * the contract this change put at risk — see `isRequestBundle`.
+ */
+const seededRequest = buildRequestBundle(populatableForm, {
+  requestId: 'seeded',
+  subjectReference: 'Patient/123',
+  subjectDisplay: 'Jane Citizen',
+  prePopulated: populatedSeed
+});
+const plainRequest = buildRequestBundle(populatableForm, { requestId: 'plain' });
+
+check('prePopulate/plainRequestStillReadsAsARequest', isRequestBundle(plainRequest.bundle));
+check(
+  'prePopulate/seededRequestReadsAsARequest',
+  isRequestBundle(seededRequest.bundle),
+  'the case the old rule got wrong, and the reason it had to change'
+);
+check(
+  'prePopulate/answersFromASeededRequestAreNotARequest',
+  !isRequestBundle(
+    buildResponseBundle(
+      { ...populatedSeed, status: 'completed' },
+      seededRequest.task
+    ).bundle
+  ),
+  'the regression the new rule risks: a returned response must never route to the form filler'
+);
+check(
+  'prePopulate/anEchoedFormWithFinishedAnswersIsNotARequest',
+  !isRequestBundle({
+    resourceType: 'Bundle',
+    type: 'collection',
+    entry: [
+      { resource: populatableForm },
+      { resource: { ...populatedSeed, status: 'completed' } }
+    ]
+  }),
+  'the protection the old absence rule gave by accident, kept here by inspection'
+);
+check(
+  'prePopulate/amendedAnswersAreNotARequest',
+  !isRequestBundle({
+    resourceType: 'Bundle',
+    type: 'collection',
+    entry: [{ resource: populatableForm }, { resource: { ...populatedSeed, status: 'amended' } }]
+  })
+);
+
+const seededPayload = parseRequestBundle(seededRequest.bundle);
+check('prePopulate/parseReturnsTheSeed', seededPayload.prePopulated !== undefined);
+check(
+  'prePopulate/parseOfAPlainRequestHasNoSeed',
+  parseRequestBundle(plainRequest.bundle).prePopulated === undefined
+);
+check(
+  'prePopulate/taskDeclaresTheSeed',
+  seededRequest.task.input?.some((input) => input.valueReference?.reference?.startsWith('urn:uuid:')) ===
+    true,
+  'declared rather than merely present, so a reader need not infer it from the Bundle'
+);
+check(
+  'prePopulate/seedIsInProgress',
+  seededPayload.prePopulated?.status === 'in-progress'
+);
+check(
+  'prePopulate/seedCarriesTheSubject',
+  seededPayload.prePopulated?.subject?.reference === 'Patient/123'
+);
+check(
+  'prePopulate/seedCarriesNoAuthorship',
+  seededPayload.prePopulated?.author === undefined &&
+    seededPayload.prePopulated?.authored === undefined,
+  'an author naming the practitioner would land on the answers the patient returns'
+);
+check(
+  'prePopulate/seedCarriesNoSecurityLabel',
+  seededPayload.prePopulated?.meta?.security === undefined,
+  'a seed is nobody assertion yet; PATAST is applied on the return leg, to answers a patient saw'
+);
+check(
+  'prePopulate/seedForAnotherFormIsDropped',
+  parseRequestBundle({
+    resourceType: 'Bundle',
+    type: 'collection',
+    entry: [
+      { resource: populatableForm },
+      {
+        resource: {
+          ...populatedSeed,
+          questionnaire: 'http://example.org/Questionnaire/somethingelse|1.0.0'
+        }
+      },
+      { resource: seededRequest.task }
+    ]
+  }).prePopulated === undefined,
+  'colliding linkIds would put one form answers against another form questions'
+);
+check(
+  'prePopulate/aFormWithNoCanonicalStillParses',
+  parseRequestBundle({
+    resourceType: 'Bundle',
+    type: 'collection',
+    entry: [
+      { resource: { ...populatableForm, url: undefined } },
+      { resource: { ...populatedSeed, questionnaire: undefined } },
+      { resource: { resourceType: 'Task', status: 'requested', intent: 'order' } as Task }
+    ]
+  }) !== undefined,
+  'legal FHIR that already opens today; a seed must not be able to make it throw'
+);
+check(
+  'prePopulate/publishedTaskDropsTheSeedReference',
+  (asPublishedTask(seededRequest.task).input ?? []).every(
+    (input) => input.valueReference === undefined
+  ),
+  'the seed lives inside the payload, so its reference resolves to nothing on a shared server'
+);
+check(
+  'prePopulate/publishedTaskKeepsItsCorrelationIdentifier',
+  asPublishedTask(seededRequest.task).identifier?.[0].value === 'urn:uuid:seeded',
+  'also a urn:uuid, and the one thing that must survive — it is how answers find their request'
+);
+check(
+  'prePopulate/publishedTaskKeepsTheCanonical',
+  asPublishedTask(seededRequest.task).input?.some(
+    (input) => input.valueCanonical === 'http://example.org/Questionnaire/populatable|1.0.0'
+  ) === true,
+  'a canonical names a Questionnaire by URL and resolves anywhere; only the urn:uuid does not'
+);
+check(
+  'prePopulate/publishedTaskCarriesNoAnswers',
+  !JSON.stringify(asPublishedTask(seededRequest.task)).includes('Asthma'),
+  'the tracking Task goes to a shared server and must never carry chart content'
 );
 
 console.log(

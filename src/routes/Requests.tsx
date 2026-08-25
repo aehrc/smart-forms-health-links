@@ -411,6 +411,14 @@ function RequestRow({ request, state, onCheck, onDelete }: RequestRowProps) {
 
         {blocker ? <p className="text-xs text-slate-500">{blocker}</p> : null}
 
+        {request.local?.prePopulated ? (
+          <Alert title="This one went out pre-filled">
+            Part of it was answered from the record before it was sent. Anything that comes back may
+            be a confirmation rather than something the patient typed, and nothing on the return leg
+            distinguishes the two — see the note on the review screen.
+          </Alert>
+        ) : null}
+
         {request.local?.serverReturnOffered ? (
           <Alert tone="warning" title="This request also accepts a direct write">
             The plain-FHIR return channel was enabled for it, so a filler can post answers straight to{' '}

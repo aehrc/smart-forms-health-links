@@ -25,8 +25,10 @@ import { Input } from '@/components/ui/input';
  * The single entry point for any link, in either direction.
  *
  * Dispatching on the payload rather than the route matters because a scanner cannot know what it
- * just scanned. A request (`Questionnaire` + `Task`, no answers) opens the form to be filled; a
- * response (`QuestionnaireResponse`) opens the review-and-accept flow.
+ * just scanned. A request (`Questionnaire` + `Task`, no *finished* answers) opens the form to be
+ * filled; a response (a `completed` `QuestionnaireResponse`) opens the review-and-accept flow. Both
+ * legs may carry a QuestionnaireResponse now that a request can arrive pre-filled, so the test is its
+ * status rather than its presence — see `isRequestBundle`.
  *
  * The response direction is now the primary one: a filler mints its own SMART Health Link and the
  * requester scans it back. Two consequences shape this file. Answers arriving by link carry no
@@ -36,7 +38,13 @@ import { Input } from '@/components/ui/input';
  */
 
 type Opened = { warnings?: string[]; label?: string } & (
-  | { mode: 'request'; questionnaire: Questionnaire; task: Task }
+  | {
+      mode: 'request';
+      questionnaire: Questionnaire;
+      task: Task;
+      /** Answers the requester pre-filled, for the filler to confirm or correct. */
+      prePopulated?: QuestionnaireResponse;
+    }
   | {
       mode: 'response';
       questionnaire?: Questionnaire;
@@ -58,8 +66,15 @@ async function openLink(
 
   if (isRequestBundle(content.bundle)) {
     // A request embeds its Questionnaire, so nothing needs resolving.
-    const { questionnaire, task } = parseRequestBundle(content.bundle);
-    return { mode: 'request', questionnaire, task, label: content.label, warnings: content.warnings };
+    const { questionnaire, task, prePopulated } = parseRequestBundle(content.bundle);
+    return {
+      mode: 'request',
+      questionnaire,
+      task,
+      prePopulated,
+      label: content.label,
+      warnings: content.warnings
+    };
   }
 
   const { response, task, provenance } = parseResponseBundle(content.bundle);
@@ -207,6 +222,7 @@ export default function ViewLink() {
         <FillFromRequest
           questionnaire={opened.questionnaire}
           task={opened.task}
+          prePopulated={opened.prePopulated}
           label={opened.label}
         />
       ) : (
