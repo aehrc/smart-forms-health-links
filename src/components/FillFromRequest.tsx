@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CheckCircle2, Link2, Loader2, Send, ShieldCheck } from 'lucide-react';
-import type { Questionnaire, Task } from 'fhir/r4';
+import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
 import {
   canCreateHealthLinks,
@@ -18,12 +18,28 @@ import { Alert } from '@/components/ui/alert';
 export interface FillFromRequestProps {
   questionnaire: Questionnaire;
   task: Task;
+  /**
+   * Answers the requester filled in from their record before sending, when they did.
+   *
+   * Passed to the renderer **by reference**, and it must stay one: `useBuildForm` compares it that
+   * way, so a fresh object each render rebuilds the form in a loop (the caveat `ReviewResponse`
+   * documents). It arrives from `parseRequestBundle` inside a cached query, which is stable — so
+   * nothing here may reshape it on the way past.
+   */
+  prePopulated?: QuestionnaireResponse;
   label?: string;
 }
 
 /**
  * The filler's side: a request arrived, so render its embedded Questionnaire and hand the answers
  * back.
+ *
+ * The form may arrive partly filled in. The requester can populate it from their own record before
+ * sending — the only side that can, since nothing here has a path to their servers — and those
+ * answers travel as a seed the renderer starts from. It is a starting point and not an assertion:
+ * this device owns it once the link is open, and clearing a field is as final as typing in one. The
+ * alert below the channel list says so, and it is not decoration — it is the only thing between
+ * somebody and silently endorsing a clinician's data as their own.
  *
  * Two return paths:
  *
@@ -53,7 +69,7 @@ export interface FillFromRequestProps {
  * reply slot.
  */
 export default function FillFromRequest(props: FillFromRequestProps) {
-  const { questionnaire, task, label } = props;
+  const { questionnaire, task, prePopulated, label } = props;
   const config = useConfig();
 
   const [link, setLink] = useState<string | null>(null);
@@ -309,9 +325,21 @@ export default function FillFromRequest(props: FillFromRequestProps) {
 
       {link ? <ShareLinkPanel link={link} kind="response" /> : null}
 
+      {prePopulated ? (
+        <Alert title="Some of this is already filled in">
+          <p>
+            {task.requester?.display ?? 'Whoever sent this'} filled in part of this form from their
+            own records before sending it. <strong>Check it.</strong> Anything wrong or out of date
+            can be changed or cleared here, and what you send back is what you leave on the form —
+            nothing is kept from the original.
+          </p>
+        </Alert>
+      ) : null}
+
       <div className="form-surface">
         <FormRenderer
           questionnaire={questionnaire}
+          questionnaireResponse={prePopulated}
           terminologyServerUrl={config.terminologyServerUrl}
         />
       </div>

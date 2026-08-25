@@ -453,6 +453,15 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             ) : (
               ' No Task accompanied these answers, so they cannot be matched to a request.'
             ))}
+            {matchedRequest?.prePopulated ? (
+              <>
+                {' '}
+                <strong>This request went out pre-filled</strong> from the record, so an answer here
+                may be one the patient left as it stood rather than one they gave. The whole response
+                is labelled patient-asserted either way — there is nothing on the wire that separates
+                them.
+              </>
+            ) : null}
           </p>
         </div>
 

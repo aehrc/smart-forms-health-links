@@ -22,12 +22,29 @@ export function canTemplateExtract(questionnaire: Questionnaire | undefined): bo
 /**
  * Run template-based extraction, or throw with something a reviewer can act on.
  *
- * **`comparisonSourceResponse` is deliberately `null`.** smart-forms passes a freshly populated copy of
- * the questionnaire here so that only answers the clinician *changed* get extracted. That baseline
- * cannot exist in this app: the person who filled the form had no access to the EHR and no launch
- * context, which is the whole point of the design. There is nothing to diff against, so everything the
- * template produces is new by definition — and passing `null` is exactly how the engine expresses that.
- * It is also why `@aehrc/sdc-populate` is not a dependency here.
+ * **`comparisonSourceResponse` is deliberately `null`**, and it is worth saying why it stays `null`
+ * now that it need not.
+ *
+ * smart-forms passes a freshly populated copy of the questionnaire here so that only answers the
+ * clinician *changed* get extracted. This file used to record that such a baseline could not exist
+ * here, because the person filling the form had no access to the EHR — and that reason expired when
+ * requests gained the option to be pre-filled (`src/fhir/populate.ts`). A populated baseline now
+ * exists, and `@aehrc/sdc-populate` is now a dependency.
+ *
+ * The `null` survives the reason for it, on three grounds:
+ *
+ *  - **The baseline is the requester's; the answers are a stranger's.** smart-forms diffs a response
+ *    against a copy of itself. Here the two come from different devices, and are comparable only if
+ *    the filler preserved the `linkId` structure — which a conformant filler will and nothing
+ *    obliges one to.
+ *  - **A pre-filled request is the minority case**, and a request sent blank still has no baseline.
+ *    Diffing would give the app two extraction modes producing different resources from identical
+ *    answers, and the reviewer would have to be told which one ran.
+ *  - **`retargetSubject` below exists because extraction here runs on foreign answers.** A diff-based
+ *    extract interacts with that, and neither has been worked through against the other.
+ *
+ * So everything the template produces is still treated as new, which is what `null` expresses.
+ * Extracting only what the patient actually changed is worth doing and is not done here yet.
  */
 export async function templateExtract(
   response: QuestionnaireResponse,

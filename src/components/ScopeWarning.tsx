@@ -1,7 +1,7 @@
 import { Link as RouterLink } from 'react-router-dom';
 import { useSmartSession } from '@/auth/SmartContext';
 import { LAUNCH_SETUP_PATH } from '@/auth/routes';
-import { isWriteBackScope, missingScopes } from '@/auth/scopes';
+import { isPrePopulateScope, isWriteBackScope, missingScopes } from '@/auth/scopes';
 import { useConfig } from '@/lib/ConfigContext';
 import { Alert } from '@/components/ui/alert';
 
@@ -32,20 +32,37 @@ export default function ScopeWarning() {
   }
 
   /*
-   * Split because the two halves have very different consequences. Losing a write-back scope costs one
+   * Split because the halves have very different consequences. Losing a feature scope costs that
    * feature and nothing else; losing `user/Patient.crs` breaks the patient picker, and saying which is
    * which is the difference between a warning somebody can act on and one they can only worry about.
+   *
+   * The two feature buckets overlap rather than partition, because `mergePermissions` collapses
+   * extraction's `user/Condition.cu` and population's `user/Condition.rs` into one scope. A server
+   * refusing that refused both, so it is named under both.
    */
   const writeBack = missing.filter(isWriteBackScope);
-  const other = missing.filter((scope) => !isWriteBackScope(scope));
-  const writeBackOnly = other.length === 0;
+  const prePopulate = missing.filter(isPrePopulateScope);
+  const other = missing.filter(
+    (scope) => !isWriteBackScope(scope) && !isPrePopulateScope(scope)
+  );
+  const featureOnly = other.length === 0;
+
+  /*
+   * Named as the capability a clinician would recognise, not as the scope. "user/Condition.crus was
+   * refused" is true and useless; "filling a form from the record is not permitted here" is the same
+   * fact in terms of what they were about to try to do.
+   */
+  const affected = [
+    prePopulate.length > 0 ? 'Filling a form from the record' : null,
+    writeBack.length > 0 ? 'writing into the patient record' : null
+  ].filter((phrase): phrase is string => phrase !== null);
 
   return (
     <Alert
       tone="warning"
       title={
-        writeBackOnly
-          ? 'Writing into the patient record is not permitted on this server'
+        featureOnly
+          ? `${affected.join(' and ')} ${affected.length > 1 ? 'are' : 'is'} not permitted on this server`
           : 'Your server granted fewer permissions than this app asked for'
       }>
       <ul className="space-y-0.5">
@@ -55,6 +72,21 @@ export default function ScopeWarning() {
           </li>
         ))}
       </ul>
+
+      {prePopulate.length > 0 ? (
+        <p className="mt-1">
+          A form can still be requested; it will go out blank rather than pre-filled. Worth knowing
+          that this failure is <strong>silent</strong> if it is ignored — a search the server refuses
+          produces an empty answer, which looks exactly like a record holding nothing.
+          {config.enablePrePopulate ? (
+            <>
+              {' '}
+              Set <span className="font-mono text-xs">enablePrePopulate: false</span> to remove the
+              option rather than have it quietly return nothing.
+            </>
+          ) : null}
+        </p>
+      ) : null}
 
       {writeBack.length > 0 ? (
         <p className="mt-1">

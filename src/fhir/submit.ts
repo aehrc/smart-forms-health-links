@@ -522,10 +522,23 @@ export async function publishRequestTask(
 
 /** The server-storable form of a request Task. Exported so `check:roundtrip` can assert its shape. */
 export function asPublishedTask(task: Task): Task {
-  const { focus: _focus, extension: _extension, ...rest } = task;
+  const { focus: _focus, extension: _extension, input, ...rest } = task;
+
+  /*
+   * `urn:uuid` inputs are dropped along with `focus` and `extension`, and for the same reason: they
+   * name siblings inside the encrypted payload, which is not what gets published. A pre-filled
+   * request points its `questionnaire-response` input at the seed that travels with it, and copying
+   * that reference onto a server resource would leave a reference resolving to nothing there.
+   *
+   * The canonical inputs stay. Those name a Questionnaire by URL, which resolves anywhere.
+   */
+  const resolvable = (input ?? []).filter(
+    (entry) => !entry.valueReference?.reference?.startsWith('urn:uuid:')
+  );
 
   return {
     ...rest,
+    ...(resolvable.length > 0 ? { input: resolvable } : {}),
     meta: { ...task.meta, tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }] }
   };
 }

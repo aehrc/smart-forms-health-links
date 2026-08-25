@@ -145,6 +145,38 @@ export interface AppConfig {
   enableWriteBack: boolean;
 
   /**
+   * Fill a requested form from the record before the link is minted.
+   *
+   * SDC pre-population, moved to the only place this app can run it. `$populate` normally runs at
+   * *fill* time inside a launched app, resolving each item's `x-fhir-query` against the EHR just
+   * before the form is drawn — which is impossible here, because the filler holds no credential and
+   * has no path to our servers. That is the point of the design, not a gap in it.
+   *
+   * So population happens at **request** time, on the side that does have a launch context, and the
+   * answers ride inside the encrypted payload. Nothing about the filler's position changes.
+   *
+   * Off in the fallback, on in the shipped `config.json` — the same split as
+   * {@link enableOneShotWrite}, because what ships is a chosen sandbox of synthetic patients where
+   * this is part of the demo, and the fallback is a config that failed to load.
+   *
+   * **Weigh it differently for real data.** Its neighbours are *write* capabilities, gated because
+   * they put data on somebody's server. This is a **disclosure** capability: it copies record content
+   * into a payload that leaves the building and is readable by anyone holding the link. A request
+   * stops being "a public questionnaire plus a name" and becomes an extract from a chart, sitting
+   * encrypted on an untrusted host with its key in a QR code somebody can photograph. Turning it on
+   * is a decision about what a leaked link would cost, and the answer differs by deployment.
+   *
+   * Two deliberate acts are still needed with the flag on: a SMART launch, and ticking the box on the
+   * request itself. The flag makes the option visible, not automatic.
+   *
+   * Requires a launched session — see {@link canPrePopulate}. Inert for a form that declares no
+   * population machinery, though that is the minority here: 112 of the 138 forms on the default
+   * catalogue declare some, against 25 that declare extraction. This is the broadest SDC capability
+   * in that catalogue, and until now the app used none of it.
+   */
+  enablePrePopulate: boolean;
+
+  /**
    * Where one-shot write slots are pre-allocated. `null` falls back to `blobServerUrl`.
    *
    * Separate from `responseServerUrl` on purpose, and the separation is the whole point of the
@@ -245,6 +277,7 @@ export const FALLBACK_CONFIG: AppConfig = {
   // Off in the *fallback*, on in the shipped config. A config that failed to load names no reliable
   // destination, and creating Conditions on a guessed server is worse than creating none.
   enableWriteBack: false,
+  enablePrePopulate: false,
   writeSlotServerUrl: null,
   linkLifetimeDays: 30,
   publishRequestTasks: true,
@@ -311,6 +344,71 @@ export const DEFAULT_SMART_SCOPES = [
   'user/Encounter.cu'
 ].join(' ');
 
+/**
+ * The extra reads pre-population needs, on top of {@link DEFAULT_SMART_SCOPES}.
+ *
+ * ## Why this list exists at all, and why it is not obvious
+ *
+ * The extraction group above grants `user/Condition.cu`, `user/Observation.cu` and five more. In
+ * SMART v2 those letters are the whole permission: `c` create, `r` read, `u` update, `d` delete,
+ * `s` search. So `.cu` is **create and update, with no read and no search** — the app writes those
+ * resources and has never needed to look at them.
+ *
+ * Pre-population does nothing but look at them. A form's `x-fhir-query` is a search
+ * (`Condition?patient={{%patient.id}}&…`), so every type in the extraction group needs `r` and `s`
+ * added. Each one reads as already covered and is not, which is the trap: the failure is not an
+ * error a clinician sees, it is an **empty answer**, indistinguishable from a record that holds
+ * nothing. They send the form believing the patient has no recorded conditions.
+ *
+ * It stays hidden on the default sandbox, which grants `user/*.*` and therefore never exercises the
+ * gap — the same blind spot `user/Practitioner.r` above already records.
+ *
+ * ## How the list was derived
+ *
+ * By reading every `x-fhir-query` expression in the 138 Questionnaires on the default forms server
+ * and counting the resource types they name, rather than by guessing what a form might want:
+ *
+ * | | forms querying it | |
+ * | --- | --- | --- |
+ * | `Observation` | 31 | in the extraction group, `.cu` only |
+ * | `Condition` | 25 | in the extraction group, `.cu` only |
+ * | `AllergyIntolerance` | 12 | in the extraction group, `.cu` only |
+ * | `PractitionerRole` | 9 | not granted at all |
+ * | `MedicationStatement` | 9 | in the extraction group, `.cu` only |
+ * | `QuestionnaireResponse` | 9 | already `.crs` — nothing to add |
+ * | `Immunization` | 7 | in the extraction group, `.cu` only |
+ * | `Encounter` | 6 | in the extraction group, `.cu` only |
+ * | `MedicationRequest` | 5 | not granted at all |
+ * | `Procedure` | 4 | in the extraction group, `.cu` only |
+ * | `ServiceRequest` | 2 | not granted at all |
+ * | `Device` | 1 | not granted at all |
+ * | `Organization` | 1 | not granted at all |
+ *
+ * `Patient` is absent because it arrives through `launchContext`, not through a query.
+ *
+ * This is therefore a list about **the default catalogue**, not about pre-population in general —
+ * another deployment's forms will ask for other types. That is what `smartScopes` is for, and a
+ * deployment overriding it takes over this list wholesale.
+ *
+ * Requested only when {@link AppConfig.enablePrePopulate} is on, and merged letter-wise with the
+ * group above so a launch asks `user/Condition.crus` once rather than `.cu` and `.rs` separately.
+ * See `buildScopes` in `src/auth/scopes.ts`.
+ */
+export const PRE_POPULATE_SCOPES = [
+  'user/Condition.rs',
+  'user/Observation.rs',
+  'user/AllergyIntolerance.rs',
+  'user/MedicationStatement.rs',
+  'user/MedicationRequest.rs',
+  'user/Immunization.rs',
+  'user/Procedure.rs',
+  'user/Encounter.rs',
+  'user/ServiceRequest.rs',
+  'user/PractitionerRole.rs',
+  'user/Organization.rs',
+  'user/Device.rs'
+].join(' ');
+
 function isValidUrl(value: unknown): value is string {
   if (typeof value !== 'string' || !/^https?:\/\/.+/.test(value.trim())) {
     return false;
@@ -360,6 +458,7 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
     isAbsentOr(candidate.enableEncryptedReply, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableOneShotWrite, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableWriteBack, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(candidate.enablePrePopulate, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.writeSlotServerUrl, (url) => url === null || isValidUrl(url)) &&
     isAbsentOr(candidate.publishRequestTasks, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableSmartLaunch, (flag) => typeof flag === 'boolean') &&
@@ -459,6 +558,25 @@ export function resolveWriteSlotServerUrl(config: AppConfig): string | null {
  */
 export function canUseOneShotWrite(config: AppConfig): boolean {
   return config.enableOneShotWrite && resolveWriteSlotServerUrl(config) !== null;
+}
+
+/**
+ * Whether a form can be filled from the record before the link is minted: the capability is enabled
+ * *and* there is a launched session to read the record with.
+ *
+ * The second half is the same guard {@link canUseOneShotWrite} uses, and here it is doing more than
+ * keeping {@link FALLBACK_CONFIG} safe. Anonymous population would in fact *work* — `useEhrServerUrl`
+ * falls back to `responseServerUrl`, and the default sandbox is open — and it is refused anyway:
+ * populating is a bulk clinical read, and doing it with no user identity, no authorisation decision
+ * and no audit trail succeeds only because that particular sandbox happens not to care. Reading a
+ * chart is the requester's capability, and the requester is the half that launched.
+ */
+export function canPrePopulate(
+  config: AppConfig,
+  session: { serverUrl: string } | null,
+  ehrServerUrl: string | null
+): boolean {
+  return config.enablePrePopulate && session !== null && ehrServerUrl !== null;
 }
 
 /**

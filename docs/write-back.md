@@ -85,10 +85,18 @@ no document explaining where they came from. smart-forms makes the same call in
 smart-forms passes `inAppExtract` a comparison response, built by re-populating the questionnaire from
 the EHR, so that only answers the clinician *changed* get extracted.
 
-That baseline cannot exist in this app. The person who filled the form had no access to the EHR and no
-launch context — that is [claim 2](../README.md#what-this-demonstrates), not an oversight. There is
-nothing to diff against, so `comparisonSourceResponse` is `null` and everything the template produces
-is new by definition. It is also why `@aehrc/sdc-populate` is not a dependency.
+That baseline used not to exist here. The person who filled the form had no access to the EHR and no
+launch context — [claim 2](../README.md#what-this-demonstrates), not an oversight — so there was
+nothing to diff against.
+
+[Pre-population](pre-population.md) changed that. A request can now go out with answers filled in from
+the record, and where one did, the requester holds exactly the baseline smart-forms would build.
+`comparisonSourceResponse` is still `null`, and now by choice rather than by necessity: the baseline is
+the *requester's* while the answers are a *stranger's*, comparable only if the filler preserved the
+`linkId` structure; a request sent blank still has no baseline at all, so diffing would give the app
+two extraction modes producing different resources from identical answers. `templateExtract.ts` carries
+the argument in full. Extracting only what the patient actually changed is worth doing and is not done
+yet.
 
 ## One transaction, all or nothing
 

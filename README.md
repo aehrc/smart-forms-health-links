@@ -38,6 +38,7 @@ cannot currently be opened by third-party SHL wallets.
     - [Why the reply is encrypted to a public key](#why-the-reply-is-encrypted-to-a-public-key)
     - [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel)
   - [Answers become resources](#answers-become-resources)
+  - [Pre-filling a form before you send it](#pre-filling-a-form-before-you-send-it)
   - [Amendments are new resources](#amendments-are-new-resources)
   - [Creating a patient at review time](#creating-a-patient-at-review-time)
     - [The caching proxy, which is not a footnote](#the-caching-proxy-which-is-not-a-footnote)
@@ -94,6 +95,11 @@ how SHL is usually described:
    bucket, no lambda, no manifest service. This is the claim with the outstanding hole in it: a HAPI
    `Binary` rejects the `recipient` parameter the spec requires on a `U`-flag fetch, which is why
    third-party wallets cannot open these links yet. See [Known limitations](#known-limitations).
+7. **A form can be pre-filled for a filler who cannot reach the record.** SDC populates at *fill*
+   time, inside a launched app — impossible here, because the filler holds no credential. Moving
+   `$populate` to *request* time is what makes pre-population and an offline filler possible at once,
+   and it applies to **112 of the 138** forms on the default catalogue. See
+   [Pre-filling a form before you send it](#pre-filling-a-form-before-you-send-it).
 
 It also serves as a worked example of interoperating with
 [Platypus](https://github.com/aehrc/platypus): its detection contract and its reply crypto are both
@@ -214,12 +220,13 @@ conventional shape.
 ```
 REQUEST   requester hosts, real shlink:/
   1. pick a Questionnaire, mint Task{status:requested, focus:Q, for:Patient}
-  2. Bundle{Questionnaire, Task} -> JWE (alg:dir, enc:A256GCM)
+  1a. optionally $populate from the EHR, tick what to keep  -> QR{in-progress}
+  2. Bundle{Questionnaire, QR?, Task} -> JWE (alg:dir, enc:A256GCM)
   3. POST /Binary                -> https://…/api/fhir/Binary/{id}
   4. shlink:/{url, key, flag:"U"}   ~271 bytes, fits a QR
 
 FILL      any device, no access to the requester's servers
-  5. GET the blob -> decrypt -> render -> fill
+  5. GET the blob -> decrypt -> render (on top of the seed, if any) -> fill
   6. Bundle{QuestionnaireResponse, Task{status:completed, output -> response}}
 
 RETURN    the filler mints its own shlink:/ and the requester scans it back
@@ -433,6 +440,60 @@ This is the only reason the app asks for `u` on any scope. It still never delete
 resources it *authors* stay create-only — which is what the next section is about.
 
 Turn it off with `enableWriteBack`. Full detail in [`docs/write-back.md`](docs/write-back.md).
+
+## Pre-filling a form before you send it
+
+A patient asked to complete a chronic disease management plan already exists in the record that asked
+them. Their name is on file, so is their date of birth, so is the problem list the plan is about.
+Asking them to type it again is asking them to re-key data the requester is holding.
+
+SDC solves this with `$populate`, and puts it in a place this app cannot use. Population normally runs
+at **fill** time inside a launched app, resolving each item's `x-fhir-query` against the EHR just
+before the form is drawn. The filler here has no credential and no route to those servers — claim 2,
+and the reason the whole thing works across an air gap.
+
+So population moves to the **requesting** side, which is the only side that has a launch context, a
+token and a path to the record. The answers are sealed into the encrypted payload as a seed
+`QuestionnaireResponse`, and nothing about the filler's position changes: they still hold only a link,
+and they still own every answer on the form the moment they open it.
+
+**The clinician sees it before it goes.** Populating produces a proposal, not a decision — every
+answer found is listed, grouped by section with repeating instances numbered, and anything the patient
+should answer themselves or the record has wrong is unticked. Only what is still ticked is sealed.
+Untick everything and the form goes out blank. The posture is the write-back panel's, at the other end
+of the round trip: everything ticked on arrival, because removing what does not belong is a smaller
+question than assembling the set from nothing.
+
+| | |
+| --- | --- |
+| Forms declaring population machinery | **112 of 138** |
+| Forms declaring template-based extraction, for comparison | 25 |
+| GP Chronic Condition Management Plan | 12 answers, 15 reads, ~250 ms |
+| Payload growth | +2.2% — 2.4 KB of seed on 109 KB of form |
+| Link size | unchanged |
+
+Two things this costs, neither of them solved:
+
+- **The payload stops being harmless.** A request used to carry a public Questionnaire and a name; a
+  pre-filled one carries an extract from a chart. The cryptography is unchanged, but what a leaked
+  link costs is not — and SHL's model is that the link *is* the credential.
+- **`PATAST` becomes less true.** Answers return stamped patient-asserted, including ones the patient
+  scrolled past. This is the mirror image of what [amendments](#amendments-are-new-resources) exist to
+  prevent. The request records that it went out pre-filled and both `/requests` and the review screen
+  say so, which is not the same as knowing which answers were touched.
+
+`enablePrePopulate` is off in the fallback config for the first reason. It is on in the shipped one
+because that points at a sandbox of synthetic patients, and even then two deliberate acts are needed:
+a SMART launch, and ticking the box on the request.
+
+Two mechanisms were compared, and the choice turned on a measurement. Baking answers into
+`Questionnaire.item.initial` needs no wire change and any conformant SDC renderer would honour it for
+free — but `initial` sits on the item *definition*, so N instances of a repeating group collapse to
+one. Across the AU Core / 715 / GP plan family, 40–46% of populated items sit under repeating groups.
+A medications table showing 1 of 8 rows looks complete. The seed carries all of it.
+
+Full detail, including the scope trap that makes a refused read look like an empty record, is in
+[docs/pre-population.md](docs/pre-population.md).
 
 ## Amendments are new resources
 
@@ -975,13 +1036,15 @@ src/
     amend.ts           amendments as a new resource joined by a revision Provenance
     newPatient.ts      building a Patient from what a reviewer typed
     extract.ts         which extraction mechanism a form declares, and running it
+    populate.ts        $populate at request time, kept free of the renderer so Node can bundle it
     templateExtract.ts the template half, kept free of the renderer so Node can bundle it
     writeBundle.ts     POSTing an extracted transaction to the server base
   lib/
     config.ts          AppConfig, validation, and the fallback
     requestStore.ts    reply keys in localStorage
     sentRequests.ts    the local half of /requests
-    answerRows.ts      flattening a QuestionnaireResponse for RawAnswers
+    answerRows.ts      flattening a QuestionnaireResponse — for RawAnswers, and for picking
+                       which pre-filled answers to send
     extractedEntries.ts describing an extracted Bundle so a clinician can judge it
 scripts/
   roundtrip.ts         npm run check:roundtrip — no network
@@ -990,12 +1053,14 @@ scripts/
   e2eLink.ts           npm run check:e2e       — the legacy decode path
   e2eAmend.ts          npm run check:amend     — live, writes and cleans up
   e2eWriteBack.ts      npm run check:writeback — live, writes and cleans up
+  e2ePopulate.ts       npm run check:populate  — live, reads the EHR, hosts one payload
   mintReviewLink.ts    a review link for a fixture, so the screen is reachable in dev
   e2ePatient.ts        npm run check:patient   — live, writes and cleans up
   checkSmartConfig.ts  npm run check:smart     — live, read-only discovery probe
 docs/
   shl-form-reply-channel.md   wire format for channels B, C and D
   response-links.md           what counts as an inbound response link
+  pre-population.md           filling a form from the record before sending it
   u-flag-hosting.md           the third-party blocker, in full
   smart-app-launch.md         the launch flow, and the boundary it must not cross
   write-back.md               form data extraction, and the order it happens in
@@ -1041,6 +1106,17 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
   point of the design. A confidential variant with a Fastify backend-for-frontend was prototyped in
   [PR #5](https://github.com/aehrc/smart-forms-health-links/pull/5) and closed unmerged. See
   [SMART App Launch](#smart-app-launch).
+- **A pre-filled request weakens what `PATAST` means.** Answers return stamped patient-asserted,
+  including any the patient scrolled past without reading. The claim is not baseless — the values did
+  pass in front of them and could have been changed or cleared — but on a 700-item form it is thinner
+  than it sounds, and it is the mirror image of the confusion
+  [amendments](#amendments-are-new-resources) exist to prevent. The request records that it went out
+  pre-filled and the review screen says so; which particular answers were touched is not recoverable.
+  Keeping the seed and diffing on return would recover it, and is not built. See
+  [`docs/pre-population.md`](docs/pre-population.md).
+- **Nothing deletes a hosted payload.** `linkLifetimeDays` sets the SHL `exp`, which *readers*
+  enforce; the `Binary` stays. Harmless for a blank form, less so now that a request may carry an
+  extract from a chart.
 - **Reply keys live in `localStorage`** (channel C only). Clearing site data destroys pending
   replies, permanently. See [Notes](#notes).
 - **A reply slot hosted as a plain `Binary` can be overwritten by anyone who can reach the server.**
@@ -1061,8 +1137,9 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 284 checks: codecs, JWE, reply crypto, foreign links, passcodes,
-                         # the SMART token boundary and its scopes, form data extraction — no network
+npm run check:roundtrip  # 322 checks: codecs, JWE, reply crypto, foreign links, passcodes,
+                         # the SMART token boundary and its scopes, form data extraction,
+                         # pre-population and the request/response discriminator — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
@@ -1082,6 +1159,10 @@ SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:patient
 # confirm whose record it landed in
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:writeback
 
+# 13 checks: $populate against a live record, choosing what to send, and the seed surviving a
+# real mint-and-decode. Reads the EHR; the only write is the encrypted payload
+SHL_EHR_SERVER=https://proxy.smartforms.io/fhir npm run check:populate
+
 # 9 checks: that the configured SMART issuer can serve the launch this app performs.
 # Read-only, writes nothing. Reads the issuer from public/config.json, or SMART_ISSUER=…
 npm run check:smart
@@ -1090,7 +1171,7 @@ npm run check:smart
 `check:roundtrip` needs neither network nor hosting, so it is the one to run on every change. It
 covers the crypto properties that matter — a wrong key, a tampered ciphertext and a tampered `epk`
 must all fail, and an `alg: dir` header must be refused where `ECDH-ES` is required — plus the SHL
-codec against an in-memory blob store. Four sections are worth knowing about:
+codec against an in-memory blob store. Five sections are worth knowing about:
 
 - **Cross-implementation crypto vectors.** The reply crypto is checked against an independent
   `node:crypto` implementation *in both directions*, transcribed from Platypus's own
@@ -1106,6 +1187,11 @@ codec against an in-memory blob store. Four sections are worth knowing about:
 - **The published request Task and the sent-request join.** That `focus` is dropped and the canonical
   kept in `input`, that no reply slot or key reaches the server copy, and that a listed Task pairs with a
   local record on `identifier` alone.
+- **The request/response discriminator.** `isRequestBundle` decides which of two entirely different
+  screens a scanned link opens, and pre-population changed the rule it decides by. The truth table is
+  asserted in both directions — a pre-filled request must route to the form filler, a returned response
+  must never — along with the cases the previous rule caught by accident, such as a filler that echoes
+  the form back alongside its answers.
 
 `check:e2e-shl` walks both return paths live: build a request with a reply slot, encrypt it, host it as a
 `Binary`, decode it as the filler would, answer it, return the answers **as a link** and **through the
@@ -1125,6 +1211,14 @@ would, writes the answers, writes them *again*, and requires the second attempt 
 appear nowhere in the `shlink:` string, that `PATAST` survives the round trip, that the filler's own
 patient reference deliberately does not, and that what lands in the record is a new resource rather
 than the transport slot.
+
+`check:populate` is the only check that reads a *record* rather than a catalogue, and it exists for the
+failure that is invisible: a form's `x-fhir-query` searches being refused produces an empty answer,
+which looks exactly like a record holding nothing. It populates the GP plan against a patient with a
+real history — chosen by name, because unlike most of the catalogue that form fills a *repeating
+group*, which is the shape that decided the design — unticks a row, and requires the pruned seed to
+survive a genuine mint and decode with exactly the answers that were kept. It also reports the
+catalogue count, so the day forms stop declaring population, something says so.
 
 `check:amend` covers the amendment path, and it is written mostly as a set of things that must **not**
 happen: the original is never updated in place, its `PATAST` label never rides along onto content the

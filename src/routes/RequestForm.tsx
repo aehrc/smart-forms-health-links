@@ -1,21 +1,26 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Inbox, Loader2, Send } from 'lucide-react';
+import { ArrowLeft, Eye, Inbox, Loader2, Send, Sparkles } from 'lucide-react';
 import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
 import { useConfig } from '@/lib/ConfigContext';
 import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
-import { fetchPatient, fetchUserDisplay, patientDisplay } from '@/fhir/ehrServer';
+import { fetchPatient, fetchUser, patientDisplay, personDisplay } from '@/fhir/ehrServer';
 import {
+  canPrePopulate,
   canUseEncryptedReply,
   canUseOneShotWrite,
   canUseServerReturn,
   resolveWriteSlotServerUrl
 } from '@/lib/config';
+import { prePopulate, questionnaireDeclaresPopulation } from '@/fhir/populate';
+import { populatedRows, pruneAnswers } from '@/lib/answerRows';
 import { saveRequest } from '@/lib/requestStore';
 import { canCreateHealthLinks, createRequestLink } from '@/link/createLink';
 import { questionnaireCanonicalOf, taskCorrelationId } from '@/link/exchange';
 import PatientPicker from '@/components/PatientPicker';
+import PrePopulatePanel from '@/components/PrePopulatePanel';
+import FormRenderer from '@/components/FormRenderer';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -49,19 +54,25 @@ export default function RequestForm() {
   const launchPatientRef = session?.patientId ? `Patient/${session.patientId}` : null;
 
   const { data: launchPatient } = useQuery({
-    queryKey: ['launch-patient', ehrServerUrl, launchPatientRef],
+    queryKey: ['patient', ehrServerUrl, session?.patientId],
     queryFn: ({ signal }) =>
       fetchPatient(ehrServerUrl!, session!.patientId!, signal, session),
     enabled: !!launchPatientRef && !!ehrServerUrl
   });
 
-  /** The launched user, so the invitation can say who it is from without `senderName` being set. */
-  const { data: launchedUserName } = useQuery({
-    queryKey: ['fhirUser', session?.serverUrl, session?.fhirUser],
-    queryFn: ({ signal }) =>
-      fetchUserDisplay(session!.serverUrl, session!.fhirUser!, signal, session),
+  /**
+   * The launched user — their name for the invitation, their resource for population.
+   *
+   * One query for both. SDC's `user` launch context is a `Practitioner` rather than a reference, so
+   * pre-population needs the whole resource, and the session badge has always needed the name out of
+   * it; fetching twice for the two halves of one resource would be a round trip for nothing.
+   */
+  const { data: launchedUser } = useQuery({
+    queryKey: ['fhirUser-resource', session?.serverUrl, session?.fhirUser],
+    queryFn: ({ signal }) => fetchUser(session!.serverUrl, session!.fhirUser!, signal, session),
     enabled: !!session?.fhirUser
   });
+  const launchedUserName = personDisplay(launchedUser);
 
   /*
    * The patient picker navigates back here with the chosen patient in the query string. Applied via an
@@ -94,6 +105,19 @@ export default function RequestForm() {
       setSubjectDisplay((current) => (current === '' ? patientDisplay(launchPatient) : current));
     }
   }, [launchPatientRef, launchPatient, pickedSubject]);
+  /*
+   * Pre-population, and the three pieces of state it needs.
+   *
+   * `deselected` rather than `selected`, which is not a stylistic choice: the answers arrive
+   * asynchronously, and tracking what is *kept* would mean an effect that ticks everything each time
+   * the query resolves — racing the clinician's own unticking, and re-ticking a row they had just
+   * removed. Tracking what they took away needs no effect at all, and the default falls out of it:
+   * nothing removed means everything sent.
+   */
+  const [prePopulateOn, setPrePopulateOn] = useState(false);
+  const [deselected, setDeselected] = useState<ReadonlySet<string>>(new Set());
+  const [showPreview, setShowPreview] = useState(false);
+
   const [link, setLink] = useState<string | null>(null);
   const [correlationId, setCorrelationId] = useState<string | undefined>();
   /** Whether the request just created actually minted a reply slot, as opposed to config saying it could. */
@@ -117,6 +141,76 @@ export default function RequestForm() {
     enabled: !!questionnaireId
   });
 
+  const subjectReference = subject.trim() === '' ? undefined : subject.trim();
+
+  /*
+   * Populate needs a `Patient` **resource**, and the subject field holds a reference. The launch
+   * patient is not a substitute: this route deliberately lets a `PatientPicker` choice override the
+   * chart that was launched from, and populating the launched patient's record into a request
+   * addressed to somebody else is the worst bug available here.
+   */
+  const subjectPatientId = /^Patient\/([A-Za-z0-9\-.]{1,64})$/.exec(subjectReference ?? '')?.[1];
+  const { data: subjectPatient } = useQuery({
+    queryKey: ['patient', ehrServerUrl, subjectPatientId],
+    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subjectPatientId!, signal, session),
+    enabled: !!subjectPatientId && !!ehrServerUrl
+  });
+
+  const declaresPopulation = questionnaireDeclaresPopulation(questionnaire);
+  const prePopulateAvailable =
+    canPrePopulate(config, session, ehrServerUrl) && declaresPopulation && !!subjectPatient;
+
+  const {
+    data: populated,
+    isFetching: isPopulating,
+    error: populateError
+  } = useQuery({
+    queryKey: ['pre-populate', ehrServerUrl, questionnaireId, subjectPatientId],
+    queryFn: ({ signal }) =>
+      prePopulate({
+        questionnaire: questionnaire!,
+        ehrServerUrl: ehrServerUrl!,
+        session: session!,
+        patient: subjectPatient!,
+        ...(launchedUser?.resourceType === 'Practitioner' ? { user: launchedUser } : {}),
+        signal
+      }),
+    enabled: prePopulateOn && prePopulateAvailable && !!questionnaire
+  });
+
+  const rows = useMemo(
+    () => (populated?.response ? populatedRows(populated.response) : []),
+    [populated]
+  );
+
+  /*
+   * Selection is derived rather than stored, so a row that stops existing — the patient changed, the
+   * record moved — cannot leave a stale tick behind that silently keeps an answer in the payload.
+   */
+  const selected = useMemo(
+    () => new Set(rows.map((row) => row.path).filter((path) => !deselected.has(path))),
+    [rows, deselected]
+  );
+
+  const seed = useMemo(() => {
+    if (!populated?.response || selected.size === 0) {
+      return undefined;
+    }
+
+    return pruneAnswers(populated.response, selected);
+  }, [populated, selected]);
+
+  /*
+   * Changing who the request is for discards everything chosen about the previous patient. The query
+   * key already refetches, but the *ticks* are keyed by path and paths collide across patients — the
+   * same form produces the same `linkId`s — so without this a row unticked for one patient stays
+   * unticked for the next, and the reason would be invisible.
+   */
+  useEffect(() => {
+    setDeselected(new Set());
+    setShowPreview(false);
+  }, [subjectPatientId]);
+
   async function handleCreate() {
     if (!questionnaire) {
       return;
@@ -126,10 +220,12 @@ export default function RequestForm() {
     setIsCreating(true);
     try {
       const created = await createRequestLink(questionnaire, config, {
-        subjectReference: subject.trim() === '' ? undefined : subject.trim(),
+        subjectReference,
         subjectDisplay: subjectDisplay.trim() === '' ? undefined : subjectDisplay.trim(),
         session,
-        requesterDisplay: launchedUserName ?? undefined
+        requesterDisplay: launchedUserName ?? undefined,
+        // Only what is still ticked, and only while the toggle is on — an untoggled request is blank.
+        prePopulated: prePopulateOn ? seed : undefined
       });
 
       const id = taskCorrelationId(created.task);
@@ -149,7 +245,13 @@ export default function RequestForm() {
           link: created.link,
           subjectDisplay: subjectDisplay.trim() === '' ? undefined : subjectDisplay.trim(),
           // Kept so scanned answers naming a foreign patient can be reconciled in one click.
-          subjectReference: subject.trim() === '' ? undefined : subject.trim(),
+          subjectReference,
+          /*
+           * Recorded because the reviewer cannot tell otherwise. "The patient confirmed their
+           * medication list" and "the patient never touched the medication list" arrive as the same
+           * resource, and only the request knows which one it asked for.
+           */
+          prePopulated: prePopulateOn && seed !== undefined,
           reply: created.reply
             ? { url: created.reply.url, privateJwk: created.reply.privateJwk }
             : undefined,
@@ -273,16 +375,110 @@ export default function RequestForm() {
             </p>
           ) : null}
 
-          <Button onClick={handleCreate} disabled={isCreating || !canHost}>
+          {config.enablePrePopulate && declaresPopulation ? (
+            <div className="space-y-1.5 border-t border-slate-200 pt-4">
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={prePopulateOn}
+                  disabled={!prePopulateAvailable || !!link}
+                  onChange={(event) => setPrePopulateOn(event.target.checked)}
+                />
+                <span>
+                  <span className="inline-flex items-center gap-1.5 font-medium text-slate-900">
+                    <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                    Fill this in from the record first
+                  </span>
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    This form declares pre-population, so the record can answer part of it before it
+                    goes out. You check every answer before the link is made.
+                  </span>
+                </span>
+              </label>
+
+              {prePopulateAvailable ? null : (
+                <p className="pl-6 text-xs text-amber-800">
+                  {!session
+                    ? 'Sign in through your EHR to read the record.'
+                    : !ehrServerUrl
+                      ? 'No record server is configured to read from.'
+                      : !subjectPatientId
+                        ? 'Choose a patient above — a form can only be filled in from somebody’s record.'
+                        : 'Looking up that patient…'}
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          <Button onClick={handleCreate} disabled={isCreating || !canHost || isPopulating}>
             {isCreating ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (
               <Send className="h-4 w-4" aria-hidden />
             )}
-            {isCreating ? 'Encrypting and uploading…' : 'Create request link'}
+            {isCreating
+              ? 'Encrypting and uploading…'
+              : isPopulating
+                ? 'Reading the record…'
+                : seed
+                  ? 'Create request link, pre-filled'
+                  : 'Create request link'}
           </Button>
         </CardContent>
       </Card>
+
+      {prePopulateOn && populateError ? (
+        <Alert tone="error" title="The record could not be read">
+          <p>{populateError instanceof Error ? populateError.message : String(populateError)}</p>
+          <p className="mt-1">
+            Nothing has been pre-filled. The form can still be sent blank — untick the box above —
+            but do not read this as the record holding nothing, because it is the opposite: the
+            reads did not complete.
+          </p>
+        </Alert>
+      ) : null}
+
+      {prePopulateOn && populated && !populateError ? (
+        <>
+          <PrePopulatePanel
+            rows={rows}
+            issues={populated.issues}
+            selected={selected}
+            onSelectedChange={(next) => {
+              setDeselected(new Set(rows.map((row) => row.path).filter((path) => !next.has(path))));
+            }}
+            sourceLabel={ehrServerUrl ?? 'the record server'}
+            disabled={!!link}
+          />
+
+          {seed ? (
+            <div className="space-y-2">
+              <Button variant="outline" size="sm" onClick={() => setShowPreview((open) => !open)}>
+                <Eye className="h-4 w-4" aria-hidden />
+                {showPreview ? 'Hide the form' : 'Preview as the patient will see it'}
+              </Button>
+
+              {/*
+                * Mounted only while open. The renderer's questionnaire and response stores are
+                * module-level singletons — `FormRenderer` says so — so a second form on screen would
+                * fight this one for them. Read-only because the choice being made here is what to
+                * send, not what to answer; the answering is the patient's.
+                */}
+              {showPreview ? (
+                <div className="form-surface">
+                  <FormRenderer
+                    questionnaire={questionnaire}
+                    questionnaireResponse={seed}
+                    terminologyServerUrl={config.terminologyServerUrl}
+                    readOnly
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      ) : null}
 
       <Alert
         tone={serverReturn ? 'warning' : undefined}

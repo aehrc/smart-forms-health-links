@@ -281,6 +281,43 @@ export async function fetchUserDisplay(
   signal?: AbortSignal,
   session?: SmartSession | null
 ): Promise<string | null> {
+  return personDisplay(await fetchUser(ehrServerUrl, fhirUser, signal, session));
+}
+
+/**
+ * A person's name, or null when the resource carries nothing usable.
+ *
+ * Distinct from {@link patientDisplay}, which never returns null because a patient picker has to
+ * render *something* in a row. Here null is meaningful: a launched user with no readable name falls
+ * back to a different label rather than to `Unnamed patient`, which would be a lie about a
+ * practitioner.
+ */
+export function personDisplay(person: Practitioner | Patient | null | undefined): string | null {
+  const name = person?.name?.[0];
+  if (!name) {
+    return null;
+  }
+
+  const joined = [...(name.given ?? []), name.family].filter(Boolean).join(' ');
+  return name.text ?? (joined !== '' ? joined : null);
+}
+
+/**
+ * The launched user's own resource.
+ *
+ * Split out from {@link fetchUserDisplay}, which used to fetch exactly this and keep only the name.
+ * Pre-population needs the resource itself — SDC's `user` launch context is a `Practitioner`, not a
+ * reference — and fetching it twice for the badge and the populate would be one round trip too many.
+ *
+ * Shares the null-on-failure contract for the same reason: a session whose user cannot be named is
+ * still a working session, and populate treats `user` as optional exactly as SDC does.
+ */
+export async function fetchUser(
+  ehrServerUrl: string,
+  fhirUser: string,
+  signal?: AbortSignal,
+  session?: SmartSession | null
+): Promise<Practitioner | Patient | null> {
   /*
    * `fhirUser` may be absolute or relative. An absolute reference on another origin is used as given —
    * `authedFetch` will decline to authenticate it, which is the correct outcome — while a bare
@@ -291,14 +328,7 @@ export async function fetchUserDisplay(
     : `${trimTrailingSlash(ehrServerUrl)}/${fhirUser.replace(/^\/+/, '')}`;
 
   try {
-    const user = await fetchFhir<Practitioner | Patient>(url, signal, { session });
-    const name = user.name?.[0];
-    if (!name) {
-      return null;
-    }
-
-    const joined = [...(name.given ?? []), name.family].filter(Boolean).join(' ');
-    return name.text ?? (joined !== '' ? joined : null);
+    return await fetchFhir<Practitioner | Patient>(url, signal, { session });
   } catch {
     return null;
   }
