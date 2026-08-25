@@ -1,5 +1,7 @@
-import type { Bundle, Patient, QuestionnaireResponse, Task } from 'fhir/r4';
+import type { Bundle, Patient, Practitioner, QuestionnaireResponse, Task } from 'fhir/r4';
 import { SHL_REQUEST_TAG } from './submit';
+import type { SmartSession } from '@/auth/smartSession';
+import { authedFetch } from './authedFetch';
 
 /**
  * Reading the EHR — the server that holds patient data, as distinct from the forms catalogue.
@@ -40,15 +42,19 @@ function trimTrailingSlash(url: string): string {
 async function fetchFhir<T>(
   url: string,
   signal?: AbortSignal,
-  options: { revalidate?: boolean } = {}
+  options: { revalidate?: boolean; session?: SmartSession | null } = {}
 ): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      Accept: FHIR_JSON,
-      ...(options.revalidate ? { 'Cache-Control': 'no-cache' } : {})
+  const response = await authedFetch(
+    url,
+    {
+      headers: {
+        Accept: FHIR_JSON,
+        ...(options.revalidate ? { 'Cache-Control': 'no-cache' } : {})
+      },
+      signal
     },
-    signal
-  });
+    options.session ?? null
+  );
 
   if (!response.ok) {
     throw new Error(`FHIR request failed (${response.status} ${response.statusText}): ${url}`);
@@ -124,6 +130,8 @@ export interface SearchResponsesOptions {
   /** Restrict to one Questionnaire canonical. Version suffixes are stripped — see below. */
   questionnaire?: string;
   count?: number;
+  /** Authorises the read when the EHR is a launched server. Null reads anonymously, as before. */
+  session?: SmartSession | null;
 }
 
 /**
@@ -159,7 +167,8 @@ export async function searchQuestionnaireResponses(
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse?${params.toString()}`,
-    signal
+    signal,
+    { session: options.session }
   );
 
   return { resources: bundleResources<QuestionnaireResponse>(bundle), total: bundle.total };
@@ -168,11 +177,13 @@ export async function searchQuestionnaireResponses(
 export async function fetchQuestionnaireResponse(
   ehrServerUrl: string,
   id: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  session?: SmartSession | null
 ): Promise<QuestionnaireResponse> {
   return fetchFhir<QuestionnaireResponse>(
     `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse/${encodeURIComponent(id)}`,
-    signal
+    signal,
+    { session }
   );
 }
 
@@ -188,7 +199,8 @@ export async function searchPatients(
   ehrServerUrl: string,
   searchText = '',
   count = DEFAULT_PAGE_SIZE,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  session?: SmartSession | null
 ): Promise<Page<Patient>> {
   const params = new URLSearchParams({
     _count: String(count),
@@ -203,7 +215,7 @@ export async function searchPatients(
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient?${params.toString()}`,
     signal,
-    { revalidate: true }
+    { revalidate: true, session }
   );
 
   return { resources: bundleResources<Patient>(bundle), total: bundle.total };
@@ -212,11 +224,13 @@ export async function searchPatients(
 export async function fetchPatient(
   ehrServerUrl: string,
   id: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  session?: SmartSession | null
 ): Promise<Patient> {
   return fetchFhir<Patient>(
     `${trimTrailingSlash(ehrServerUrl)}/Patient/${encodeURIComponent(id)}`,
-    signal
+    signal,
+    { session }
   );
 }
 
@@ -231,7 +245,8 @@ export async function fetchPatient(
 export async function searchPublishedRequests(
   ehrServerUrl: string,
   count = DEFAULT_PAGE_SIZE,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  session?: SmartSession | null
 ): Promise<Page<Task>> {
   const params = new URLSearchParams({
     _tag: `${SHL_REQUEST_TAG.system}|${SHL_REQUEST_TAG.code}`,
@@ -242,8 +257,49 @@ export async function searchPublishedRequests(
 
   const bundle = await fetchFhir<Bundle>(
     `${trimTrailingSlash(ehrServerUrl)}/Task?${params.toString()}`,
-    signal
+    signal,
+    { session }
   );
 
   return { resources: bundleResources<Task>(bundle), total: bundle.total };
+}
+
+/**
+ * Human-readable name for the launched user, from the `fhirUser` reference in the ID token.
+ *
+ * `fhirUser` is a reference, not a name — `Practitioner/123` is what the token carries, and showing
+ * that to a clinician is showing them a database key. Fetching the resource is the only way to get a
+ * name, so this is a read, not a decode.
+ *
+ * Returns null rather than throwing when the fetch fails. A session whose user cannot be named is
+ * still a working session: the token authorises, the reference is still recorded on `Provenance`, and
+ * the only loss is a nicer label in the header. Failing the whole launch for that would be absurd.
+ */
+export async function fetchUserDisplay(
+  ehrServerUrl: string,
+  fhirUser: string,
+  signal?: AbortSignal,
+  session?: SmartSession | null
+): Promise<string | null> {
+  /*
+   * `fhirUser` may be absolute or relative. An absolute reference on another origin is used as given —
+   * `authedFetch` will decline to authenticate it, which is the correct outcome — while a bare
+   * `Practitioner/123` is resolved against the launched server.
+   */
+  const url = /^https?:\/\//.test(fhirUser)
+    ? fhirUser
+    : `${trimTrailingSlash(ehrServerUrl)}/${fhirUser.replace(/^\/+/, '')}`;
+
+  try {
+    const user = await fetchFhir<Practitioner | Patient>(url, signal, { session });
+    const name = user.name?.[0];
+    if (!name) {
+      return null;
+    }
+
+    const joined = [...(name.given ?? []), name.family].filter(Boolean).join(' ');
+    return name.text ?? (joined !== '' ? joined : null);
+  } catch {
+    return null;
+  }
 }

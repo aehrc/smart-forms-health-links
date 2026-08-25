@@ -1,4 +1,6 @@
 import type { Meta, Patient, Provenance, Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
+import type { SmartSession } from '@/auth/smartSession';
+import { authedFetch } from './authedFetch';
 import { buildRequestBundle } from '@/link/exchange';
 import type { Amendment } from './amend';
 import { buildPatient, type NewPatientDetails } from './newPatient';
@@ -43,6 +45,15 @@ export function declaredEndpoints(questionnaire: Questionnaire | undefined): str
 export interface ResolveDestinationsOptions {
   questionnaire?: Questionnaire;
   responseServerUrl?: string | null;
+  /**
+   * The launched server, when there is a session. Outranks {@link responseServerUrl}.
+   *
+   * A launch is a statement about *which EHR this clinician is working in*, made by the EHR itself and
+   * backed by a token. Configuration is a statement made once by whoever deployed the app. When the
+   * two disagree the launch is the one that knows, so it wins — but it still loses to a Questionnaire
+   * that names its own endpoint, because that is the form's author saying where its answers belong.
+   */
+  session?: SmartSession | null;
 }
 
 /**
@@ -62,13 +73,17 @@ export function resolveDestinations(options: ResolveDestinationsOptions): string
     return declared;
   }
 
+  if (options.session) {
+    return [options.session.serverUrl];
+  }
+
   return options.responseServerUrl ? [options.responseServerUrl] : [];
 }
 
 export const NO_DESTINATION_MESSAGE =
-  'No destination is configured for completed responses. Set `responseServerUrl` in config.json, ' +
-  'or give the Questionnaire an sdc-questionnaire-endpoint extension. It deliberately does not ' +
-  'default to the forms server, which is a read-only catalogue.';
+  'No destination is configured for completed responses. Sign in with SMART App Launch, set ' +
+  '`responseServerUrl` in config.json, or give the Questionnaire an sdc-questionnaire-endpoint ' +
+  'extension. It deliberately does not default to the forms server, which is a read-only catalogue.';
 
 export interface SubmitResult {
   serverUrl: string;
@@ -156,13 +171,18 @@ async function describeFailure(response: Response): Promise<string> {
  */
 async function createResource(
   serverUrl: string,
-  resource: QuestionnaireResponse | Task | Provenance | Patient
+  resource: QuestionnaireResponse | Task | Provenance | Patient,
+  session?: SmartSession | null
 ): Promise<string> {
-  const response = await fetch(`${trimTrailingSlash(serverUrl)}/${resource.resourceType}`, {
-    method: 'POST',
-    headers: { 'Content-Type': FHIR_JSON, Accept: FHIR_JSON },
-    body: JSON.stringify(resource)
-  });
+  const response = await authedFetch(
+    `${trimTrailingSlash(serverUrl)}/${resource.resourceType}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': FHIR_JSON, Accept: FHIR_JSON },
+      body: JSON.stringify(resource)
+    },
+    session ?? null
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -186,6 +206,8 @@ export interface SubmitOptions {
   provenance?: Provenance;
   questionnaire?: Questionnaire;
   responseServerUrl?: string | null;
+  /** Authorises the writes when the destination is the launched server. Null writes anonymously. */
+  session?: SmartSession | null;
 }
 
 /**
@@ -210,7 +232,11 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
   return Promise.all(
     destinations.map(async (serverUrl): Promise<SubmitResult> => {
       try {
-        const responseId = await createResource(serverUrl, asNewResource(options.response));
+        const responseId = await createResource(
+          serverUrl,
+          asNewResource(options.response),
+          options.session
+        );
         const responseReference = `QuestionnaireResponse/${responseId}`;
 
         let taskId: string | undefined;
@@ -225,7 +251,7 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
                 }
               ]
             });
-            taskId = await createResource(serverUrl, task);
+            taskId = await createResource(serverUrl, task, options.session);
           } catch (cause) {
             console.warn(`Saved the response but could not save its Task to ${serverUrl}`, cause);
           }
@@ -240,7 +266,7 @@ export async function submitResponse(options: SubmitOptions): Promise<SubmitResu
               // at what was actually created.
               target: [{ reference: responseReference }]
             });
-            provenanceId = await createResource(serverUrl, provenance);
+            provenanceId = await createResource(serverUrl, provenance, options.session);
           } catch (cause) {
             console.warn(
               `Saved the response but could not save its Provenance to ${serverUrl}`,
@@ -272,6 +298,9 @@ export interface SubmitAmendmentOptions {
    * assigned its own id — hence a list of pairs rather than a destination list.
    */
   saved: SavedResponse[];
+
+  /** Authorises the writes when the destination is the launched server. Null writes anonymously. */
+  session?: SmartSession | null;
   /** Builds the amendment against one server's id for the original. */
   amend: (originalResponseId: string) => Amendment;
 }
@@ -301,7 +330,11 @@ export async function submitAmendment(options: SubmitAmendmentOptions): Promise<
     options.saved.map(async ({ serverUrl, responseId }): Promise<SubmitResult> => {
       try {
         const { response, provenance } = options.amend(responseId);
-        const amendedId = await createResource(serverUrl, asNewResource(response));
+        const amendedId = await createResource(
+          serverUrl,
+          asNewResource(response),
+          options.session
+        );
 
         try {
           const provenanceId = await createResource(
@@ -310,7 +343,8 @@ export async function submitAmendment(options: SubmitAmendmentOptions): Promise<
               ...provenance,
               // Built against a placeholder, because the id did not exist until the line above.
               target: [{ reference: `QuestionnaireResponse/${amendedId}` }]
-            })
+            }),
+            options.session
           );
           return { serverUrl, responseId: amendedId, provenanceId };
         } catch (cause) {
@@ -355,14 +389,15 @@ export interface CreatedPatient {
  */
 export async function createPatient(
   serverUrl: string,
-  details: NewPatientDetails
+  details: NewPatientDetails,
+  session?: SmartSession | null
 ): Promise<CreatedPatient> {
   if (details.family.trim() === '') {
     throw new Error('A patient cannot be created without a family name.');
   }
 
   const patient = buildPatient(details);
-  const id = await createResource(serverUrl, patient);
+  const id = await createResource(serverUrl, patient, session);
 
   return { reference: `Patient/${id}`, patient: { ...patient, id } };
 }
@@ -378,16 +413,22 @@ export async function createPatient(
  * `true` on any non-404: a server that does not enforce integrity, or that refuses the probe, is not
  * evidence of a missing subject, and blocking the write on that would be worse than attempting it.
  */
-export async function referenceResolves(serverUrl: string, reference: string): Promise<boolean> {
+export async function referenceResolves(
+  serverUrl: string,
+  reference: string,
+  session?: SmartSession | null
+): Promise<boolean> {
   if (/^https?:\/\//i.test(reference) || !/^[A-Za-z]+\/[^/]+$/.test(reference)) {
     // Absolute or contained/logical references are not ours to resolve against this server.
     return true;
   }
 
   try {
-    const response = await fetch(`${trimTrailingSlash(serverUrl)}/${reference}`, {
-      headers: { Accept: FHIR_JSON }
-    });
+    const response = await authedFetch(
+      `${trimTrailingSlash(serverUrl)}/${reference}`,
+      { headers: { Accept: FHIR_JSON } },
+      session ?? null
+    );
     return response.status !== 404;
   } catch {
     return true;
@@ -462,7 +503,12 @@ export const SHL_REQUEST_TAG = {
 export async function publishRequestTask(
   serverUrl: string,
   questionnaire: Questionnaire,
-  options: { subjectReference?: string; subjectDisplay?: string; requestId?: string } = {}
+  options: {
+    subjectReference?: string;
+    subjectDisplay?: string;
+    requestId?: string;
+    session?: SmartSession | null;
+  } = {}
 ): Promise<string> {
   const { task } = buildRequestBundle(questionnaire, {
     subjectReference: options.subjectReference,
@@ -470,7 +516,7 @@ export async function publishRequestTask(
     requestId: options.requestId
   });
 
-  const id = await createResource(serverUrl, asPublishedTask(task));
+  const id = await createResource(serverUrl, asPublishedTask(task), options.session);
   return `${trimTrailingSlash(serverUrl)}/Task/${id}`;
 }
 

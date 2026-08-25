@@ -1,10 +1,16 @@
 import { useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, X } from 'lucide-react';
+import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, UserRound, X } from 'lucide-react';
 import type { QuestionnaireResponse } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
-import { fetchPatient, patientDisplay, searchQuestionnaireResponses } from '@/fhir/ehrServer';
+import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
+import {
+  fetchPatient,
+  fetchUserDisplay,
+  patientDisplay,
+  searchQuestionnaireResponses
+} from '@/fhir/ehrServer';
 import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
 import FormRenderer from '@/components/FormRenderer';
 import RawAnswers from '@/components/RawAnswers';
@@ -28,16 +34,86 @@ function isPatientAsserted(response: QuestionnaireResponse): boolean {
   return (response.meta?.security ?? []).some((coding) => coding.code === 'PATAST');
 }
 
-function responseTitle(response: QuestionnaireResponse): string {
+/** Where a sender may put the form's human title alongside the canonical, as a primitive extension. */
+const QUESTIONNAIRE_DISPLAY_EXTENSION = 'http://hl7.org/fhir/StructureDefinition/display';
+
+/**
+ * The form's title as the *sender* gave it, from the `display` extension on `_questionnaire`.
+ *
+ * This is the one source that needs no network and cannot go stale differently from the response it
+ * travels with. Worth preferring over anything resolved later: it is what the app that wrote the
+ * answers believed the form was called, which is the label a reviewer should see.
+ */
+function declaredQuestionnaireDisplay(response: QuestionnaireResponse): string | undefined {
+  return response._questionnaire?.extension?.find(
+    (extension) => extension.url === QUESTIONNAIRE_DISPLAY_EXTENSION
+  )?.valueString;
+}
+
+/** The last path segment of a canonical, version suffix removed. */
+function canonicalSlug(canonical: string): string {
+  const [url] = canonical.split('|');
+  return url.split('/').filter(Boolean).pop() ?? canonical;
+}
+
+/**
+ * What to call a stored response, best source first.
+ *
+ * The slug alone is a poor label and sometimes a meaningless one. A canonical that ends in a
+ * server-assigned id renders as a bare number — `…/Questionnaire/715` becomes "715" — which tells a
+ * reviewer nothing about what they are looking at, and on the default server that is the single most
+ * common form. So:
+ *
+ *  1. `_questionnaire`'s display extension, when the sender supplied one.
+ *  2. The real `Questionnaire.title`, resolved from the forms server.
+ *  3. The slug, which at least distinguishes rows while the lookup is in flight or has failed.
+ */
+function responseTitle(response: QuestionnaireResponse, titles: Map<string, string>): string {
+  const declared = declaredQuestionnaireDisplay(response);
+  if (declared) {
+    return declared;
+  }
+
   const canonical = response.questionnaire;
   if (!canonical) {
     return 'Response to an unnamed form';
   }
 
-  // The last meaningful path segment is a better label than the whole canonical, which is often long
-  // and identical across many rows.
-  const [url] = canonical.split('|');
-  return url.split('/').filter(Boolean).pop() ?? canonical;
+  return titles.get(canonical) ?? canonicalSlug(canonical);
+}
+
+/**
+ * Who recorded a response, as a name if one can be had and a reference otherwise.
+ *
+ * Worth surfacing in the list rather than only on the detail view, because it is what distinguishes a
+ * patient's own answers from a clinician's revision of them at a glance. An amendment writes the
+ * amending user here — see `src/fhir/amend.ts` — so after a launch this is a `Practitioner` the
+ * authorisation server vouched for rather than a name somebody typed.
+ *
+ * Returns null when the server holds no author at all, which callers should render as an explicit
+ * absence: an accepted response that nobody is recorded as having authored is a real gap, not a
+ * cosmetic one, and hiding it would make the record look more complete than it is.
+ */
+function authorLabel(
+  response: QuestionnaireResponse,
+  names: Map<string, string>
+): { text: string; resolved: boolean } | null {
+  const author = response.author;
+  if (!author) {
+    return null;
+  }
+
+  if (author.display) {
+    return { text: author.display, resolved: true };
+  }
+
+  const reference = author.reference;
+  if (!reference) {
+    return null;
+  }
+
+  const name = names.get(reference);
+  return name ? { text: name, resolved: true } : { text: reference, resolved: false };
 }
 
 export default function ResponseList() {
@@ -46,22 +122,105 @@ export default function ResponseList() {
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
 
   const subject = params.get('subject') ?? undefined;
-  const ehrServerUrl = config.responseServerUrl;
+  const ehrServerUrl = useEhrServerUrl();
+  const session = useSmartSession();
 
   const {
     data: page,
     isPending,
     error
   } = useQuery({
-    queryKey: ['ehr-responses', ehrServerUrl, subject],
-    queryFn: ({ signal }) => searchQuestionnaireResponses(ehrServerUrl!, { subject }, signal),
+    // `fhirUser` in the key so signing in or out refetches — see PatientList.
+    queryKey: ['ehr-responses', ehrServerUrl, session?.fhirUser ?? null, subject],
+    queryFn: ({ signal }) =>
+      searchQuestionnaireResponses(ehrServerUrl!, { subject, session }, signal),
     enabled: ehrServerUrl !== null
+  });
+
+  /*
+   * Names for authors the server named only by reference.
+   *
+   * Deduplicated, because a list of fifty responses is usually the work of a handful of people and
+   * fetching `Practitioner/123` once per row would be forty-odd redundant reads. Resolved in one query
+   * keyed on the distinct set, so it refetches when the page changes and not otherwise.
+   *
+   * `fetchUserDisplay` fails soft per reference, so a Practitioner this user cannot read costs that one
+   * name and not the list.
+   */
+  const authorRefs = [
+    ...new Set(
+      (page?.resources ?? [])
+        .map((response) => (response.author?.display ? undefined : response.author?.reference))
+        .filter((reference): reference is string => reference !== undefined)
+    )
+  ].sort();
+
+  const { data: authorNames } = useQuery({
+    queryKey: ['response-authors', ehrServerUrl, session?.fhirUser ?? null, authorRefs.join('|')],
+    queryFn: async ({ signal }) => {
+      const resolved = await Promise.all(
+        authorRefs.map(async (reference) => [
+          reference,
+          await fetchUserDisplay(ehrServerUrl!, reference, signal, session)
+        ] as const)
+      );
+
+      return new Map(
+        resolved.filter((pair): pair is [string, string] => pair[1] !== null)
+      );
+    },
+    enabled: ehrServerUrl !== null && authorRefs.length > 0
+  });
+
+  /*
+   * Real titles for the forms these responses answer.
+   *
+   * Only for rows whose sender supplied no display extension, and deduplicated by canonical — a page of
+   * responses is usually a handful of distinct forms, and resolving per row would be mostly repeat
+   * work. Read from the **forms** server, not the EHR: a canonical names a definition in a catalogue,
+   * and that catalogue is public and unauthenticated by design.
+   *
+   * A canonical that will not resolve is normal rather than exceptional — the response may answer a
+   * form this deployment has never heard of — so each lookup fails soft and the row keeps its slug.
+   */
+  const canonicalsNeedingTitles = [
+    ...new Set(
+      (page?.resources ?? [])
+        .filter((response) => !declaredQuestionnaireDisplay(response))
+        .map((response) => response.questionnaire)
+        .filter((canonical): canonical is string => canonical !== undefined)
+    )
+  ].sort();
+
+  const { data: questionnaireTitles } = useQuery({
+    queryKey: ['response-form-titles', config.formsServerUrl, canonicalsNeedingTitles.join('|')],
+    queryFn: async ({ signal }) => {
+      const resolved = await Promise.all(
+        canonicalsNeedingTitles.map(async (canonical) => {
+          try {
+            const questionnaire = await fetchQuestionnaireByCanonical(
+              config.formsServerUrl,
+              canonical,
+              signal
+            );
+            return [canonical, questionnaire.title ?? questionnaire.name] as const;
+          } catch {
+            return [canonical, undefined] as const;
+          }
+        })
+      );
+
+      return new Map(
+        resolved.filter((pair): pair is [string, string] => pair[1] !== undefined)
+      );
+    },
+    enabled: canonicalsNeedingTitles.length > 0
   });
 
   // Only to name the filter chip; the list itself is already filtered server-side.
   const { data: filterPatient } = useQuery({
-    queryKey: ['ehr-patient', ehrServerUrl, subject],
-    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subject!.split('/')[1], signal),
+    queryKey: ['ehr-patient', ehrServerUrl, session?.fhirUser ?? null, subject],
+    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subject!.split('/')[1], signal, session),
     enabled: ehrServerUrl !== null && subject !== undefined && subject.startsWith('Patient/')
   });
 
@@ -147,7 +306,9 @@ export default function ResponseList() {
               <CardContent className="flex flex-wrap items-start gap-3 p-4">
                 <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-slate-900">{responseTitle(response)}</p>
+                  <p className="font-medium text-slate-900">
+                    {responseTitle(response, questionnaireTitles ?? new Map())}
+                  </p>
                   <p className="truncate font-mono text-xs text-slate-500">
                     {response.questionnaire ?? 'no questionnaire canonical'}
                   </p>
@@ -160,6 +321,23 @@ export default function ResponseList() {
                         ? ` · stored ${new Date(response.meta.lastUpdated).toLocaleString()}`
                         : null}
                   </p>
+                  {(() => {
+                    const author = authorLabel(response, authorNames ?? new Map());
+                    return (
+                      <p className="mt-0.5 flex items-center gap-1 text-xs">
+                        <UserRound className="h-3 w-3 shrink-0 text-slate-400" aria-hidden />
+                        {author ? (
+                          <span className={author.resolved ? 'text-slate-600' : 'font-mono text-slate-500'}>
+                            Recorded by {author.text}
+                          </span>
+                        ) : (
+                          /* Stated rather than omitted: an accepted response records who answered but
+                             nobody as having recorded it, and that absence is worth seeing. */
+                          <span className="text-slate-400 italic">No author recorded</span>
+                        )}
+                      </p>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex shrink-0 items-center gap-2 self-center">
@@ -223,7 +401,15 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
       <CardHeader>
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">{responseTitle(response)}</CardTitle>
+            <CardTitle className="text-base">
+              {/* The viewer resolves the Questionnaire anyway, so its real title is already to hand. */}
+              {declaredQuestionnaireDisplay(response) ??
+                questionnaire?.title ??
+                questionnaire?.name ??
+                (response.questionnaire
+                  ? canonicalSlug(response.questionnaire)
+                  : 'Response to an unnamed form')}
+            </CardTitle>
             <CardDescription>
               QuestionnaireResponse/{response.id} · read-only. Already stored on the server; there is
               nothing to accept here.

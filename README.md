@@ -22,24 +22,50 @@ cannot currently be opened by third-party SHL wallets.
 
 ## Contents
 
-- [What this demonstrates](#what-this-demonstrates)
-- [Quick start](#quick-start) — install, then walk the round trip end to end
-- [What it does](#what-it-does) — the routes
-- [The round trip](#the-round-trip) — ten steps, with measured sizes
-- [Four ways to return answers](#four-ways-to-return-answers) — and why A is the default
-- [Amendments are new resources](#amendments-are-new-resources) — why the review screen is read-only
-- [Creating a patient at review time](#creating-a-patient-at-review-time) — the duplicate problem
-- [How links work](#how-links-work)
-- [Two transports, one interface](#two-transports-one-interface)
-- [Three servers, three jobs](#three-servers-three-jobs)
-- [Configuration](#configuration)
-- [Deploying](#deploying)
-- [Repo layout](#repo-layout)
-- [Known limitations](#known-limitations)
-- [Checks](#checks)
-- [Notes](#notes) — the gotchas worth knowing before changing anything
-- [Provenance](#provenance)
-- [Licence](#licence)
+- [Smart Forms Health Links](#smart-forms-health-links)
+  - [Contents](#contents)
+  - [What this demonstrates](#what-this-demonstrates)
+  - [Quick start](#quick-start)
+    - [Prerequisites](#prerequisites)
+    - [Walk the round trip](#walk-the-round-trip)
+      - [One machine, two windows (nothing to configure)](#one-machine-two-windows-nothing-to-configure)
+      - [Two devices, with the camera](#two-devices-with-the-camera)
+    - [What the demo writes, and where](#what-the-demo-writes-and-where)
+  - [What it does](#what-it-does)
+  - [The round trip](#the-round-trip)
+  - [Four ways to return answers](#four-ways-to-return-answers)
+    - [Reading a link this app did not write](#reading-a-link-this-app-did-not-write)
+    - [Why the reply is encrypted to a public key](#why-the-reply-is-encrypted-to-a-public-key)
+    - [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel)
+  - [Amendments are new resources](#amendments-are-new-resources)
+  - [Creating a patient at review time](#creating-a-patient-at-review-time)
+    - [The caching proxy, which is not a footnote](#the-caching-proxy-which-is-not-a-footnote)
+  - [How links work](#how-links-work)
+    - [Two consequences of using the fragment](#two-consequences-of-using-the-fragment)
+  - [Two transports, one interface](#two-transports-one-interface)
+    - [`sfhl:/` is legacy and decode-only](#sfhl-is-legacy-and-decode-only)
+  - [Three servers, three jobs](#three-servers-three-jobs)
+    - [Sent requests come from two places at once](#sent-requests-come-from-two-places-at-once)
+  - [Configuration](#configuration)
+    - [Pointing it at your own servers](#pointing-it-at-your-own-servers)
+    - [What happens when config is missing](#what-happens-when-config-is-missing)
+    - [Read and write are separate servers, with no fallback](#read-and-write-are-separate-servers-with-no-fallback)
+  - [SMART App Launch](#smart-app-launch)
+    - [What it buys](#what-it-buys)
+    - [Setting it up](#setting-it-up)
+    - [Both launch patterns, one route](#both-launch-patterns-one-route)
+    - [The boundary, in one rule](#the-boundary-in-one-rule)
+  - [Deploying](#deploying)
+    - [Container and Kubernetes](#container-and-kubernetes)
+  - [Repo layout](#repo-layout)
+  - [Known limitations](#known-limitations)
+    - [⚠️ The links we mint cannot be opened by other SHL apps](#️-the-links-we-mint-cannot-be-opened-by-other-shl-apps)
+    - [Other limitations, by design or otherwise](#other-limitations-by-design-or-otherwise)
+  - [Checks](#checks)
+    - [`check:roundtrip` needs a sibling smart-forms checkout](#checkroundtrip-needs-a-sibling-smart-forms-checkout)
+  - [Notes](#notes)
+  - [Provenance](#provenance)
+  - [Licence](#licence)
 
 ## What this demonstrates
 
@@ -249,7 +275,7 @@ only what this app *mints*. A request from a third party that offers a reply des
 answerable here regardless, because refusing to honour someone else's return channel would strand
 their answers rather than protect anyone.
 
-**D is C's answer for a filler that cannot do crypto**, and is off by default
+**D is C's answer for a filler that cannot do crypto**, and is on in the shipped config
 (`enableOneShotWrite`). The request pre-allocates an empty `QuestionnaireResponse` on the blob server
 and carries its address, the version it is at, and a token. The filler `PUT`s the answers there with
 `If-Match`; the requester polls the slot, reviews, and only then writes to the record. Turn it on
@@ -535,9 +561,16 @@ mistake this app is shaped to avoid.
 
 The EHR is what smart-forms calls the *patient data FHIR API* and what `sdc-populate` takes as its
 `sourceServerUrl`. Its sibling `proxy.smartforms.io/v/r4/fhir` is the same data behind a
-[smart-launcher-v2](https://github.com/aehrc/smart-launcher-v2) facade and is the right base for an app
-doing SMART App Launch — which this is not. The plain base is also the one that reports usable
+[smart-launcher-v2](https://github.com/aehrc/smart-launcher-v2) facade, and that is the base
+`smartIssuerUrl` wants — the plain one answers `.well-known/smart-configuration` with
+`HAPI-0302: Unknown resource type '.well-known'`. The plain base is also the one that reports usable
 `Location` headers.
+
+**A launch adds a fourth possibility for the EHR, not a fourth server.** When a session exists, the
+launched server replaces `responseServerUrl` as the EHR — it is the one backed by a token. The forms
+server and the blob host do not move, and must not: the blob host is fetched by a filler holding no
+credentials, and pointing it at an authenticated server would mint links only their author can open.
+See [SMART App Launch](#smart-app-launch).
 
 Three routes read it:
 
@@ -600,10 +633,14 @@ This is what ships, and it is a working demo as-is:
   "senderName": null,
   "enableServerReturn": false,
   "enableEncryptedReply": false,
-  "enableOneShotWrite": false,
+  "enableOneShotWrite": true,
   "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
-  "publishRequestTasks": true
+  "publishRequestTasks": true,
+  "enableSmartLaunch": true,
+  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
+  "smartClientId": "smart-forms-health-links",
+  "smartScopes": null
 }
 ```
 
@@ -624,10 +661,14 @@ rather than a demo.
 | `senderName` | `Task.requester.display`. An invitation that cannot say who sent it is one a patient has reason to decline |
 | `enableServerReturn` | offer channel B. **Off by default** — it accepts answers without review |
 | `enableEncryptedReply` | offer channel C, the encrypted reply slot. **Off by default** — answers come back as a link the filler mints. Turn it on when a filler may have no way to show you a QR code. Requires `blobServerUrl` |
-| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **Off by default.** Turn it on for fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
+| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **On in the shipped config**, off in the fallback. For fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
 | `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
 | `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
 | `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
+| `enableSmartLaunch` | offer SMART App Launch. **On in the shipped config**, off in the fallback. The app gains `/launch` and `/callback`, EHR calls carry a bearer token, and `fhirUser` supplies a real identity. A launch stays **optional** — the app works fully without one. See [SMART App Launch](#smart-app-launch) |
+| `smartIssuerUrl` | the SMART-enabled FHIR base to launch against, **and** the allowlist for the `iss` a launch arrives with. Not the same base as `responseServerUrl` — see below |
+| `smartClientId` | OAuth client id. A **public** client: a static site holds no secret, so PKCE does the binding |
+| `smartScopes` | space-separated scope override. `null` takes the default. Worth setting only to narrow |
 
 Fields added after the first release are optional in `config.json`: a config written before they existed
 takes their defaults rather than being rejected wholesale, which would discard the servers it *does*
@@ -675,6 +716,79 @@ This app has no launch context and therefore no such server, so the write target
 not fall back to `formsServerUrl`**. Setting them to the forms server is asserted against, because
 quietly putting patient data and encrypted blobs into a shared reference library is the specific
 mistake worth preventing rather than documenting.
+
+## SMART App Launch
+
+**On in the shipped config.** A clinician can launch this app from an EHR — or sign in to it
+directly — and the requester's half of the app gains a session. The filler's half is untouched, and a
+launch is never *required*: with no session the app behaves exactly as it did before launches existed.
+
+It is off in `FALLBACK_CONFIG`, which is what a deployment gets when `config.json` fails to load. That
+split runs through every capability here and is deliberate — what ships is a chosen sandbox, whereas a
+config that failed to load must assume nothing.
+
+Full detail, including the trust boundary and the scope rationale, is in
+[`docs/smart-app-launch.md`](docs/smart-app-launch.md).
+
+### What it buys
+
+| | Without a launch | With a launch |
+| --- | --- | --- |
+| EHR base URL | `responseServerUrl` from config | The launched server |
+| EHR requests | anonymous | `Authorization: Bearer …` |
+| Who amended a response | a name typed into a box | `Practitioner/…`, vouched for by the authorisation server |
+| Who a request is from | `senderName` from config | the launched user |
+| Patient on a new request | searched for | already filled in, from the chart |
+
+The third row is the one worth having. Before a launch, `Provenance.agent.who` carried only a
+`display` string somebody typed; it recorded a claim rather than an attribution. A session adds
+`who.reference`, and that is the difference between the two.
+
+### Setting it up
+
+```json
+{
+  "enableSmartLaunch": true,
+  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
+  "smartClientId": "smart-forms-health-links"
+}
+```
+
+Register `https://your-host/callback` as the redirect URI and `https://your-host/launch` as the app's
+launch URL. Then check the issuer before trying a real launch:
+
+```bash
+npm run check:smart
+```
+
+**`smartIssuerUrl` is not `responseServerUrl`.** It has to be a base that actually serves
+`.well-known/smart-configuration`, and a plain FHIR server does not — it parses `.well-known` as a
+resource type and returns a 200-shaped `OperationOutcome` that reads like success. `check:smart` calls
+that case out by name, because it is the failure everyone hits first.
+
+**Demonstrating a launch needs `launch.smarthealthit.org`.** The CSIRO sandbox serves the discovery
+document and the auth endpoints but not the launcher's login pages, and a *standalone* launch against
+smart-launcher-v2 needs a `/v/r4/sim/{options}/fhir` issuer rather than a plain one — an EHR launch
+works against either. Both quirks, and why, are in
+[`docs/smart-app-launch.md`](docs/smart-app-launch.md#standalone-launch-against-smart-launcher-v2-needs-a-sim-issuer).
+
+### Both launch patterns, one route
+
+`/launch?iss=…&launch=…` is an EHR launch; `/launch` with no parameters is a standalone one, and the
+configured issuer stands in for the missing `iss`. `iss` is checked against `smartIssuerUrl` rather
+than followed — it arrives in a query string a stranger can write. PKCE is `required` rather than the
+library default of `ifSupported`, since a public client has no secret and PKCE is the only thing
+binding the authorisation code to this app. Tokens live in `sessionStorage`, per-tab, and never in
+`localStorage`, which holds reply keys with the opposite lifetime.
+
+### The boundary, in one rule
+
+A token is attached only when the request's **origin** matches the session's own server. Not "is
+there a session" — `resolveDestinations` reads write targets from a downloaded Questionnaire's
+`sdc-questionnaire-endpoint`, and those outrank config, so a form fetched from a public catalogue can
+name any host on the internet as where its answers go. `src/fhir/authedFetch.ts` is the only place a
+token leaves the browser, and `src/fhir/formsServer.ts`, `src/fhir/blobStore.ts` and
+`src/link/writeSlot.ts` never call it.
 
 ## Deploying
 
@@ -744,7 +858,12 @@ GitHub's OIDC provider, so there are no stored credentials.
 src/
   App.tsx              routes, and the root-fragment → /view forward
   routes/              one file per route: FormList, RequestForm, Requests,
-                       ResponseList, PatientList, FillForm, ViewLink, Scan
+                       ResponseList, PatientList, FillForm, ViewLink, Scan,
+                       Launch, Callback
+  auth/
+    smartSession.ts    the OAuth flow — the only module that imports fhirclient
+    SmartContext.tsx   the session as React context, and the EHR base resolver
+    routes.ts          /launch and /callback, shared so redirect_uri cannot drift
   components/
     FormRenderer.tsx   the smart-forms-renderer composition
     FillFromRequest.tsx  the filler's side: render, then return answers
@@ -752,6 +871,7 @@ src/
     PatientPicker.tsx  inline patient search, at both ends of the round trip
     CreatePatientForm.tsx  registering somebody the destination server does not hold
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
+    SessionBadge.tsx   who is signed in, and to which server
     ShareLinkPanel.tsx QR + copyable link
   link/
     codec.ts           the LinkCodec interface and codec selection
@@ -770,6 +890,7 @@ src/
     formsServer.ts     Questionnaire search and resolve-by-canonical
     ehrServer.ts       patients, responses, published request Tasks
     blobStore.ts       Binary create/read, and the Location-header workaround
+    authedFetch.ts     the only place a SMART token leaves the browser
     submit.ts          the write: endpoint resolution, meta handling, Provenance
     amend.ts           amendments as a new resource joined by a revision Provenance
     newPatient.ts      building a Patient from what a reviewer typed
@@ -785,10 +906,12 @@ scripts/
   e2eLink.ts           npm run check:e2e       — the legacy decode path
   e2eAmend.ts          npm run check:amend     — live, writes and cleans up
   e2ePatient.ts        npm run check:patient   — live, writes and cleans up
+  checkSmartConfig.ts  npm run check:smart     — live, read-only discovery probe
 docs/
   shl-form-reply-channel.md   wire format for channels B, C and D
   response-links.md           what counts as an inbound response link
   u-flag-hosting.md           the third-party blocker, in full
+  smart-app-launch.md         the launch flow, and the boundary it must not cross
 deploy/
   nginx.conf                  SPA rewrite, and the cache policy that goes with it
   helm/smart-forms-health-links/  the chart, and its own README
@@ -824,9 +947,13 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 - **Links this app mints carry no passcode and cannot be revoked.** `U` cannot be combined with `P`,
   and a hosted `Binary` has no per-recipient variation. Reading a passcode-protected manifest link
   works fine; minting one does not.
-- **No SMART App Launch.** There is no launch context, no OAuth, and therefore no user identity —
-  which is why the write target has to be configured rather than discovered. `proxy.smartforms.io/v/r4/fhir`
-  is the base to start from if this ever needs it.
+- **SMART App Launch is a public client, and optional.** A static site holds no secret, so this is a
+  public client with PKCE rather than a confidential one; there is no backend to keep a secret in. A
+  launch is never *required* — every requester surface still works unauthenticated, because the
+  filler's half of the app has no credentials by construction and removing that would remove the
+  point of the design. A confidential variant with a Fastify backend-for-frontend was prototyped in
+  [PR #5](https://github.com/aehrc/smart-forms-health-links/pull/5) and closed unmerged. See
+  [SMART App Launch](#smart-app-launch).
 - **Reply keys live in `localStorage`** (channel C only). Clearing site data destroys pending
   replies, permanently. See [Notes](#notes).
 - **A reply slot hosted as a plain `Binary` can be overwritten by anyone who can reach the server.**
@@ -846,7 +973,8 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 231 checks: codecs, JWE, reply crypto, foreign links, passcodes — no network
+npm run check:roundtrip  # 249 checks: codecs, JWE, reply crypto, foreign links, passcodes,
+                         # the SMART token boundary and its scopes — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
@@ -861,6 +989,10 @@ SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
 
 # 30 checks: creating a patient the destination server does not hold, and filing answers against them
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:patient
+
+# 9 checks: that the configured SMART issuer can serve the launch this app performs.
+# Read-only, writes nothing. Reads the issuer from public/config.json, or SMART_ISSUER=…
+npm run check:smart
 ```
 
 `check:roundtrip` needs neither network nor hosting, so it is the one to run on every change. It

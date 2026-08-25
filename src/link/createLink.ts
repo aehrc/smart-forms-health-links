@@ -12,6 +12,7 @@ import {
 } from '@/lib/config';
 import { fhirBinaryBlobStore, type BlobStore } from '@/fhir/blobStore';
 import { declareResponseEndpoint, publishRequestTask } from '@/fhir/submit';
+import type { SmartSession } from '@/auth/smartSession';
 import { LINK_CODECS } from './registry';
 import { defaultLabel, encodingCodec, ensureQuestionnaireCanonical } from './codec';
 import {
@@ -70,6 +71,17 @@ export interface CreateRequestOptions {
   subjectDisplay?: string;
   /** Overrides the expiry derived from `linkLifetimeDays`. */
   expiresAt?: number;
+  /**
+   * The launched session, when there is one. Supplies the server to publish the request `Task` to, and
+   * authorises that write.
+   *
+   * It does **not** reach the reply slot or the write slot. Those are hosted on the transport tier and
+   * fetched by a filler who holds no credentials; pointing them at an authenticated server would mint
+   * a link that only the person who minted it can use.
+   */
+  session?: SmartSession | null;
+  /** Who the request appears to come from, overriding `senderName`. The launched user, in practice. */
+  requesterDisplay?: string;
 }
 
 export interface CreatedRequest {
@@ -181,6 +193,12 @@ export async function createRequestLink(
    * needs a Task to point at.
    */
   const serverReturn = canUseServerReturn(config);
+
+  /*
+   * A launch outranks configuration for the same reason it does everywhere else: it is the EHR saying
+   * which record this clinician is working in, and it is backed by a token that configuration is not.
+   */
+  const taskServerUrl = options.session?.serverUrl ?? config.responseServerUrl;
   let serverTaskUrl: string | undefined;
 
   if (serverReturn) {
@@ -188,11 +206,11 @@ export async function createRequestLink(
      * Fatal when channel B is on: the invitation is about to name this Task as somewhere the filler
      * may write, and naming one that does not exist would be worse than not offering the channel.
      */
-    serverTaskUrl = await publishRequestTask(config.responseServerUrl!, questionnaire, {
+    serverTaskUrl = await publishRequestTask(taskServerUrl!, questionnaire, {
       ...options,
       requestId
     });
-  } else if (canTrackRequests(config)) {
+  } else if (canTrackRequests(config, taskServerUrl)) {
     /*
      * Not fatal when publishing is only for tracking. The default return path — the filler mints a
      * link and the requester scans it back — needs nothing from this server, so an EHR that is down
@@ -201,7 +219,7 @@ export async function createRequestLink(
      * could reach the server.
      */
     try {
-      serverTaskUrl = await publishRequestTask(config.responseServerUrl!, questionnaire, {
+      serverTaskUrl = await publishRequestTask(taskServerUrl!, questionnaire, {
         ...options,
         requestId
       });
@@ -216,7 +234,9 @@ export async function createRequestLink(
       requestId,
       subjectReference: options.subjectReference,
       subjectDisplay: options.subjectDisplay,
-      requesterDisplay: config.senderName ?? undefined,
+      // The launched user when signed in, `senderName` otherwise. An invitation that cannot say who
+      // sent it is one a patient has every reason to decline.
+      requesterDisplay: options.requesterDisplay ?? config.senderName ?? undefined,
       replyDescriptor,
       writeDescriptor,
       // Named in the invitation only when the filler is actually invited to write there. Tracking is

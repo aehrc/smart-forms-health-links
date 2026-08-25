@@ -25,6 +25,7 @@ import {
 } from '@/lib/requestStore';
 import { mergeSentRequests, whyNotCollectable, type SentRequest } from '@/lib/sentRequests';
 import { searchPublishedRequests } from '@/fhir/ehrServer';
+import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
 import { collectAnswers, type CollectOutcome } from '@/link/collectReply';
 import ReviewResponse from '@/components/ReviewResponse';
 import ShareLinkPanel from '@/components/ShareLinkPanel';
@@ -65,11 +66,13 @@ export default function Requests() {
   const [importError, setImportError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const tracking = canTrackRequests(config);
+  const ehrServerUrl = useEhrServerUrl();
+  const session = useSmartSession();
+  const tracking = canTrackRequests(config, ehrServerUrl);
 
   const { data: publishedPage, error: publishedError } = useQuery({
-    queryKey: ['published-requests', config.responseServerUrl],
-    queryFn: ({ signal }) => searchPublishedRequests(config.responseServerUrl!, 50, signal),
+    queryKey: ['published-requests', ehrServerUrl, session?.fhirUser ?? null],
+    queryFn: ({ signal }) => searchPublishedRequests(ehrServerUrl!, 50, signal, session),
     enabled: tracking,
     retry: false
   });
@@ -186,7 +189,7 @@ export default function Requests() {
           <p className="text-sm text-slate-500">
             {tracking ? (
               <>
-                Published to <span className="font-mono text-xs">{config.responseServerUrl}</span>, plus
+                Published to <span className="font-mono text-xs">{ehrServerUrl}</span>, plus
                 anything held only in this browser.
               </>
             ) : (

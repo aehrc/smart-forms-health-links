@@ -104,7 +104,11 @@ export interface AppConfig {
   /**
    * Offer the one-shot write channel (channel D) on requests this app mints.
    *
-   * Off by default, like the other two declared channels. With it on, each request pre-allocates an
+   * **On** in the shipped `config.json`, off in {@link FALLBACK_CONFIG}. The distinction is the point:
+   * what ships is a chosen sandbox where this channel is part of the demo, whereas the fallback is a
+   * config that failed to load and must hand out no capability it was not explicitly asked for.
+   *
+   * With it on, each request pre-allocates an
    * empty `QuestionnaireResponse` on {@link writeSlotServerUrl} and the invitation names its absolute
    * URL, an `If-Match` ETag, and a write token. A filler holding the link may `PUT` the completed
    * answers there **once** — the second attempt is refused by the server's own optimistic locking,
@@ -154,6 +158,54 @@ export interface AppConfig {
    * it off if that metadata should not be there.
    */
   publishRequestTasks: boolean;
+
+  /**
+   * Offer SMART App Launch, so the EHR is discovered from a launch rather than named in config.
+   *
+   * **On** in the shipped `config.json`, off in {@link FALLBACK_CONFIG} — same split, same reason as
+   * {@link enableOneShotWrite}: a deployment whose config failed to load has no issuer and no client
+   * id, so it could not start a flow even if this were true.
+   *
+   * With it on, the app gains `/launch` and
+   * `/callback`, and a clinician who arrives through either one gets a session: EHR calls carry a
+   * bearer token, and `fhirUser` supplies a real identity for attribution instead of a typed name.
+   *
+   * A launch is **optional**, not required. With no session the app behaves exactly as it always
+   * has — anonymous, driven by {@link responseServerUrl} — because the filler half of this app has
+   * no credentials by construction and must keep working. See `src/auth/smartSession.ts`.
+   *
+   * Requires {@link smartIssuerUrl} and {@link smartClientId}.
+   */
+  enableSmartLaunch: boolean;
+
+  /**
+   * Base URL of the SMART-enabled FHIR server to launch against.
+   *
+   * Must be a base that actually serves `.well-known/smart-configuration`, which is not the same
+   * server as {@link responseServerUrl} even when they hold the same data. `proxy.smartforms.io/fhir`
+   * answers that path with `HAPI-0302: Unknown resource type '.well-known'`; its
+   * smart-launcher-v2 sibling `proxy.smartforms.io/v/r4/fhir` serves a real one.
+   *
+   * Also the allowlist for the `iss` a launch arrives with — see `issMatch` in `smartSession.ts`.
+   * An `iss` that is not this issuer is refused rather than followed.
+   */
+  smartIssuerUrl: string | null;
+
+  /**
+   * OAuth client id, registered with the authorisation server.
+   *
+   * This is a **public** client: a static site can hold no secret, so there is nothing here to keep.
+   * Confidentiality comes from PKCE, which `smartSession.ts` requires rather than merely offers.
+   */
+  smartClientId: string | null;
+
+  /**
+   * Scopes to request, space-separated. Null takes {@link DEFAULT_SMART_SCOPES}.
+   *
+   * Worth overriding only to narrow. Widening past what the app actually issues invites a consent
+   * screen that overstates what it does.
+   */
+  smartScopes: string | null;
 }
 
 export const FALLBACK_CONFIG: AppConfig = {
@@ -171,12 +223,51 @@ export const FALLBACK_CONFIG: AppConfig = {
   enableServerReturn: false,
   // Deferred, not removed. The primary return path is a link the filler mints. See the field docs.
   enableEncryptedReply: false,
-  // Off unless asked for: it hands a filler a capability to write. See the field docs above.
+  // Off in the *fallback* even though the shipped config enables it: a config that failed to load must
+  // hand out no write capability. See the field docs above.
   enableOneShotWrite: false,
   writeSlotServerUrl: null,
   linkLifetimeDays: 30,
-  publishRequestTasks: true
+  publishRequestTasks: true,
+  // Off in the *fallback*, and inert regardless without an issuer and a client id. See the field docs.
+  enableSmartLaunch: false,
+  smartIssuerUrl: null,
+  smartClientId: null,
+  smartScopes: null
 };
+
+/**
+ * What the app asks for, and no more.
+ *
+ * `user/` rather than `patient/` because `/patients` and `/responses` search across the server; a
+ * `patient/` grant is scoped to one patient in context and would leave both routes empty. The
+ * permission letters track what the code actually issues: it creates, reads and searches, and it
+ * never updates or deletes on the EHR.
+ *
+ * `online_access` rather than `offline_access` — this is a foreground clinician tool with no backend
+ * to hold a long-lived refresh token, so a refresh that outlives the session is a liability, not a
+ * feature.
+ *
+ * `launch` is swapped for `launch/patient` on a standalone launch, where there is no EHR context to
+ * inherit and the authorisation server has to ask who the patient is. See `buildScopes`.
+ */
+export const DEFAULT_SMART_SCOPES = [
+  'launch',
+  'openid',
+  'fhirUser',
+  'online_access',
+  'user/Patient.crs',
+  'user/QuestionnaireResponse.crs',
+  'user/Task.crs',
+  'user/Provenance.cr',
+  /*
+   * `fhirUser` yields a *reference*, not a name, and `fetchUserDisplay` reads the resource to turn
+   * `Practitioner/123` into something a clinician recognises. Without this the read is refused and the
+   * session badge falls back to showing the bare reference — which a permissive sandbox hides, because
+   * it grants `user/*.*` and never exercises the gap.
+   */
+  'user/Practitioner.r'
+].join(' ');
 
 function isValidUrl(value: unknown): value is string {
   if (typeof value !== 'string' || !/^https?:\/\/.+/.test(value.trim())) {
@@ -228,6 +319,16 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
     isAbsentOr(candidate.enableOneShotWrite, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.writeSlotServerUrl, (url) => url === null || isValidUrl(url)) &&
     isAbsentOr(candidate.publishRequestTasks, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(candidate.enableSmartLaunch, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(candidate.smartIssuerUrl, (url) => url === null || isValidUrl(url)) &&
+    isAbsentOr(
+      candidate.smartClientId,
+      (id) => id === null || (typeof id === 'string' && id.trim() !== '')
+    ) &&
+    isAbsentOr(
+      candidate.smartScopes,
+      (scopes) => scopes === null || (typeof scopes === 'string' && scopes.trim() !== '')
+    ) &&
     isAbsentOr(
       candidate.linkLifetimeDays,
       (days) => days === null || (typeof days === 'number' && Number.isFinite(days) && days > 0)
@@ -317,7 +418,27 @@ export function canUseOneShotWrite(config: AppConfig): boolean {
   return config.enableOneShotWrite && resolveWriteSlotServerUrl(config) !== null;
 }
 
-/** Whether sent requests can be recorded on, and listed back from, the EHR. */
-export function canTrackRequests(config: AppConfig): boolean {
-  return config.publishRequestTasks && config.responseServerUrl !== null;
+/**
+ * Whether a SMART launch can be attempted: the channel is enabled *and* it is pointed somewhere with
+ * an identity to present.
+ *
+ * The second half is the same guard {@link canUseEncryptedReply} and {@link canUseOneShotWrite} use,
+ * for the same reason: a deployment whose config failed to load has no issuer and no client id, so it
+ * cannot start a flow whatever a future default does to the flag.
+ */
+export function canUseSmartLaunch(config: AppConfig): boolean {
+  return (
+    config.enableSmartLaunch && config.smartIssuerUrl !== null && config.smartClientId !== null
+  );
+}
+
+/**
+ * Whether sent requests can be recorded on, and listed back from, the EHR.
+ *
+ * `ehrServerUrl` is the *resolved* base — a launched server when there is a session, configuration
+ * otherwise — because a launch supplies a server just as validly as config does, and reading only
+ * `responseServerUrl` here would leave a launched deployment unable to track anything.
+ */
+export function canTrackRequests(config: AppConfig, ehrServerUrl?: string | null): boolean {
+  return config.publishRequestTasks && (ehrServerUrl ?? config.responseServerUrl) !== null;
 }
