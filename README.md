@@ -37,6 +37,7 @@ cannot currently be opened by third-party SHL wallets.
     - [Reading a link this app did not write](#reading-a-link-this-app-did-not-write)
     - [Why the reply is encrypted to a public key](#why-the-reply-is-encrypted-to-a-public-key)
     - [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel)
+  - [Answers become resources](#answers-become-resources)
   - [Amendments are new resources](#amendments-are-new-resources)
   - [Creating a patient at review time](#creating-a-patient-at-review-time)
     - [The caching proxy, which is not a footnote](#the-caching-proxy-which-is-not-a-footnote)
@@ -201,6 +202,7 @@ Point `responseServerUrl` at your own server for anything beyond a demo. See
 | `/fill/:id`        | Fill a form directly and emit a Health Link from the answers                |
 | `/view#<link>`     | Open any link — **dispatches on payload**: fill a request, or review a response |
 | `/scan`            | Read a QR with the camera, or paste a link — **how answers come back**       |
+| `/launch/setup`    | What to register with an authorisation server, generated from this build     |
 
 `/view` deliberately decides what to show from the payload rather than the route, because a scanner
 cannot know whether it just scanned a request or a completed response. A link fragment arriving at
@@ -375,6 +377,62 @@ untrusted host: the file is a JWE and the key travels only in the link, so the h
 plaintext. That is why a FHIR `Binary` on an open server is a legitimate file host and no
 S3/lambda tier is required. It is also, for a different reason, currently the thing that stops
 third-party wallets opening these links — see [Known limitations](#known-limitations).
+
+## Answers become resources
+
+A stored form is a document, and the next clinician will not read it to find out whether their patient
+has asthma — they will look at the problem list. So on the review screen, under **Accept and save**,
+the app shows what these answers *mean* as FHIR resources and lets the reviewer tick which of them
+belong in the record.
+
+```
+☑ Chronic kidney disease stage 3B (disorder)   new    Condition
+☑ Acute coronary syndrome                      new    Condition
+☐ Urinary tract infection                      new    Condition
+☑ Type 2 diabetes mellitus                     new    Condition
+
+[Select all] [Clear]        7 of 8 selected
+                            [Accept, save and write back 7]
+```
+
+This is [SDC form data extraction](https://build.fhir.org/ig/HL7/sdc/extraction.html), and both
+mechanisms the app supports run **entirely in the browser**: template-based via
+`@aehrc/sdc-template-extract`, observation-based via functions the renderer already exports. No
+`$extract` endpoint, no StructureMap transform server, nothing added to the deployment. That last part
+matters, because the sixth claim above says this app needs no new infrastructure and this feature had
+to keep it true.
+
+On the default forms server that covers **31 of 138 forms** — 26 template-based, 5 observation-based.
+For the other 107 the panel does not appear at all, which is deliberate: an empty write-back box reads
+as *"this form found nothing clinically relevant"*, a much stronger claim than *"this form has no
+templates"*.
+
+Three things here are decisions rather than mechanics.
+
+- **Extraction runs on the *reconciled* answers, never on the answers as they arrived.** This is the
+  one part with no counterpart in smart-forms, which extracts from a response it populated itself and
+  so always has the right patient. Here the answers come from a stranger's phone naming the patient in
+  *that* app's terms, and a `Condition` filed against a local vault key is either rejected outright or,
+  worse, filed against nobody. Repointing the patient re-runs the extraction; it does not patch up the
+  old one. `retargetSubject` is a second, narrower net for templates that reach past
+  `%resource.subject`.
+- **The response is written first, and a failed write-back is a warning.** The answers are the clinical
+  content and the thing the reviewer accepted; the extracted resources derive from them. Losing the
+  second half leaves a record that is merely less convenient. Losing the first would leave Conditions
+  on a chart with no document saying where they came from.
+- **The selected entries go as one `transaction`, POSTed to the server base.** All or nothing, which is
+  the honest shape for a set of resources a human ticked as a group. When a transaction is refused
+  *nothing* was written, including entries whose own status looks successful — and the panel says so
+  rather than listing them as saved.
+
+A FHIRPatch entry — six forms on the default server emit them — is one row saying how many changes it
+carries, not a sub-list. Asking a clinician to choose between JSON Patch operations against a resource
+the screen cannot show them is asking a question they have no way to answer well.
+
+This is the only reason the app asks for `u` on any scope. It still never deletes anything, and the
+resources it *authors* stay create-only — which is what the next section is about.
+
+Turn it off with `enableWriteBack`. Full detail in [`docs/write-back.md`](docs/write-back.md).
 
 ## Amendments are new resources
 
@@ -662,6 +720,7 @@ rather than a demo.
 | `enableServerReturn` | offer channel B. **Off by default** — it accepts answers without review |
 | `enableEncryptedReply` | offer channel C, the encrypted reply slot. **Off by default** — answers come back as a link the filler mints. Turn it on when a filler may have no way to show you a QR code. Requires `blobServerUrl` |
 | `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **On in the shipped config**, off in the fallback. For fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
+| `enableWriteBack` | offer to write the resources these answers imply — Conditions, Observations — into the record. **On in the shipped config**, off in the fallback. SDC form data extraction, run in the browser; no server involved. Inert for a form that declares no extraction, which is most of them. See [Answers become resources](#answers-become-resources) |
 | `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
 | `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
 | `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
@@ -754,12 +813,29 @@ The third row is the one worth having. Before a launch, `Provenance.agent.who` c
 }
 ```
 
-Register `https://your-host/callback` as the redirect URI and `https://your-host/launch` as the app's
-launch URL. Then check the issuer before trying a real launch:
+Then open **`/launch/setup`** in the deployed app. It lists everything the authorisation server needs
+— launch URL, redirect URI, client id, issuer and the full scope list — generated from that
+deployment's own config, so it is correct for that build and that host in a way this file cannot be.
+It is also the page to send to whoever administers the OAuth client, which is often not you.
+
+Two things it will tell you that are easy to get wrong:
+
+- **Register `launch` *and* `launch/patient`.** No single request names both — `buildScopes` swaps one
+  for the other — so a registration copied from an observed EHR launch half-works, and fails only when
+  somebody opens `/launch` directly.
+- **Write-back needs `u`.** Seven `user/*.cu` scopes exist solely for
+  [form data extraction](#answers-become-resources). Omitting them from the registration fails the
+  whole launch with `invalid_scope`; set `enableWriteBack: false` or narrow `smartScopes` if you do
+  not want the feature.
+
+Then check the issuer before trying a real launch:
 
 ```bash
 npm run check:smart
 ```
+
+If a launch fails anyway, the error screen shows the same registration panel inline — the failure and
+the fix on one page.
 
 **`smartIssuerUrl` is not `responseServerUrl`.** It has to be a base that actually serves
 `.well-known/smart-configuration`, and a plain FHIR server does not — it parses `.well-known` as a
@@ -859,11 +935,12 @@ src/
   App.tsx              routes, and the root-fragment → /view forward
   routes/              one file per route: FormList, RequestForm, Requests,
                        ResponseList, PatientList, FillForm, ViewLink, Scan,
-                       Launch, Callback
+                       Launch, LaunchSetup, Callback
   auth/
     smartSession.ts    the OAuth flow — the only module that imports fhirclient
     SmartContext.tsx   the session as React context, and the EHR base resolver
-    routes.ts          /launch and /callback, shared so redirect_uri cannot drift
+    routes.ts          /launch, /callback and /launch/setup, shared so redirect_uri cannot drift
+    scopes.ts          scope policy, kept away from fhirclient so checks can reach it
   components/
     FormRenderer.tsx   the smart-forms-renderer composition
     FillFromRequest.tsx  the filler's side: render, then return answers
@@ -871,7 +948,10 @@ src/
     PatientPicker.tsx  inline patient search, at both ends of the round trip
     CreatePatientForm.tsx  registering somebody the destination server does not hold
     RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
+    WriteBackPanel.tsx what extraction produced, as a list to tick
     SessionBadge.tsx   who is signed in, and to which server
+    SmartRegistration.tsx  what a deployer must register, derived from live config
+    ScopeWarning.tsx   says so when the server granted less than was asked for
     ShareLinkPanel.tsx QR + copyable link
   link/
     codec.ts           the LinkCodec interface and codec selection
@@ -894,17 +974,23 @@ src/
     submit.ts          the write: endpoint resolution, meta handling, Provenance
     amend.ts           amendments as a new resource joined by a revision Provenance
     newPatient.ts      building a Patient from what a reviewer typed
+    extract.ts         which extraction mechanism a form declares, and running it
+    templateExtract.ts the template half, kept free of the renderer so Node can bundle it
+    writeBundle.ts     POSTing an extracted transaction to the server base
   lib/
     config.ts          AppConfig, validation, and the fallback
     requestStore.ts    reply keys in localStorage
     sentRequests.ts    the local half of /requests
     answerRows.ts      flattening a QuestionnaireResponse for RawAnswers
+    extractedEntries.ts describing an extracted Bundle so a clinician can judge it
 scripts/
   roundtrip.ts         npm run check:roundtrip — no network
   e2eShl.ts            npm run check:e2e-shl   — live, writes and cleans up
   e2eWrite.ts          npm run check:e2e-write — live, writes and cleans up
   e2eLink.ts           npm run check:e2e       — the legacy decode path
   e2eAmend.ts          npm run check:amend     — live, writes and cleans up
+  e2eWriteBack.ts      npm run check:writeback — live, writes and cleans up
+  mintReviewLink.ts    a review link for a fixture, so the screen is reachable in dev
   e2ePatient.ts        npm run check:patient   — live, writes and cleans up
   checkSmartConfig.ts  npm run check:smart     — live, read-only discovery probe
 docs/
@@ -912,6 +998,7 @@ docs/
   response-links.md           what counts as an inbound response link
   u-flag-hosting.md           the third-party blocker, in full
   smart-app-launch.md         the launch flow, and the boundary it must not cross
+  write-back.md               form data extraction, and the order it happens in
 deploy/
   nginx.conf                  SPA rewrite, and the cache policy that goes with it
   helm/smart-forms-health-links/  the chart, and its own README
@@ -966,15 +1053,16 @@ payloads that are a bare resource rather than a Bundle. **The return leg is not 
   duplicate detection goes no further than re-searching the family name. There is no master patient
   index and no fuzzy matching.
 - **No automated browser tests.** The checks cover the codecs, crypto, wire formats and the live
-  FHIR round trip; the UI is verified by hand.
+  FHIR round trip; the UI is verified by hand. `npm run mint:review` shortens that loop for the review
+  screen, which is otherwise only reachable by walking the whole two-device round trip.
 
 ## Checks
 
 ```bash
 npm run typecheck        # tsc project references
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 249 checks: codecs, JWE, reply crypto, foreign links, passcodes,
-                         # the SMART token boundary and its scopes — no network
+npm run check:roundtrip  # 284 checks: codecs, JWE, reply crypto, foreign links, passcodes,
+                         # the SMART token boundary and its scopes, form data extraction — no network
 npm run check:e2e        # the retained bespoke decode path, against the live forms server
 
 # 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
@@ -989,6 +1077,10 @@ SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
 
 # 30 checks: creating a patient the destination server does not hold, and filing answers against them
 SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:patient
+
+# 9 checks: extraction against the live catalogue, then a transaction written and read back to
+# confirm whose record it landed in
+SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:writeback
 
 # 9 checks: that the configured SMART issuer can serve the launch this app performs.
 # Read-only, writes nothing. Reads the issuer from public/config.json, or SMART_ISSUER=…

@@ -129,6 +129,22 @@ export interface AppConfig {
   enableOneShotWrite: boolean;
 
   /**
+   * Offer to write the resources these answers imply into the patient record.
+   *
+   * SDC form data extraction: a form's own templates say that "chest pain, since March" means a
+   * `Condition`, and the reviewer ticks which of those belong on the record. It runs entirely in the
+   * browser — no `$extract` server, no StructureMap engine — so this flag costs no infrastructure.
+   *
+   * Off in the fallback for the same reason every other write capability is: a deployment whose config
+   * failed to load should not start creating clinical resources on a server it cannot name properly.
+   *
+   * Inert for a form that declares no extraction, which is most of them. Turning it on does not make
+   * the app write anything on its own — extraction is still reviewed, ticked and accepted by a human,
+   * which is the posture the whole app takes.
+   */
+  enableWriteBack: boolean;
+
+  /**
    * Where one-shot write slots are pre-allocated. `null` falls back to `blobServerUrl`.
    *
    * Separate from `responseServerUrl` on purpose, and the separation is the whole point of the
@@ -226,6 +242,9 @@ export const FALLBACK_CONFIG: AppConfig = {
   // Off in the *fallback* even though the shipped config enables it: a config that failed to load must
   // hand out no write capability. See the field docs above.
   enableOneShotWrite: false,
+  // Off in the *fallback*, on in the shipped config. A config that failed to load names no reliable
+  // destination, and creating Conditions on a guessed server is worse than creating none.
+  enableWriteBack: false,
   writeSlotServerUrl: null,
   linkLifetimeDays: 30,
   publishRequestTasks: true,
@@ -241,8 +260,9 @@ export const FALLBACK_CONFIG: AppConfig = {
  *
  * `user/` rather than `patient/` because `/patients` and `/responses` search across the server; a
  * `patient/` grant is scoped to one patient in context and would leave both routes empty. The
- * permission letters track what the code actually issues: it creates, reads and searches, and it
- * never updates or deletes on the EHR.
+ * permission letters track what the code actually issues, and the split between the two groups below
+ * is a real one: the app **never updates or deletes** the resources it authors, and needs `u` only on
+ * the clinical resources form data extraction writes back.
  *
  * `online_access` rather than `offline_access` — this is a foreground clinician tool with no backend
  * to hold a long-lived refresh token, so a refresh that outlives the session is a liability, not a
@@ -266,7 +286,29 @@ export const DEFAULT_SMART_SCOPES = [
    * session badge falls back to showing the bare reference — which a permissive sandbox hides, because
    * it grants `user/*.*` and never exercises the gap.
    */
-  'user/Practitioner.r'
+  'user/Practitioner.r',
+
+  /*
+   * Form data extraction — see `src/fhir/extract.ts`.
+   *
+   * `u` as well as `c`, and this is the only place the app asks for it. Template-based extraction
+   * emits `PUT` and `PATCH` entries: a form that records a resolved allergy is amending a record that
+   * already exists, and there is no create-only way to express that. The grant stays narrow in the
+   * other direction — no `d` anywhere, and no `u` on `Patient`, `QuestionnaireResponse`, `Task` or
+   * `Provenance` above, which the app still only ever creates. The amendment path exists precisely so
+   * a stored response never has to be updated in place.
+   *
+   * Extraction runs only when a Questionnaire declares it, so on a deployment whose forms declare none
+   * these scopes are asked for and never exercised. Narrow them with `smartScopes` if that is the case
+   * and your authorisation server would rather not grant them.
+   */
+  'user/Condition.cu',
+  'user/Observation.cu',
+  'user/AllergyIntolerance.cu',
+  'user/MedicationStatement.cu',
+  'user/Immunization.cu',
+  'user/Procedure.cu',
+  'user/Encounter.cu'
 ].join(' ');
 
 function isValidUrl(value: unknown): value is string {
@@ -317,6 +359,7 @@ export function isAppConfig(value: unknown): value is Partial<AppConfig> {
     isAbsentOr(candidate.enableServerReturn, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableEncryptedReply, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableOneShotWrite, (flag) => typeof flag === 'boolean') &&
+    isAbsentOr(candidate.enableWriteBack, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.writeSlotServerUrl, (url) => url === null || isValidUrl(url)) &&
     isAbsentOr(candidate.publishRequestTasks, (flag) => typeof flag === 'boolean') &&
     isAbsentOr(candidate.enableSmartLaunch, (flag) => typeof flag === 'boolean') &&

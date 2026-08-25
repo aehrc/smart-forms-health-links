@@ -11,6 +11,7 @@
   "enableServerReturn": false,
   "enableEncryptedReply": false,
   "enableOneShotWrite": true,
+  "enableWriteBack": true,
   "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
   "publishRequestTasks": true,

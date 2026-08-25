@@ -146,7 +146,7 @@ interface OperationOutcome {
  * subject that does not resolve on this server, say — and `400 Bad Request` alone tells them
  * nothing.
  */
-async function describeFailure(response: Response): Promise<string> {
+export async function describeFailure(response: Response): Promise<string> {
   const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
 
   try {

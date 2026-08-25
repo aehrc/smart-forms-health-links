@@ -39,6 +39,16 @@ export interface SmartSession {
   readonly grantedScopes: string;
 
   /**
+   * Scopes this launch asked for, so the two can be compared.
+   *
+   * Read from the client's own state rather than recomputed, because `buildScopes` produces a
+   * different string for the two launch patterns and nothing else here records which one happened. It
+   * also survives a session restored from `sessionStorage`, where the config in memory may since have
+   * changed.
+   */
+  readonly requestedScopes: string;
+
+  /**
    * The `Authorization` header value, refreshing the token first if it is close to expiry.
    *
    * Async because the refresh is. Returns null if the session has no usable token, which callers must
@@ -112,6 +122,7 @@ function toSession(client: Client): SmartSession {
     patientId: client.getPatientId(),
     fhirUser: client.getFhirUser(),
     grantedScopes: (client.getState('tokenResponse.scope') as string | undefined) ?? '',
+    requestedScopes: (client.getState('scope') as string | undefined) ?? '',
 
     async authorizationHeader() {
       /*

@@ -4,8 +4,9 @@ import { Loader2 } from 'lucide-react';
 import { useConfig } from '@/lib/ConfigContext';
 import { canUseSmartLaunch } from '@/lib/config';
 import { startLaunch } from '@/auth/smartSession';
-import { CALLBACK_PATH } from '@/auth/routes';
+import { CALLBACK_PATH, LAUNCH_SETUP_PATH } from '@/auth/routes';
 import { Alert } from '@/components/ui/alert';
+import SmartRegistration from '@/components/SmartRegistration';
 
 /**
  * The SMART App Launch entry point — register this URL with the EHR.
@@ -41,11 +42,22 @@ export default function Launch() {
 
   if (error) {
     return (
-      <div className="py-8">
-        <h1 className="mb-3 text-xl font-semibold text-slate-900">Launch failed</h1>
+      <div className="space-y-4 py-8">
+        <h1 className="text-xl font-semibold text-slate-900">Launch failed</h1>
         <Alert tone="error" title="This app could not start a SMART session">
           {error}
         </Alert>
+
+        {/* Failing before the redirect means the deployment is misconfigured, so show what it needs. */}
+        <SmartRegistration />
+
+        <p className="text-xs text-slate-500">
+          This is also at{' '}
+          <a href={LAUNCH_SETUP_PATH} className="underline">
+            {LAUNCH_SETUP_PATH}
+          </a>
+          .
+        </p>
       </div>
     );
   }
