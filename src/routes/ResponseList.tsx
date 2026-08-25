@@ -34,16 +34,52 @@ function isPatientAsserted(response: QuestionnaireResponse): boolean {
   return (response.meta?.security ?? []).some((coding) => coding.code === 'PATAST');
 }
 
-function responseTitle(response: QuestionnaireResponse): string {
+/** Where a sender may put the form's human title alongside the canonical, as a primitive extension. */
+const QUESTIONNAIRE_DISPLAY_EXTENSION = 'http://hl7.org/fhir/StructureDefinition/display';
+
+/**
+ * The form's title as the *sender* gave it, from the `display` extension on `_questionnaire`.
+ *
+ * This is the one source that needs no network and cannot go stale differently from the response it
+ * travels with. Worth preferring over anything resolved later: it is what the app that wrote the
+ * answers believed the form was called, which is the label a reviewer should see.
+ */
+function declaredQuestionnaireDisplay(response: QuestionnaireResponse): string | undefined {
+  return response._questionnaire?.extension?.find(
+    (extension) => extension.url === QUESTIONNAIRE_DISPLAY_EXTENSION
+  )?.valueString;
+}
+
+/** The last path segment of a canonical, version suffix removed. */
+function canonicalSlug(canonical: string): string {
+  const [url] = canonical.split('|');
+  return url.split('/').filter(Boolean).pop() ?? canonical;
+}
+
+/**
+ * What to call a stored response, best source first.
+ *
+ * The slug alone is a poor label and sometimes a meaningless one. A canonical that ends in a
+ * server-assigned id renders as a bare number — `…/Questionnaire/715` becomes "715" — which tells a
+ * reviewer nothing about what they are looking at, and on the default server that is the single most
+ * common form. So:
+ *
+ *  1. `_questionnaire`'s display extension, when the sender supplied one.
+ *  2. The real `Questionnaire.title`, resolved from the forms server.
+ *  3. The slug, which at least distinguishes rows while the lookup is in flight or has failed.
+ */
+function responseTitle(response: QuestionnaireResponse, titles: Map<string, string>): string {
+  const declared = declaredQuestionnaireDisplay(response);
+  if (declared) {
+    return declared;
+  }
+
   const canonical = response.questionnaire;
   if (!canonical) {
     return 'Response to an unnamed form';
   }
 
-  // The last meaningful path segment is a better label than the whole canonical, which is often long
-  // and identical across many rows.
-  const [url] = canonical.split('|');
-  return url.split('/').filter(Boolean).pop() ?? canonical;
+  return titles.get(canonical) ?? canonicalSlug(canonical);
 }
 
 /**
@@ -81,6 +117,7 @@ function authorLabel(
 }
 
 export default function ResponseList() {
+  const config = useConfig();
   const [params, setParams] = useSearchParams();
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
 
@@ -133,6 +170,51 @@ export default function ResponseList() {
       );
     },
     enabled: ehrServerUrl !== null && authorRefs.length > 0
+  });
+
+  /*
+   * Real titles for the forms these responses answer.
+   *
+   * Only for rows whose sender supplied no display extension, and deduplicated by canonical — a page of
+   * responses is usually a handful of distinct forms, and resolving per row would be mostly repeat
+   * work. Read from the **forms** server, not the EHR: a canonical names a definition in a catalogue,
+   * and that catalogue is public and unauthenticated by design.
+   *
+   * A canonical that will not resolve is normal rather than exceptional — the response may answer a
+   * form this deployment has never heard of — so each lookup fails soft and the row keeps its slug.
+   */
+  const canonicalsNeedingTitles = [
+    ...new Set(
+      (page?.resources ?? [])
+        .filter((response) => !declaredQuestionnaireDisplay(response))
+        .map((response) => response.questionnaire)
+        .filter((canonical): canonical is string => canonical !== undefined)
+    )
+  ].sort();
+
+  const { data: questionnaireTitles } = useQuery({
+    queryKey: ['response-form-titles', config.formsServerUrl, canonicalsNeedingTitles.join('|')],
+    queryFn: async ({ signal }) => {
+      const resolved = await Promise.all(
+        canonicalsNeedingTitles.map(async (canonical) => {
+          try {
+            const questionnaire = await fetchQuestionnaireByCanonical(
+              config.formsServerUrl,
+              canonical,
+              signal
+            );
+            return [canonical, questionnaire.title ?? questionnaire.name] as const;
+          } catch {
+            return [canonical, undefined] as const;
+          }
+        })
+      );
+
+      return new Map(
+        resolved.filter((pair): pair is [string, string] => pair[1] !== undefined)
+      );
+    },
+    enabled: canonicalsNeedingTitles.length > 0
   });
 
   // Only to name the filter chip; the list itself is already filtered server-side.
@@ -224,7 +306,9 @@ export default function ResponseList() {
               <CardContent className="flex flex-wrap items-start gap-3 p-4">
                 <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-slate-900">{responseTitle(response)}</p>
+                  <p className="font-medium text-slate-900">
+                    {responseTitle(response, questionnaireTitles ?? new Map())}
+                  </p>
                   <p className="truncate font-mono text-xs text-slate-500">
                     {response.questionnaire ?? 'no questionnaire canonical'}
                   </p>
@@ -317,7 +401,15 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
       <CardHeader>
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">{responseTitle(response)}</CardTitle>
+            <CardTitle className="text-base">
+              {/* The viewer resolves the Questionnaire anyway, so its real title is already to hand. */}
+              {declaredQuestionnaireDisplay(response) ??
+                questionnaire?.title ??
+                questionnaire?.name ??
+                (response.questionnaire
+                  ? canonicalSlug(response.questionnaire)
+                  : 'Response to an unnamed form')}
+            </CardTitle>
             <CardDescription>
               QuestionnaireResponse/{response.id} · read-only. Already stored on the server; there is
               nothing to accept here.
