@@ -1,5 +1,5 @@
 import { Navigate, Link as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
-import { ClipboardList, Inbox, KeyRound, QrCode, ScanLine, Users } from 'lucide-react';
+import { ClipboardList, Inbox, QrCode, ScanLine, Users } from 'lucide-react';
 import FormList from './routes/FormList';
 import FillForm from './routes/FillForm';
 import RequestForm from './routes/RequestForm';
@@ -13,7 +13,7 @@ import LaunchSetup from './routes/LaunchSetup';
 import Callback from './routes/Callback';
 import { LINK_CODECS } from './link/registry';
 import { CALLBACK_PATH, LAUNCH_PATH, LAUNCH_SETUP_PATH } from './auth/routes';
-import SessionBadge from './components/SessionBadge';
+import LaunchContextBar from './components/LaunchContextBar';
 import ScopeWarning from './components/ScopeWarning';
 
 /** Does the current fragment look like a link payload from any registered codec? */
@@ -25,10 +25,12 @@ function Header() {
   return (
     <header className="border-b border-slate-200 bg-white">
       {/*
-        * Wraps rather than squeezes. Five nav items plus a signed-in badge carrying a name and a host
-        * exceed a 1024-wide viewport, and the alternatives all cost something a reader needs: hiding
-        * labels leaves cryptic icons, truncating the badge hides which server the next write lands on.
-        * A second row costs a few pixels of height and nothing else, and only appears when it must.
+        * Destinations only, now that the session and the launch-setup link live in the strip below.
+        * That is what got this row back inside a 1024-wide viewport: the badge carrying a name and a
+        * host was the widest thing in it, and it was never a destination in the first place.
+        *
+        * `flex-wrap` stays for genuinely narrow viewports, where the honest options are a second row or
+        * cryptic unlabelled icons. A few pixels of height is the cheaper of the two.
         */}
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
         <RouterLink
@@ -62,19 +64,6 @@ function Header() {
             <ScanLine className="h-4 w-4" aria-hidden />
             Scan
           </RouterLink>
-          {/*
-            * Shown unconditionally, unlike the badge beside it. The setup page's whole audience is
-            * somebody whose launch is not working yet — on a deployment with `enableSmartLaunch`
-            * still off, hiding the way to it would hide it from exactly the person configuring it.
-            * It also holds the scope list, which is worth registering before the app is switched on.
-            */}
-          <RouterLink
-            to={LAUNCH_SETUP_PATH}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
-            <KeyRound className="h-4 w-4" aria-hidden />
-            Launch setup
-          </RouterLink>
-          <SessionBadge />
         </nav>
       </div>
     </header>
@@ -96,6 +85,13 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <Header />
+      {/*
+        * Between the nav and the content, on every route, for the same reason `ScopeWarning` sits above
+        * the routes rather than inside them: what this says applies to whichever screen the user
+        * happens to reach. Unlike `ScopeWarning` it renders in every state, including no session —
+        * see the component.
+        */}
+      <LaunchContextBar />
       <main className="mx-auto max-w-5xl space-y-4 px-4 py-6">
         {/*
           * Above the routes rather than inside them. A narrowed grant affects whichever screen the

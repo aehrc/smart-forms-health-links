@@ -32,15 +32,22 @@ export interface AppConfig {
   linkCodec: LinkCodecId;
 
   /**
-   * Where reviewed QuestionnaireResponses and their Tasks are written.
+   * The EHR: where patients and responses are read from, and — historically — written to.
    *
-   * Deliberately has **no fallback**. `formsServerUrl` is a read-only catalogue — smart-forms itself
-   * only ever issues `GET Questionnaire` and `$assemble` against it, and writes responses to the
-   * SMART launch server instead. This app has no launch context and therefore no such server, so the
-   * write target has to be stated rather than guessed. When null, the app refuses to write and says
-   * why.
+   * Read is now the operative half. `resolveDestinations` falls to this only when there is no session,
+   * and with no session the app will not write at all ({@link canWriteToRecord}), so in practice a
+   * launched deployment reads from here until it launches and writes to the launched server. It is
+   * still the value that decides whether `/patients` and `/responses` show anything before anyone
+   * signs in, which is most of what a reader of this field wants to know.
    *
-   * A Questionnaire's own `sdc-questionnaire-endpoint` extension still outranks this.
+   * Deliberately has **no fallback** to `formsServerUrl`, which is a read-only catalogue — smart-forms
+   * itself only ever issues `GET Questionnaire` and `$assemble` against it and writes responses to its
+   * launch server instead. Defaulting here would quietly put patient data into a shared reference
+   * library. When null, there is nothing to read and nothing to write, and the app says so.
+   *
+   * A Questionnaire's own `sdc-questionnaire-endpoint` extension still outranks this — and outranks a
+   * launch, which is why the token is gated on origin rather than on "is there a session". See
+   * `src/fhir/authedFetch.ts`.
    */
   responseServerUrl: string | null;
 
@@ -218,9 +225,14 @@ export interface AppConfig {
    * `/callback`, and a clinician who arrives through either one gets a session: EHR calls carry a
    * bearer token, and `fhirUser` supplies a real identity for attribution instead of a typed name.
    *
-   * A launch is **optional**, not required. With no session the app behaves exactly as it always
-   * has — anonymous, driven by {@link responseServerUrl} — because the filler half of this app has
-   * no credentials by construction and must keep working. See `src/auth/smartSession.ts`.
+   * A launch is **required to write** and optional to read. With no session the requester's half of the
+   * app is read-only — it still lists patients, responses and sent requests anonymously through
+   * {@link responseServerUrl} — but it will not mint a request, file answers, amend them, create a
+   * patient or write back extracted resources. See {@link canWriteToRecord} for why, and
+   * {@link canMintRequest} for the one case that is gated on identity rather than on the write.
+   *
+   * The filler's half is untouched and must stay that way: somebody holding nothing but a link has no
+   * credentials by construction. See `src/auth/smartSession.ts`.
    *
    * Requires {@link smartIssuerUrl} and {@link smartClientId}.
    */
@@ -570,6 +582,11 @@ export function canUseOneShotWrite(config: AppConfig): boolean {
  * populating is a bulk clinical read, and doing it with no user identity, no authorisation decision
  * and no audit trail succeeds only because that particular sandbox happens not to care. Reading a
  * chart is the requester's capability, and the requester is the half that launched.
+ *
+ * This was the first place that argument was made, and {@link canWriteToRecord} now makes it for every
+ * write as well. Kept separate rather than folded into it: this one is also gated on a config flag,
+ * because reading a chart into a payload that leaves the building is a disclosure a deployment gets to
+ * decline. Writing is not optional in the same way.
  */
 export function canPrePopulate(
   config: AppConfig,
@@ -577,6 +594,69 @@ export function canPrePopulate(
   ehrServerUrl: string | null
 ): boolean {
   return config.enablePrePopulate && session !== null && ehrServerUrl !== null;
+}
+
+/**
+ * The one sentence every gated surface says, so they cannot drift apart.
+ *
+ * A sibling of `NO_DESTINATION_MESSAGE` in `src/fhir/submit.ts`, which answers the neighbouring
+ * question: that one is "there is nowhere to write", this one is "you are not the sort of visitor who
+ * may write".
+ */
+export const LAUNCH_REQUIRED_MESSAGE =
+  'Sign in through your EHR to write to the record. Reading works without one.';
+
+/**
+ * Whether the app may write to the record: a launch, and somewhere to write it.
+ *
+ * ## Why a launch, when the write would often succeed without one
+ *
+ * The same reasoning {@link canPrePopulate} already applies to reading a chart, generalised to every
+ * write this app makes on the requester's behalf — accepting answers, amending them, creating a
+ * patient, and writing back the resources a form extracted.
+ *
+ * Anonymous writing does in fact *work*: `useEhrServerUrl` falls back to
+ * {@link AppConfig.responseServerUrl} and the default sandbox accepts unauthenticated POSTs. It
+ * succeeds only because that particular sandbox does not care. What lands is a clinical resource with
+ * no user identity, no authorisation decision behind it, and a `Provenance` naming whoever typed a
+ * name into a box — a claim rather than an attribution. On a real record that is not a lax
+ * configuration, it is an unattributable write.
+ *
+ * ## What this deliberately does not gate
+ *
+ * **Reads.** `/patients`, `/responses` and `/requests` still list anonymously, so a deployment pointed
+ * at a public sandbox is still browsable with no setup at all. A launch upgrades a read; it gates a
+ * write.
+ *
+ * **The filler's half — and this is the constraint that shapes where the check goes.** Someone holding
+ * nothing but a link has no account to log into, which is the whole design. So this is asked at the
+ * requester's call sites and *never* inside `src/fhir/submit.ts`: `resolveDestinations` also serves
+ * channel B, where a filler is invited by the invitation itself to write to the endpoint the
+ * Questionnaire declares. A check in the fhir layer would refuse exactly the person the architecture
+ * exists to serve.
+ */
+export function canWriteToRecord(
+  session: { serverUrl: string } | null,
+  ehrServerUrl: string | null
+): boolean {
+  return session !== null && ehrServerUrl !== null;
+}
+
+/**
+ * Whether a request may be minted.
+ *
+ * A launch, and nothing else — unlike {@link canWriteToRecord} this asks for no destination, because a
+ * request is not always a write. With `publishRequestTasks` off, minting touches the EHR not at all:
+ * the payload goes to the blob host, which is untrusted by design.
+ *
+ * It is gated anyway, on the other half of what a launch supplies. An invitation says who it is from,
+ * and `requesterDisplay` without a session is {@link AppConfig.senderName} — a string from a config
+ * file, identical on every request the deployment ever sends. The filler is being asked to hand over
+ * health information on the strength of that name. A launch makes it the launched user, vouched for by
+ * an authorisation server, which is the difference between an attribution and an assertion.
+ */
+export function canMintRequest(session: { serverUrl: string } | null): boolean {
+  return session !== null;
 }
 
 /**

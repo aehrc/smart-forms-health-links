@@ -15,8 +15,9 @@ import { authedFetch } from './authedFetch';
  * The middle one is what smart-forms calls the *patient data FHIR API* and what `sdc-populate` takes as
  * its `sourceServerUrl`. It is a plain HAPI instance behind `proxy.smartforms.io/fhir`; the sibling
  * `proxy.smartforms.io/v/r4/fhir` is the same data behind a SMART-on-FHIR launcher facade, which is the
- * right base for an app doing SMART App Launch and the wrong one here — this app has no launch context,
- * and the plain base is also the one that reports usable `Location` headers.
+ * base `smartIssuerUrl` wants and the wrong one to configure here: `responseServerUrl` is the base read
+ * *before* anyone launches, and the plain one is also the only one that reports usable `Location`
+ * headers. A session replaces it with the launched base anyway — see `useEhrServerUrl`.
  *
  * Everything here is a read. Writes go through `src/fhir/submit.ts`.
  */

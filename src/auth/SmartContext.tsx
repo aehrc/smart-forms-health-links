@@ -8,9 +8,10 @@ import { restoreSession, type SmartSession } from './smartSession';
  *
  * Mirrors `src/lib/ConfigContext.tsx` deliberately, with one difference that matters: `ConfigProvider`
  * renders nothing until config resolves, because an app pointed at no server can do nothing useful.
- * This provider must never do that. No session is the *normal* state — it is how every filler and
- * every unlaunched visitor uses the app — so blocking the tree on it would hide a working app behind a
- * check that will usually come back empty.
+ * This provider must never do that. No session is a *working* state, not a broken one — it is how every
+ * filler uses the app, and how anyone reads it — so blocking the tree on it would hide a working app
+ * behind a check that will often come back empty. Writing is what a missing session refuses, and that
+ * refusal belongs at the call sites that write, not here. See `canWriteToRecord` in `src/lib/config.ts`.
  */
 
 interface SmartContextValue {

@@ -4,9 +4,11 @@ import type { Patient } from 'fhir/r4';
 import { createPatient, type CreatedPatient } from '@/fhir/submit';
 import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
 import { useSmartSession } from '@/auth/SmartContext';
+import { canWriteToRecord } from '@/lib/config';
 import { splitName } from '@/fhir/newPatient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { LaunchRequiredNote } from '@/components/LaunchRequired';
 import { cn } from '@/lib/utils';
 
 /**
@@ -55,7 +57,13 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
   const [nearMatches, setNearMatches] = useState<Patient[] | null>(null);
   const session = useSmartSession();
 
-  const canCreate = family.trim() !== '' && !isSaving;
+  /*
+   * Registering a person is the least reversible thing this app does — nothing here deletes a patient,
+   * and a duplicate created anonymously carries no author to ask about it. So a launch, on top of the
+   * family name and the ordering the doc comment above describes.
+   */
+  const mayWrite = canWriteToRecord(session, serverUrl);
+  const canCreate = mayWrite && family.trim() !== '' && !isSaving;
 
   /**
    * Look for anyone already on the server with this family name.
@@ -217,6 +225,13 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
       ) : null}
 
       {error ? <p className="text-xs text-red-700">{error}</p> : null}
+
+      {mayWrite ? null : (
+        <LaunchRequiredNote>
+          Creating a patient needs a launch. Searching for one already on the server does not — try the
+          name again, or a shorter part of it, before adding somebody new.
+        </LaunchRequiredNote>
+      )}
 
       <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={handleCreate} disabled={!canCreate}>

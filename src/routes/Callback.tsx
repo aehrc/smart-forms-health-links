@@ -4,19 +4,23 @@ import { Loader2 } from 'lucide-react';
 import { completeLaunch } from '@/auth/smartSession';
 import { useSmart } from '@/auth/SmartContext';
 import { LAUNCH_PATH, LAUNCH_SETUP_PATH } from '@/auth/routes';
+import { takeReturnPath } from '@/auth/returnTo';
 import { Alert } from '@/components/ui/alert';
 import SmartRegistration from '@/components/SmartRegistration';
 
 /**
  * Where the authorisation server sends the user back — this is the registered `redirect_uri`.
  *
- * Exchanges the authorisation code for a token, then leaves. Landing here should be momentary; the
- * user's destination depends on what the launch supplied:
+ * Exchanges the authorisation code for a token, then leaves. Landing here should be momentary.
  *
- * Always to the form list, because a launch says *who* but never *which form* — picking one is the
- * first thing the clinician has to do either way. The patient in context is not passed along in the
- * URL: it lives on the session, and `RequestForm` reads it from there. Threading it through a query
- * parameter would let a later navigation drop it silently.
+ * Where it leaves *to* is whatever `returnTo` remembers, which is the screen the launch was started
+ * from when a gate sent the user here, and the form list otherwise — a launch says *who* but never
+ * *which form*, so with nothing remembered picking one is the first thing to do anyway.
+ *
+ * The launch context itself is not passed along in the URL. It lives on the session, and `RequestForm`
+ * reads it from there; threading a patient through a query parameter would let a later navigation drop
+ * it silently. The remembered path is storage rather than a parameter for the neighbouring reason —
+ * `redirect_uri` is registered exactly and strips its query, so nothing can ride back through it.
  */
 export default function Callback() {
   const navigate = useNavigate();
@@ -41,7 +45,7 @@ export default function Callback() {
         setSession(session);
 
         // `replace`, so the back button does not return to a callback URL whose code is spent.
-        navigate('/', { replace: true });
+        navigate(takeReturnPath(), { replace: true });
       })
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -74,7 +78,8 @@ export default function Callback() {
             <a href={LAUNCH_PATH} className="underline">
               Try again
             </a>
-            , or carry on without signing in — the app works unauthenticated.
+            , or carry on without signing in — reading works either way, though nothing can be written
+            until a launch completes.
           </p>
         </Alert>
 

@@ -17,7 +17,7 @@
   "linkLifetimeDays": 30,
   "publishRequestTasks": true,
   "enableSmartLaunch": true,
-  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
+  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/sim/WzIsImV4YW1wbGUtaHlwZXJ0ZW5zaW9uIiwiY2FyZHktaWdpc3QiLCJBVVRPIiwxLDEsMCwiIiwiIiwiIiwiIiwiIiwiIiwiIiwwLDEsIiJd/fhir",
   "smartClientId": "smart-forms-health-links",
   "smartScopes": null
 }
