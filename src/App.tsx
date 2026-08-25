@@ -1,5 +1,5 @@
 import { Navigate, Link as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
-import { ClipboardList, Inbox, QrCode, ScanLine, Users } from 'lucide-react';
+import { ClipboardList, Inbox, KeyRound, QrCode, ScanLine, Users } from 'lucide-react';
 import FormList from './routes/FormList';
 import FillForm from './routes/FillForm';
 import RequestForm from './routes/RequestForm';
@@ -24,35 +24,55 @@ function fragmentHasLink(hash: string): boolean {
 function Header() {
   return (
     <header className="border-b border-slate-200 bg-white">
-      <div className="mx-auto flex max-w-5xl items-center gap-4 px-4 py-3">
-        <RouterLink to="/" className="flex items-center gap-2 font-semibold text-slate-900">
+      {/*
+        * Wraps rather than squeezes. Five nav items plus a signed-in badge carrying a name and a host
+        * exceed a 1024-wide viewport, and the alternatives all cost something a reader needs: hiding
+        * labels leaves cryptic icons, truncating the badge hides which server the next write lands on.
+        * A second row costs a few pixels of height and nothing else, and only appears when it must.
+        */}
+      <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+        <RouterLink
+          to="/"
+          className="flex items-center gap-2 whitespace-nowrap font-semibold text-slate-900">
           <QrCode className="h-5 w-5" aria-hidden />
           Smart Forms Health Links
         </RouterLink>
-        <nav className="ml-auto flex items-center gap-1">
+        <nav className="ml-auto flex flex-wrap items-center justify-end gap-1">
           <RouterLink
             to="/patients"
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
             <Users className="h-4 w-4" aria-hidden />
             Patients
           </RouterLink>
           <RouterLink
             to="/responses"
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
             <ClipboardList className="h-4 w-4" aria-hidden />
             Responses
           </RouterLink>
           <RouterLink
             to="/requests"
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
             <Inbox className="h-4 w-4" aria-hidden />
             Sent requests
           </RouterLink>
           <RouterLink
             to="/scan"
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
             <ScanLine className="h-4 w-4" aria-hidden />
             Scan
+          </RouterLink>
+          {/*
+            * Shown unconditionally, unlike the badge beside it. The setup page's whole audience is
+            * somebody whose launch is not working yet — on a deployment with `enableSmartLaunch`
+            * still off, hiding the way to it would hide it from exactly the person configuring it.
+            * It also holds the scope list, which is worth registering before the app is switched on.
+            */}
+          <RouterLink
+            to={LAUNCH_SETUP_PATH}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            <KeyRound className="h-4 w-4" aria-hidden />
+            Launch setup
           </RouterLink>
           <SessionBadge />
         </nav>
