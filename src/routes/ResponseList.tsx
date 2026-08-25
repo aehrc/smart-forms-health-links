@@ -1,11 +1,16 @@
 import { useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, X } from 'lucide-react';
+import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, UserRound, X } from 'lucide-react';
 import type { QuestionnaireResponse } from 'fhir/r4';
 import { useConfig } from '@/lib/ConfigContext';
 import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
-import { fetchPatient, patientDisplay, searchQuestionnaireResponses } from '@/fhir/ehrServer';
+import {
+  fetchPatient,
+  fetchUserDisplay,
+  patientDisplay,
+  searchQuestionnaireResponses
+} from '@/fhir/ehrServer';
 import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
 import FormRenderer from '@/components/FormRenderer';
 import RawAnswers from '@/components/RawAnswers';
@@ -41,6 +46,40 @@ function responseTitle(response: QuestionnaireResponse): string {
   return url.split('/').filter(Boolean).pop() ?? canonical;
 }
 
+/**
+ * Who recorded a response, as a name if one can be had and a reference otherwise.
+ *
+ * Worth surfacing in the list rather than only on the detail view, because it is what distinguishes a
+ * patient's own answers from a clinician's revision of them at a glance. An amendment writes the
+ * amending user here — see `src/fhir/amend.ts` — so after a launch this is a `Practitioner` the
+ * authorisation server vouched for rather than a name somebody typed.
+ *
+ * Returns null when the server holds no author at all, which callers should render as an explicit
+ * absence: an accepted response that nobody is recorded as having authored is a real gap, not a
+ * cosmetic one, and hiding it would make the record look more complete than it is.
+ */
+function authorLabel(
+  response: QuestionnaireResponse,
+  names: Map<string, string>
+): { text: string; resolved: boolean } | null {
+  const author = response.author;
+  if (!author) {
+    return null;
+  }
+
+  if (author.display) {
+    return { text: author.display, resolved: true };
+  }
+
+  const reference = author.reference;
+  if (!reference) {
+    return null;
+  }
+
+  const name = names.get(reference);
+  return name ? { text: name, resolved: true } : { text: reference, resolved: false };
+}
+
 export default function ResponseList() {
   const [params, setParams] = useSearchParams();
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
@@ -59,6 +98,41 @@ export default function ResponseList() {
     queryFn: ({ signal }) =>
       searchQuestionnaireResponses(ehrServerUrl!, { subject, session }, signal),
     enabled: ehrServerUrl !== null
+  });
+
+  /*
+   * Names for authors the server named only by reference.
+   *
+   * Deduplicated, because a list of fifty responses is usually the work of a handful of people and
+   * fetching `Practitioner/123` once per row would be forty-odd redundant reads. Resolved in one query
+   * keyed on the distinct set, so it refetches when the page changes and not otherwise.
+   *
+   * `fetchUserDisplay` fails soft per reference, so a Practitioner this user cannot read costs that one
+   * name and not the list.
+   */
+  const authorRefs = [
+    ...new Set(
+      (page?.resources ?? [])
+        .map((response) => (response.author?.display ? undefined : response.author?.reference))
+        .filter((reference): reference is string => reference !== undefined)
+    )
+  ].sort();
+
+  const { data: authorNames } = useQuery({
+    queryKey: ['response-authors', ehrServerUrl, session?.fhirUser ?? null, authorRefs.join('|')],
+    queryFn: async ({ signal }) => {
+      const resolved = await Promise.all(
+        authorRefs.map(async (reference) => [
+          reference,
+          await fetchUserDisplay(ehrServerUrl!, reference, signal, session)
+        ] as const)
+      );
+
+      return new Map(
+        resolved.filter((pair): pair is [string, string] => pair[1] !== null)
+      );
+    },
+    enabled: ehrServerUrl !== null && authorRefs.length > 0
   });
 
   // Only to name the filter chip; the list itself is already filtered server-side.
@@ -163,6 +237,23 @@ export default function ResponseList() {
                         ? ` · stored ${new Date(response.meta.lastUpdated).toLocaleString()}`
                         : null}
                   </p>
+                  {(() => {
+                    const author = authorLabel(response, authorNames ?? new Map());
+                    return (
+                      <p className="mt-0.5 flex items-center gap-1 text-xs">
+                        <UserRound className="h-3 w-3 shrink-0 text-slate-400" aria-hidden />
+                        {author ? (
+                          <span className={author.resolved ? 'text-slate-600' : 'font-mono text-slate-500'}>
+                            Recorded by {author.text}
+                          </span>
+                        ) : (
+                          /* Stated rather than omitted: an accepted response records who answered but
+                             nobody as having recorded it, and that absence is worth seeing. */
+                          <span className="text-slate-400 italic">No author recorded</span>
+                        )}
+                      </p>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex shrink-0 items-center gap-2 self-center">

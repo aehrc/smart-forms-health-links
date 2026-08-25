@@ -250,7 +250,14 @@ export const DEFAULT_SMART_SCOPES = [
   'user/Patient.crs',
   'user/QuestionnaireResponse.crs',
   'user/Task.crs',
-  'user/Provenance.cr'
+  'user/Provenance.cr',
+  /*
+   * `fhirUser` yields a *reference*, not a name, and `fetchUserDisplay` reads the resource to turn
+   * `Practitioner/123` into something a clinician recognises. Without this the read is refused and the
+   * session badge falls back to showing the bare reference — which a permissive sandbox hides, because
+   * it grants `user/*.*` and never exercises the gap.
+   */
+  'user/Practitioner.r'
 ].join(' ');
 
 function isValidUrl(value: unknown): value is string {
