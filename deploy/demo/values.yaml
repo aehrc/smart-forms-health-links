@@ -9,7 +9,9 @@ smartFormsHealthLinks:
   replicas: 2
 
   # Replaces the config.json baked into the image, so this is the whole
-  # configuration and not an overlay on it.
+  # configuration and not an overlay on it: a key added to public/config.json
+  # has to be added here too, or the demo silently falls back to
+  # FALLBACK_CONFIG in src/lib/config.ts, which turns features off.
   config:
     formsServerUrl: "https://smartforms.csiro.au/api/fhir"
     terminologyServerUrl: "https://r4.ontoserver.csiro.au/fhir"
@@ -21,9 +23,33 @@ smartFormsHealthLinks:
     blobStore: "fhir-binary"
     shlManifestUrl: null
     senderName: "Smart Forms Health Links demo"
-    # Both return channels stay off: answers come back as a link the filler
-    # mints, which is reviewed before anything is written.
+    # Channels B and C stay off: B accepts answers without review, and C's
+    # primary path is a link the filler mints and the requester reviews.
     enableServerReturn: false
     enableEncryptedReply: false
+    # Channel D is on, as it is in the shipped config: a filler that cannot do
+    # C's crypto still needs a way to answer. Slots go to blobServerUrl.
+    enableOneShotWrite: true
+    writeSlotServerUrl: null
     linkLifetimeDays: 30
     publishRequestTasks: true
+    # A launch is optional: with none the app stays anonymous, which the filler
+    # half depends on.
+    #
+    # The issuer is the smart-launcher-v2 facade over the same data as
+    # responseServerUrl, and the only base there that serves
+    # .well-known/smart-configuration. The /sim/ segment is required: it is
+    # base64url of the launcher's launch-options array, here
+    # [2, "example-hypertension", "cardy-igist", "AUTO", 1, 1, 0, "", "", "",
+    #  "", "", "", "", 0, 1, ""] — a provider-standalone launch with the
+    # practitioner and patient pinned and both interactive screens skipped.
+    #
+    # Pinned and skipped because this launcher deployment serves no UI at all:
+    # every screen it redirects to answers "this route does not exist". A launch
+    # that needs no screen completes in the backend, so signing in yields a real
+    # token and a real fhirUser (Practitioner/cardy-igist) for attribution, at
+    # the cost of one fixed demo identity. See docs/smart-app-launch.md.
+    enableSmartLaunch: true
+    smartIssuerUrl: "https://proxy.smartforms.io/v/r4/sim/WzIsImV4YW1wbGUtaHlwZXJ0ZW5zaW9uIiwiY2FyZHktaWdpc3QiLCJBVVRPIiwxLDEsMCwiIiwiIiwiIiwiIiwiIiwiIiwiIiwwLDEsIiJd/fhir"
+    smartClientId: "smart-forms-health-links"
+    smartScopes: null

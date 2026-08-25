@@ -139,27 +139,39 @@ reads as success.
 
 ### Standalone launch against smart-launcher-v2 needs a `/sim/` issuer
 
-Found by testing, and it costs an afternoon if you do not know it. smart-launcher-v2 encodes its
-launch options either in the `launch` parameter or in the issuer path, and it tries to parse them
-either way:
+smart-launcher-v2 reads its launch options from the `launch` parameter on an EHR launch, or from the
+issuer path on a standalone launch, and it parses them either way:
 
 | Launch | Issuer | Result |
 | --- | --- | --- |
 | EHR (`?iss=…&launch=…`) | `…/v/r4/fhir` | works — the options ride in `launch` |
 | Standalone (`/launch`) | `…/v/r4/fhir` | **`invalid_request: Invalid launch options: SyntaxError: Unexpected end of JSON input`** |
-| Standalone (`/launch`) | `…/v/r4/sim/{base64url-json}/fhir` | works |
+| Standalone (`/launch`) | `…/v/r4/sim/{base64url-array}/fhir` | works |
 
 With no `launch` parameter and no options in the path there is nothing to parse, and an empty string
 is not valid JSON. Both `launch.smarthealthit.org` and `proxy.smartforms.io` behave identically, so
-this is the launcher's own behaviour and not a deployment fault. The options are a base64url-encoded
-JSON object — `{"launch_type":"provider-standalone","patient":"","provider":"", …}`.
+this is the launcher's own behaviour and not a deployment fault.
 
-This is a quirk of the *launcher*, not of SMART. A real EHR advertises one issuer that serves both
-patterns.
+The options are base64url of a JSON **array**, not an object. `src/isomorphic/codec.ts` maps them by
+position — `[launchTypeIndex, patient, provider, encounter, skip_login, skip_auth, sim_ehr, scope,
+redirect_uris, client_id, client_secret, auth_error, jwks_url, jwks, clientTypeIndex, pkceIndex,
+fhir_context]`, where `2` is `provider-standalone`. An object is accepted as well, but it falls to
+`decodeLegacy`, which reads single-letter keys (`h`, `b`, `e`, `i`, `j`), so
+`{"launch_type":"provider-standalone", …}` decodes as an EHR launch with nothing selected and lands
+on the login screen — which is exactly the wrong lesson to draw from it.
 
-> **The CSIRO sandbox cannot complete an interactive launch.** `proxy.smartforms.io` serves the
-> discovery document and the auth endpoints, but its `/provider-login` and `/select-patient` routes
-> return "this route does not exist". Use `launch.smarthealthit.org` to demonstrate a full login.
+> **The CSIRO sandbox serves no launcher UI.** The AEHRC fork drops the two lines that serve the
+> React build — upstream `backend/index.ts:25` (`express.static`) and `:96` (the `index.html`
+> fallback) — and its catch-all, `backend/index.ts:123-128`, answers every unmatched path with "This
+> service is healthy, but this route does not exist". Each screen the authorisation server redirects
+> to (`/provider-login`, `/select-patient`, `/authorize-app`) therefore dead-ends there.
+>
+> A launch that needs no screen still completes: pin `provider` and `patient`, set `skip_login` and
+> `skip_auth`, and `/auth/authorize` redirects straight back to `redirect_uri` with a code. The
+> patient has to be pinned because `buildScopes` always asks for `launch/patient` on a standalone
+> launch and `needToPickPatient` (`backend/routes/auth/authorize.ts:230-241`) turns that into a
+> picker. This is what `deploy/demo/values.yaml` uses. Point at `launch.smarthealthit.org` instead
+> when the point is to show the login and patient-picker screens.
 
 ### Scopes
 
