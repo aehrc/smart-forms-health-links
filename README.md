@@ -874,10 +874,11 @@ The third row is the one worth having. Before a launch, `Provenance.agent.who` c
 }
 ```
 
-Then open **`/launch/setup`** in the deployed app. It lists everything the authorisation server needs
-— launch URL, redirect URI, client id, issuer and the full scope list — generated from that
-deployment's own config, so it is correct for that build and that host in a way this file cannot be.
-It is also the page to send to whoever administers the OAuth client, which is often not you.
+Then open **Launch setup** in the app's header — `/launch/setup`, linked from every screen because the
+person who needs it is the one whose launch does not work yet. It lists everything the authorisation
+server needs — launch URL, redirect URI, client id, issuer and the full scope list — generated from
+that deployment's own config, so it is correct for that build and that host in a way this file cannot
+be. It is also the page to send to whoever administers the OAuth client, which is often not you.
 
 Two things it will tell you that are easy to get wrong:
 

@@ -39,7 +39,7 @@ export default function SessionBadge() {
     return (
       <a
         href={LAUNCH_PATH}
-        className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
         <LogIn className="h-4 w-4" aria-hidden />
         Sign in
       </a>
@@ -56,7 +56,7 @@ export default function SessionBadge() {
   return (
     <div className="flex items-center gap-1">
       <span
-        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2.5 py-1.5 text-sm text-emerald-900"
+        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md bg-emerald-50 px-2.5 py-1.5 text-sm text-emerald-900"
         title={`${session.fhirUser ?? 'Unknown user'} at ${session.serverUrl}`}>
         <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />
         <span className="max-w-40 truncate">{who}</span>
