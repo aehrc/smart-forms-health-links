@@ -261,6 +261,53 @@ if (isAppConfig(shippedConfig)) {
   );
 }
 
+/*
+ * Every key in the shipped config has to appear in the demo deployment's values as well.
+ *
+ * `deploy/demo/values.yaml` replaces config.json wholesale rather than overlaying it, and
+ * `loadConfig` fills whatever is absent from FALLBACK_CONFIG — where every capability is off. So a
+ * key added here and forgotten there does not fail the deploy or log anything: it quietly switches a
+ * feature off in the one deployment anybody looks at. That has now happened twice, first with channel
+ * D and the launch and then with write-back and pre-population.
+ *
+ * Worth asserting rather than remembering because the second time the symptom was a narrower **scope
+ * grant** — `buildScopes` adds PRE_POPULATE_SCOPES only when `enablePrePopulate` is true, so the
+ * launch asked for `user/Condition.cu` and never `user/Condition.crus`, and a form querying the
+ * record came back empty rather than refused. Nothing surfaces that but a check.
+ *
+ * Keys are read by indentation rather than with a YAML parser: `yaml` is present only transitively
+ * here, and this is a question about presence, not about values.
+ */
+const demoLines = readFileSync(`${process.cwd()}/deploy/demo/values.yaml`, 'utf8').split('\n');
+const demoConfigAt = demoLines.findIndex((line) => /^ {2}config:\s*$/.test(line));
+const demoConfigKeys: string[] = [];
+
+for (const line of demoLines.slice(demoConfigAt + 1)) {
+  // A blank or deeper-indented line continues the block; anything shallower ends it.
+  if (line.trim() !== '' && !line.startsWith('    ')) {
+    break;
+  }
+
+  const key = /^ {4}([A-Za-z][A-Za-z0-9]*):/.exec(line);
+  if (key) {
+    demoConfigKeys.push(key[1]);
+  }
+}
+
+check('config/demoValuesHasConfigBlock', demoConfigAt !== -1, 'deploy/demo/values.yaml');
+
+const undeclaredInDemo = Object.keys(shippedConfig as Record<string, unknown>).filter(
+  (key) => !demoConfigKeys.includes(key)
+);
+
+check(
+  'config/demoValuesStateEveryKey',
+  demoConfigAt !== -1 && undeclaredInDemo.length === 0,
+  undeclaredInDemo.length > 0
+    ? `absent from deploy/demo/values.yaml, so it falls back to off: ${undeclaredInDemo.join(', ')}`
+    : `${demoConfigKeys.length} keys stated`
+);
+
 // The fallback used when config.json is missing or malformed must NOT name a write target: silently
 // writing to some server because config failed to load is worse than refusing.
 check('config/fallbackHasNoWriteTargets', FALLBACK_CONFIG.responseServerUrl === null && FALLBACK_CONFIG.blobServerUrl === null);

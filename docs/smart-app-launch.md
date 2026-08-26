@@ -255,9 +255,17 @@ on the login screen — which is exactly the wrong lesson to draw from it.
 launch openid fhirUser online_access
 user/Patient.crs user/QuestionnaireResponse.crs user/Task.crs user/Provenance.cr
 user/Practitioner.r
-user/Condition.cu user/Observation.cu user/AllergyIntolerance.cu
-user/MedicationStatement.cu user/Immunization.cu user/Procedure.cu user/Encounter.cu
+user/Condition.crus user/Observation.crus user/AllergyIntolerance.crus
+user/MedicationStatement.crus user/Immunization.crus user/Procedure.crus
+user/Encounter.crus
+user/MedicationRequest.rs user/ServiceRequest.rs user/PractitionerRole.rs
+user/Organization.rs user/Device.rs
 ```
+
+Twenty-one scopes, with `enablePrePopulate` on as it is in the shipped config and in
+`deploy/demo/values.yaml`. With it off the read-only block goes away and the `.crus` block drops to
+`.cu` — the shorter list this section used to print, and the one the demo deployment was really asking
+for while the key was missing from its values.
 
 **A client registration must allow `launch/patient` too**, even though it never appears alongside
 `launch` in a single request — see the last bullet. Registering only what one launch pattern asks for
@@ -269,17 +277,23 @@ under the nav, on every screen — which is the copy to trust: it reflects the d
 
 - **`user/`, not `patient/`.** `/patients` and `/responses` search across the server. A `patient/`
   grant is scoped to the one patient in context and would leave both routes empty.
-- **The permission letters track what the code issues**, and the two groups differ on purpose. The
-  first group is create, read and search only. The second exists solely for
-  [form data extraction](write-back.md), which emits `PUT` and `PATCH` entries — a form recording a
-  resolved allergy is amending something that already exists, and there is no create-only way to say
-  that.
+- **The permission letters track what the code issues.** The resources the app authors are `crs` —
+  create, read and search. The `u` appears only for [form data extraction](write-back.md), which
+  emits `PUT` and `PATCH` entries: a form recording a resolved allergy is amending something that
+  already exists, and there is no create-only way to say that.
+- **`.crus` is two features asking for one permission.** Extraction wants `user/Condition.cu` and
+  [pre-population](pre-population.md) wants `user/Condition.rs`, for opposite reasons, so
+  `mergePermissions` collapses them into a single request rather than asking the same question twice.
+  The five `.rs` scopes are the types pre-population reads and nothing writes.
 - **Nothing is ever deleted, and the resources the app *authors* are never updated.** No `d` on
   anything; no `u` on `Patient`, `QuestionnaireResponse`, `Task` or `Provenance`.
   [Amendments are new resources](../README.md#amendments-are-new-resources) is what makes that
   possible — a stored response never has to be edited in place. `check:roundtrip` asserts both halves.
-- **A deployment whose forms declare no extraction can drop the second group.** Set `smartScopes`, or
-  `enableWriteBack: false` to remove the feature outright.
+- **A deployment whose forms declare no extraction can drop the `u`.** Set `smartScopes`, or
+  `enableWriteBack: false` to remove the feature outright. `enablePrePopulate: false` drops the reads
+  the same way. Both flags have to be stated in a deployment's own values — absent, they fall back to
+  off, and the grant silently narrows with them. `check:roundtrip` asserts that
+  `deploy/demo/values.yaml` states every key in `config.json` for exactly this reason.
 - **`online_access`, not `offline_access`.** A foreground clinician tool with no backend has nowhere
   safe to keep a refresh token that outlives the session. Note that smart-launcher-v2 does not
   advertise `online_access`; `check:smart` reports that as advisory rather than failing, because

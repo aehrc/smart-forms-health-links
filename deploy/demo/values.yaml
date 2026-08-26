@@ -31,6 +31,15 @@ smartFormsHealthLinks:
     # C's crypto still needs a way to answer. Slots go to blobServerUrl.
     enableOneShotWrite: true
     writeSlotServerUrl: null
+    # Both on, as they are in the shipped config. They were absent here, which
+    # is the failure this file's header warns about: the demo ran the new code
+    # with both features off. Pre-population is the one that mattered for the
+    # grant — buildScopes adds PRE_POPULATE_SCOPES only when
+    # enablePrePopulate is true, so the launch asked for user/Condition.cu and
+    # never user/Condition.crus, and a form querying the record would have
+    # come back empty rather than refused.
+    enableWriteBack: true
+    enablePrePopulate: true
     linkLifetimeDays: 30
     publishRequestTasks: true
     # A launch is optional: with none the app stays anonymous, which the filler
