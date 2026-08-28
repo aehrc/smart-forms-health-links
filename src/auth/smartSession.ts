@@ -1,6 +1,7 @@
 import FHIR from 'fhirclient';
 import type Client from 'fhirclient/lib/Client';
 import type { AppConfig } from '@/lib/config';
+import { nominatedWriteSlotFrom, type NominatedWriteSlot } from './nominatedSlot';
 import { buildScopes } from './scopes';
 
 /**
@@ -20,6 +21,8 @@ import { buildScopes } from './scopes';
  * `null`; the refusal to *write* without one lives a layer up, at the requester's own call sites. See
  * `canWriteToRecord` in `src/lib/config.ts` for why it is there and not here.
  */
+
+export type { NominatedWriteSlot } from './nominatedSlot';
 
 /**
  * What the rest of the app is allowed to know about a launch.
@@ -49,6 +52,28 @@ export interface SmartSession {
    * changed.
    */
   readonly requestedScopes: string;
+
+  /**
+   * A write slot the launching EHR nominated for this request, if it did.
+   *
+   * The EHR allocates the slot on its own server, and passes its address and a bearer capability for
+   * it through the launch context. When present, a request link built in this session names *this*
+   * slot as the one-shot write target instead of one allocated on our blob store, so the answers land
+   * on the record system that asked for them rather than somewhere it then has to poll and reconcile.
+   *
+   * Null when the launch supplied none, which is every launch from an EHR that does not implement this
+   * and remains the normal case.
+   */
+  readonly nominatedWriteSlot: NominatedWriteSlot | null;
+
+  /**
+   * The identifier the EHR wants this request known by, if it supplied one.
+   *
+   * Used verbatim as the request's business identifier so that the Task published back to the EHR and
+   * the answers written to its slot carry the *same* value it already recorded. Minting our own here
+   * instead is what makes a returned response unmatchable against the request that asked for it.
+   */
+  readonly nominatedRequestId: string | null;
 
   /**
    * The `Authorization` header value, refreshing the token first if it is close to expiry.
@@ -125,6 +150,12 @@ function toSession(client: Client): SmartSession {
     fhirUser: client.getFhirUser(),
     grantedScopes: (client.getState('tokenResponse.scope') as string | undefined) ?? '',
     requestedScopes: (client.getState('scope') as string | undefined) ?? '',
+    nominatedWriteSlot: nominatedWriteSlotFrom(
+      client.getState('tokenResponse.write_slot_url') as string | undefined,
+      client.getState('tokenResponse.write_slot_token') as string | undefined
+    ),
+    nominatedRequestId:
+      (client.getState('tokenResponse.request_id') as string | undefined) ?? null,
 
     async authorizationHeader() {
       /*

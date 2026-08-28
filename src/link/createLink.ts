@@ -32,6 +32,7 @@ import {
   type WriteDescriptor
 } from './replyDescriptor';
 import { createWriteSlot, putResponseToSlot, type WriteSlotOutcome } from './writeSlot';
+import { nominatedWriteTarget } from './writeTarget';
 
 /**
  * Link creation — the boundary where the renderer's global form state and the app's config meet the
@@ -155,8 +156,11 @@ export async function createRequestLink(
    * Fixed up front rather than left to `buildRequestBundle`, because channel B publishes a second copy
    * of this Task to a server and the two copies have to share one business identifier — otherwise a
    * response returned through either channel could not be matched to the other's record of the request.
+   *
+   * A launch's own identifier wins when it supplied one; see `nominatedWriteTarget`.
    */
-  const requestId = crypto.randomUUID();
+  const nominated = nominatedWriteTarget(options.session, expiresAt);
+  const requestId = nominated.requestId ?? crypto.randomUUID();
 
   /*
    * Channel C, when it is enabled. Off by default: the answers come back as a link the filler mints,
@@ -176,27 +180,38 @@ export async function createRequestLink(
       : undefined;
 
   /*
-   * Channel D, when it is enabled. Minted before the payload is sealed for the same reason the reply
-   * slot is: the invitation has to name a resource that already exists, and nothing can be added to a
-   * link once it is encrypted and uploaded. A failure further down leaves an unanswered slot behind,
-   * which is harmless — an empty `in-progress` QuestionnaireResponse.
+   * Channel D. Two ways to get one: a slot the launching EHR nominated, or one allocated on our own
+   * blob store. Which of those wins, and why a nomination is not gated on `enableOneShotWrite`, is
+   * decided by `nominatedWriteTarget` and reasoned about there.
+   *
+   * Self-minted slots are minted before the payload is sealed, because the invitation has to name a
+   * resource that already exists and nothing can be added to a link once it is encrypted and
+   * uploaded. A failure further down leaves an unanswered slot behind, which is harmless — an empty
+   * `in-progress` QuestionnaireResponse. A nominated slot needs no such round trip: the EHR allocated
+   * it before it launched us, which is why nothing is allocated here when one is in play.
    */
-  const writeSlotServerUrl = canUseOneShotWrite(config) ? resolveWriteSlotServerUrl(config) : null;
+  const writeSlotServerUrl =
+    !nominated.usesNomination && canUseOneShotWrite(config)
+      ? resolveWriteSlotServerUrl(config)
+      : null;
   const slot = writeSlotServerUrl
     ? await createWriteSlot(writeSlotServerUrl, {
         questionnaireCanonical: questionnaireCanonicalOf(questionnaire),
         requestId
       })
     : undefined;
-  const writeDescriptor: WriteDescriptor | undefined = slot
-    ? {
-        writeUrl: slot.writeUrl,
-        writeMethod: 'PUT',
-        writeEtag: slot.writeEtag,
-        writeToken: slot.writeToken,
-        ...(expiresAt !== undefined ? { expiresAt } : {})
-      }
-    : undefined;
+
+  const writeDescriptor: WriteDescriptor | undefined =
+    nominated.writeDescriptor ??
+    (slot
+      ? {
+          writeUrl: slot.writeUrl,
+          writeMethod: 'PUT',
+          writeEtag: slot.writeEtag,
+          writeToken: slot.writeToken,
+          ...(expiresAt !== undefined ? { expiresAt } : {})
+        }
+      : undefined);
 
   /*
    * Publishing the Task and offering channel B are separate decisions, and conflating them would be a
@@ -273,6 +288,13 @@ export async function createRequestLink(
     ...(keyPair && replyUrl ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } } : {}),
     ...(serverTaskUrl ? { serverTaskUrl } : {}),
     serverReturnOffered: serverReturn,
+    /*
+     * Only a slot we allocated is reported back for local tracking, and a nominated one deliberately
+     * is not. `sentRequests` uses this record to offer a "collect" action, and the answers in a
+     * nominated slot belong to the EHR that allocated it — it will read them from its own record
+     * system. Offering to collect them here would mean polling a server we do not own for a patient's
+     * answers we were never the destination for.
+     */
     ...(slot
       ? { write: { url: slot.writeUrl, etag: slot.writeEtag, token: slot.writeToken } }
       : {})

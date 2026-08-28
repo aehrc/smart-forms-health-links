@@ -18,6 +18,7 @@
     "check:populate": "esbuild scripts/e2ePopulate.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-populate.mjs --log-level=warning && node node_modules/.cache/e2e-populate.mjs",
     "check:smart": "esbuild scripts/checkSmartConfig.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/check-smart.mjs --log-level=warning && node node_modules/.cache/check-smart.mjs",
     "check:writeback": "esbuild scripts/e2eWriteBack.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-writeback.mjs --log-level=warning && node node_modules/.cache/e2e-writeback.mjs",
+    "check:e2e-nominated-slot": "esbuild scripts/e2eNominatedSlot.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/e2e-nominated-slot.mjs --log-level=warning && node node_modules/.cache/e2e-nominated-slot.mjs",
     "mint:review": "esbuild scripts/mintReviewLink.ts --bundle --format=esm --platform=node --target=node22 --alias:@=./src --outfile=node_modules/.cache/mint-review.mjs --log-level=warning && node node_modules/.cache/mint-review.mjs"
   },
   "dependencies": {
