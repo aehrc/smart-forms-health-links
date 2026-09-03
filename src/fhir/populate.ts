@@ -1,11 +1,19 @@
-import type { OperationOutcome, Patient, Practitioner, Questionnaire, QuestionnaireResponse } from 'fhir/r4';
 import {
   populateQuestionnaire,
   type FetchResourceCallback,
-  type FetchResourceRequestConfig
-} from '@aehrc/sdc-populate';
-import type { SmartSession } from '@/auth/smartSession';
-import { authedFetch } from './authedFetch';
+  type FetchResourceRequestConfig,
+} from "@aehrc/sdc-populate";
+
+import { authedFetch } from "./authedFetch";
+
+import type { SmartSession } from "@/auth/smartSession";
+import type {
+  OperationOutcome,
+  Patient,
+  Practitioner,
+  Questionnaire,
+  QuestionnaireResponse,
+} from "fhir/r4";
 
 /**
  * Filling a form from the record, on the requesting side.
@@ -33,18 +41,20 @@ import { authedFetch } from './authedFetch';
  */
 
 /** SDC's populate machinery, by extension URL. */
-const LAUNCH_CONTEXT = 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext';
-const SOURCE_QUERIES = 'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-sourceQueries';
+const LAUNCH_CONTEXT =
+  "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext";
+const SOURCE_QUERIES =
+  "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-sourceQueries";
 const ITEM_POPULATION_CONTEXT =
-  'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-itemPopulationContext';
+  "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-itemPopulationContext";
 const INITIAL_EXPRESSION =
-  'http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression';
-const VARIABLE = 'http://hl7.org/fhir/StructureDefinition/variable';
+  "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression";
+const VARIABLE = "http://hl7.org/fhir/StructureDefinition/variable";
 
 /** How long to wait before calling it off. Well under sdc-populate's own 30s default. */
 export const POPULATE_TIMEOUT_MS = 15_000;
 
-function declaresPopulation(extensions: Questionnaire['extension']): boolean {
+function declaresPopulation(extensions: Questionnaire["extension"]): boolean {
   return (extensions ?? []).some(
     (extension) =>
       extension.url === LAUNCH_CONTEXT ||
@@ -52,7 +62,7 @@ function declaresPopulation(extensions: Questionnaire['extension']): boolean {
       extension.url === ITEM_POPULATION_CONTEXT ||
       extension.url === INITIAL_EXPRESSION ||
       (extension.url === VARIABLE &&
-        extension.valueExpression?.language === 'application/x-fhir-query')
+        extension.valueExpression?.language === "application/x-fhir-query"),
   );
 }
 
@@ -70,8 +80,11 @@ function declaresPopulation(extensions: Questionnaire['extension']): boolean {
  * Deliberately a check for the *machinery*, not a prediction of the *result*. A form can declare
  * everything correctly and still populate nothing, because the record holds nothing — and that is a
  * fact about the patient, which only running it can establish.
+ * @param questionnaire
  */
-export function questionnaireDeclaresPopulation(questionnaire: Questionnaire | undefined): boolean {
+export function questionnaireDeclaresPopulation(
+  questionnaire: Questionnaire | undefined,
+): boolean {
   if (!questionnaire) {
     return false;
   }
@@ -80,8 +93,10 @@ export function questionnaireDeclaresPopulation(questionnaire: Questionnaire | u
     return true;
   }
 
-  function walk(items: Questionnaire['item']): boolean {
-    return (items ?? []).some((item) => declaresPopulation(item.extension) || walk(item.item));
+  function walk(items: Questionnaire["item"]): boolean {
+    return (items ?? []).some(
+      (item) => declaresPopulation(item.extension) || walk(item.item),
+    );
   }
 
   return walk(questionnaire.item);
@@ -122,23 +137,30 @@ export interface PrePopulateResult {
  * puts an `authToken` string there and applies it to whatever URL it builds. Beyond aiming the token
  * at the wrong hosts, a snapshot cannot refresh — `session.authorizationHeader()` is async precisely
  * so a long populate outliving its access token still works.
+ * @param session
+ * @param signal
  */
-function recordReader(session: SmartSession, signal?: AbortSignal): FetchResourceCallback {
+function recordReader(
+  session: SmartSession,
+  signal?: AbortSignal,
+): FetchResourceCallback {
   return async (query: string, requestConfig: FetchResourceRequestConfig) => {
-    const base = requestConfig.sourceServerUrl.replace(/\/+$/, '');
-    const url = /^https?:\/\//i.test(query) ? query : `${base}/${query.replace(/^\/+/, '')}`;
+    const base = requestConfig.sourceServerUrl.replace(/\/+$/, "");
+    const url = /^https?:\/\//i.test(query)
+      ? query
+      : `${base}/${query.replace(/^\/+/, "")}`;
 
     const response = await authedFetch(
       url,
-      { headers: { Accept: 'application/fhir+json' }, signal },
-      session
+      { headers: { Accept: "application/fhir+json" }, signal },
+      session,
     );
 
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText} for ${url}`);
     }
 
-    return response.json();
+    return response.json() as Promise<unknown>;
   };
 }
 
@@ -152,9 +174,20 @@ function recordReader(session: SmartSession, signal?: AbortSignal): FetchResourc
  * opposite in meaning — one says the record could not be read, the other that it holds nothing — and
  * a clinician who cannot tell them apart will send a form asserting the second when the first is
  * true.
+ * @param options
  */
-export async function prePopulate(options: PrePopulateOptions): Promise<PrePopulateResult> {
-  const { questionnaire, ehrServerUrl, session, patient, user, signal, timeoutMs } = options;
+export async function prePopulate(
+  options: PrePopulateOptions,
+): Promise<PrePopulateResult> {
+  const {
+    questionnaire,
+    ehrServerUrl,
+    session,
+    patient,
+    user,
+    signal,
+    timeoutMs,
+  } = options;
 
   const { populateSuccess, populateResult } = await populateQuestionnaire({
     questionnaire,
@@ -162,7 +195,7 @@ export async function prePopulate(options: PrePopulateOptions): Promise<PrePopul
     fetchResourceRequestConfig: { sourceServerUrl: ehrServerUrl },
     patient,
     ...(user ? { user } : {}),
-    timeoutMs: timeoutMs ?? POPULATE_TIMEOUT_MS
+    timeoutMs: timeoutMs ?? POPULATE_TIMEOUT_MS,
   });
 
   /*
@@ -178,6 +211,6 @@ export async function prePopulate(options: PrePopulateOptions): Promise<PrePopul
 
   return {
     response: populateResult.populatedResponse,
-    issues: populateResult.issues ?? null
+    issues: populateResult.issues ?? null,
   };
 }

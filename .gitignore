@@ -1,11 +1,22 @@
 node_modules
 dist
+dist-server
+coverage
+report
+test-results
+playwright-report
 *.tsbuildinfo
 .DS_Store
 .env
 .env.local
+.env.e2e
 .idea
 .vscode
 
 # Per-developer tool state. Only ignored by one contributor's global gitignore otherwise.
 .claude/settings.local.json
+
+# Local runtime state and the operator's own issuer registry.
+config/issuers.json
+data
+.verify

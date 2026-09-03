@@ -1,5 +1,6 @@
-import type { QuestionnaireResponse } from 'fhir/r4';
-import { writeSlotId, type WriteDescriptor } from './replyDescriptor';
+import { writeSlotId, type WriteDescriptor } from "./replyDescriptor";
+
+import type { QuestionnaireResponse } from "fhir/r4";
 
 /**
  * The write slot: a pre-allocated `QuestionnaireResponse` a filler may fill in exactly once.
@@ -39,7 +40,7 @@ import { writeSlotId, type WriteDescriptor } from './replyDescriptor';
  * server, because a filler holds a URL for a host it has no configuration for at all.
  */
 
-const FHIR_JSON = 'application/fhir+json';
+const FHIR_JSON = "application/fhir+json";
 
 /**
  * Marks a slot as one of ours, so slots can be told apart from real responses on a shared server.
@@ -48,9 +49,9 @@ const FHIR_JSON = 'application/fhir+json';
  * searchable, which is what lets an operator find and clean up slots nobody ever answered.
  */
 export const SHL_WRITE_SLOT_TAG = {
-  system: 'http://smartforms.csiro.au/CodeSystem/shl-request',
-  code: 'shl-write-slot',
-  display: 'Slot awaiting answers returned over a SMART Health Link'
+  system: "http://smartforms.csiro.au/CodeSystem/shl-request",
+  code: "shl-write-slot",
+  display: "Slot awaiting answers returned over a SMART Health Link",
 } as const;
 
 /**
@@ -64,10 +65,10 @@ export const SHL_WRITE_SLOT_TAG = {
  */
 export function mintWriteToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+  return btoa(String.fromCodePoint(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
 }
 
 export interface CreateWriteSlotOptions {
@@ -84,7 +85,7 @@ export interface MintedWriteSlot {
 }
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, '');
+  return url.replace(/\/+$/, "");
 }
 
 interface OperationOutcome {
@@ -92,9 +93,12 @@ interface OperationOutcome {
   issue?: { diagnostics?: string }[];
 }
 
-/** The human-readable reason out of a FHIR error response, when there is one. */
+/**
+ * The human-readable reason out of a FHIR error response, when there is one.
+ * @param response
+ */
 async function describeFailure(response: Response): Promise<string> {
-  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
 
   try {
     const body = (await response.json()) as OperationOutcome;
@@ -103,7 +107,7 @@ async function describeFailure(response: Response): Promise<string> {
       .filter((text): text is string => !!text);
 
     if (diagnostics.length > 0) {
-      return `${status}: ${diagnostics.join('; ')}`;
+      return `${status}: ${diagnostics.join("; ")}`;
     }
   } catch {
     // Not every error response carries an OperationOutcome.
@@ -125,10 +129,12 @@ async function describeFailure(response: Response): Promise<string> {
  *    filler cannot write at all, and the request silently never gets answered.
  *  - **The URL is rebuilt from the base and the id, not taken from `Location`.** `blobStore.ts`
  *    documents why — the forms server reports a scheme and path that do not resolve.
+ * @param serverUrl
+ * @param options
  */
 export async function createWriteSlot(
   serverUrl: string,
-  options: CreateWriteSlotOptions = {}
+  options: CreateWriteSlotOptions = {},
 ): Promise<MintedWriteSlot> {
   const base = trimTrailingSlash(serverUrl);
 
@@ -142,24 +148,31 @@ export async function createWriteSlot(
    * reference that does not resolve there would fail the create with HAPI-1094.
    */
   const slot: QuestionnaireResponse = {
-    resourceType: 'QuestionnaireResponse',
-    status: 'in-progress',
+    resourceType: "QuestionnaireResponse",
+    status: "in-progress",
     meta: { tag: [{ ...SHL_WRITE_SLOT_TAG }] },
-    ...(options.questionnaireCanonical ? { questionnaire: options.questionnaireCanonical } : {}),
+    ...(options.questionnaireCanonical
+      ? { questionnaire: options.questionnaireCanonical }
+      : {}),
     ...(options.requestId
-      ? { identifier: { system: 'urn:ietf:rfc:3986', value: `urn:uuid:${options.requestId}` } }
-      : {})
+      ? {
+          identifier: {
+            system: "urn:ietf:rfc:3986",
+            value: `urn:uuid:${options.requestId}`,
+          },
+        }
+      : {}),
   };
 
   const response = await fetch(`${base}/QuestionnaireResponse`, {
-    method: 'POST',
-    headers: { 'Content-Type': FHIR_JSON, Accept: FHIR_JSON },
-    body: JSON.stringify(slot)
+    method: "POST",
+    headers: { "Content-Type": FHIR_JSON, Accept: FHIR_JSON },
+    body: JSON.stringify(slot),
   });
 
   if (!response.ok) {
     throw new Error(
-      `Could not create a write slot on ${base} — ${await describeFailure(response)}`
+      `Could not create a write slot on ${base} — ${await describeFailure(response)}`,
     );
   }
 
@@ -168,7 +181,7 @@ export async function createWriteSlot(
     id?: string;
     meta?: { versionId?: string };
   };
-  if (created.resourceType === 'OperationOutcome' || !created.id) {
+  if (created.resourceType === "OperationOutcome" || !created.id) {
     throw new Error(`${base} rejected the write slot.`);
   }
 
@@ -177,22 +190,26 @@ export async function createWriteSlot(
    * header is invisible unless the server lists it in `Access-Control-Expose-Headers`, and most do
    * not. The header is the fallback for a server that returns no body version.
    */
-  const versionId = created.meta?.versionId ?? readEtagVersion(response.headers.get('ETag'));
+  const versionId =
+    created.meta?.versionId ?? readEtagVersion(response.headers.get("ETag"));
   if (!versionId) {
     throw new Error(
       `${base} created a write slot but reported no version for it, so the invitation cannot make ` +
-        'the write conditional — and an unconditional write is not a single write.'
+        "the write conditional — and an unconditional write is not a single write.",
     );
   }
 
   return {
     writeUrl: `${base}/QuestionnaireResponse/${created.id}`,
     writeEtag: `W/"${versionId}"`,
-    writeToken: mintWriteToken()
+    writeToken: mintWriteToken(),
   };
 }
 
-/** The version out of a weak or strong ETag, e.g. `W/"3"` -> `3`. */
+/**
+ * The version out of a weak or strong ETag, e.g. `W/"3"` -> `3`.
+ * @param etag
+ */
 function readEtagVersion(etag: string | null): string | undefined {
   const match = etag?.match(/"([^"]+)"/);
   return match?.[1];
@@ -206,13 +223,13 @@ function readEtagVersion(etag: string | null): string | undefined {
  * telling them to try again would be a lie.
  */
 export type WriteSlotOutcome =
-  | { status: 'written' }
+  | { status: "written" }
   /** The slot was already answered — by an earlier send of ours, or by someone else entirely. */
-  | { status: 'taken'; detail: string }
+  | { status: "taken"; detail: string }
   /** The host gates writes and refused this token. */
-  | { status: 'refused'; detail: string }
+  | { status: "refused"; detail: string }
   /** The slot no longer exists: deleted, or expired and cleaned up. */
-  | { status: 'gone' };
+  | { status: "gone" };
 
 /**
  * Write the answers into a slot, once.
@@ -225,53 +242,59 @@ export type WriteSlotOutcome =
  * `resource.id` must match the id in the URL or the server rejects the update. This is the one path
  * in the app where an id is deliberately preserved rather than stripped; {@link writeSlotId} exists
  * so the caller does not have to parse the URL itself.
+ * @param descriptor
+ * @param response
  */
 export async function putResponseToSlot(
   descriptor: WriteDescriptor,
-  response: QuestionnaireResponse
+  response: QuestionnaireResponse,
 ): Promise<WriteSlotOutcome> {
   const id = writeSlotId(descriptor.writeUrl);
   if (!id) {
-    throw new Error(`"${descriptor.writeUrl}" does not name a resource to write to.`);
+    throw new Error(
+      `"${descriptor.writeUrl}" does not name a resource to write to.`,
+    );
   }
 
   const result = await fetch(descriptor.writeUrl, {
-    method: 'PUT',
+    method: "PUT",
     headers: {
-      'Content-Type': FHIR_JSON,
+      "Content-Type": FHIR_JSON,
       Accept: FHIR_JSON,
-      ...(descriptor.writeEtag ? { 'If-Match': descriptor.writeEtag } : {}),
-      ...(descriptor.writeToken ? { Authorization: `Bearer ${descriptor.writeToken}` } : {})
+      ...(descriptor.writeEtag ? { "If-Match": descriptor.writeEtag } : {}),
+      ...(descriptor.writeToken
+        ? { Authorization: `Bearer ${descriptor.writeToken}` }
+        : {}),
     },
-    body: JSON.stringify({ ...response, id })
+    body: JSON.stringify({ ...response, id }),
   });
 
   if (result.ok) {
-    return { status: 'written' };
+    return { status: "written" };
   }
 
   if (result.status === 409 || result.status === 412) {
-    return { status: 'taken', detail: await describeFailure(result) };
+    return { status: "taken", detail: await describeFailure(result) };
   }
 
   if (result.status === 401 || result.status === 403) {
-    return { status: 'refused', detail: await describeFailure(result) };
+    return { status: "refused", detail: await describeFailure(result) };
   }
 
   if (result.status === 404 || result.status === 410) {
-    return { status: 'gone' };
+    return { status: "gone" };
   }
 
   throw new Error(
     `Could not write the answers to ${descriptor.writeUrl} — ${await describeFailure(result)}. ` +
-      'The answers have not been sent.'
+      "The answers have not been sent.",
   );
 }
 
 export type WriteSlotPoll =
-  | { status: 'pending' }
-  | { status: 'ready'; response: QuestionnaireResponse }
-  | { status: 'gone' };
+  | { status: "pending" }
+  | { status: "ready"; response: QuestionnaireResponse }
+  | { status: "gone" };
 
 /**
  * Check a slot for answers.
@@ -283,24 +306,34 @@ export type WriteSlotPoll =
  *
  * `404`/`410` is `gone`, not an error: a slot that expired and was cleaned up is a normal end state
  * for a request nobody answered, and should read as one.
+ * @param writeUrl
+ * @param signal
  */
-export async function pollWriteSlot(writeUrl: string, signal?: AbortSignal): Promise<WriteSlotPoll> {
-  const result = await fetch(writeUrl, { headers: { Accept: FHIR_JSON }, signal });
+export async function pollWriteSlot(
+  writeUrl: string,
+  signal?: AbortSignal,
+): Promise<WriteSlotPoll> {
+  const result = await fetch(writeUrl, {
+    headers: { Accept: FHIR_JSON },
+    signal,
+  });
 
   if (result.status === 404 || result.status === 410) {
-    return { status: 'gone' };
+    return { status: "gone" };
   }
 
   if (!result.ok) {
-    throw new Error(`Could not check the write slot (${result.status} ${result.statusText}).`);
+    throw new Error(
+      `Could not check the write slot (${result.status} ${result.statusText}).`,
+    );
   }
 
   const body = (await result.json()) as QuestionnaireResponse;
-  if (body.resourceType !== 'QuestionnaireResponse') {
+  if (body.resourceType !== "QuestionnaireResponse") {
     throw new Error(`${writeUrl} does not hold a QuestionnaireResponse.`);
   }
 
-  return body.status === 'completed' || body.status === 'amended'
-    ? { status: 'ready', response: body }
-    : { status: 'pending' };
+  return body.status === "completed" || body.status === "amended"
+    ? { status: "ready", response: body }
+    : { status: "pending" };
 }

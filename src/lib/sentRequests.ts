@@ -1,6 +1,7 @@
-import type { Task } from 'fhir/r4';
-import { taskCorrelationId } from '@/link/exchange';
-import { isExpired, type OutstandingRequest } from '@/lib/requestStore';
+import type { Task } from "fhir/r4";
+
+import { isExpired, type OutstandingRequest } from "@/lib/requestStore";
+import { taskCorrelationId } from "@/link/exchange";
 
 /**
  * One view over two half-answers to "what have I sent?".
@@ -21,11 +22,11 @@ import { isExpired, type OutstandingRequest } from '@/lib/requestStore';
 
 export type SentRequestOrigin =
   /** Local record and published Task agree — the normal case. */
-  | 'tracked'
+  | "tracked"
   /** Created here but never published, so it is invisible to any other browser. */
-  | 'local-only'
+  | "local-only"
   /** Published, but this browser has no key for it. Visible, not collectable. */
-  | 'server-only';
+  | "server-only";
 
 export interface SentRequest {
   /** Correlation id — `Task.identifier` value, shared by both copies. */
@@ -45,7 +46,10 @@ export interface SentRequest {
   collectable: boolean;
 }
 
-/** Best label for a published Task, which has no `label` field of its own. */
+/**
+ * Best label for a published Task, which has no `label` field of its own.
+ * @param task
+ */
 function labelFromTask(task: Task): string {
   const description = task.description;
   if (description) {
@@ -56,22 +60,25 @@ function labelFromTask(task: Task): string {
   }
 
   const canonical =
-    task.input?.find((input) => input.valueCanonical)?.valueCanonical ?? task.focus?.reference;
+    task.input?.find((input) => input.valueCanonical)?.valueCanonical ??
+    task.focus?.reference;
   if (canonical) {
-    return canonical.split('|')[0].split('/').filter(Boolean).pop() ?? canonical;
+    return canonical.split("|", 1)[0].split("/").findLast(Boolean) ?? canonical;
   }
 
-  return 'Requested form';
+  return "Requested form";
 }
 
 /**
  * Merge local records with published Tasks into one list, newest first.
  *
  * Pure, so `check:roundtrip` can assert the join without a server or a browser.
+ * @param local
+ * @param serverTasks
  */
 export function mergeSentRequests(
   local: OutstandingRequest[],
-  serverTasks: Task[]
+  serverTasks: Task[],
 ): SentRequest[] {
   const byId = new Map<string, SentRequest>();
 
@@ -79,13 +86,14 @@ export function mergeSentRequests(
     byId.set(request.id, {
       id: request.id,
       label: request.label,
-      origin: 'local-only',
+      origin: "local-only",
       createdAt: request.createdAt,
       subjectDisplay: request.subjectDisplay,
       expiresAt: request.expiresAt,
       local: request,
       collectable:
-        (request.reply !== undefined || request.write !== undefined) && !isExpired(request)
+        (request.reply !== undefined || request.write !== undefined) &&
+        !isExpired(request),
     });
   }
 
@@ -100,11 +108,11 @@ export function mergeSentRequests(
     if (existing) {
       byId.set(id, {
         ...existing,
-        origin: 'tracked',
+        origin: "tracked",
         serverTask: task,
         // Prefer what the server recorded for display fields the local copy may not have.
         subjectDisplay: existing.subjectDisplay ?? task.for?.display,
-        requesterDisplay: task.requester?.display
+        requesterDisplay: task.requester?.display,
       });
       continue;
     }
@@ -112,37 +120,40 @@ export function mergeSentRequests(
     byId.set(id, {
       id,
       label: labelFromTask(task),
-      origin: 'server-only',
+      origin: "server-only",
       createdAt: task.authoredOn,
       subjectDisplay: task.for?.display,
       requesterDisplay: task.requester?.display,
       serverTask: task,
-      collectable: false
+      collectable: false,
     });
   }
 
-  return [...byId.values()].sort((left, right) =>
-    (right.createdAt ?? '').localeCompare(left.createdAt ?? '')
+  return [...byId.values()].toSorted((left, right) =>
+    (right.createdAt ?? "").localeCompare(left.createdAt ?? ""),
   );
 }
 
-/** One-line explanation of why a row cannot be collected from, or undefined when it can. */
+/**
+ * One-line explanation of why a row cannot be collected from, or undefined when it can.
+ * @param request
+ */
 export function whyNotCollectable(request: SentRequest): string | undefined {
   if (request.collectable) {
     return undefined;
   }
 
-  if (request.origin === 'server-only') {
-    return 'Sent from another browser. Its reply key is held there — import it to collect the answers here.';
+  if (request.origin === "server-only") {
+    return "Sent from another browser. Its reply key is held there — import it to collect the answers here.";
   }
 
   if (!request.local?.reply && !request.local?.write) {
     // Not a fault: with both slot channels off, this is what every request looks like, and the
     // answers come back as a link to scan rather than into a slot to poll.
-    return 'Answers to this request come back as a link. Scan or paste it to review them.';
+    return "Answers to this request come back as a link. Scan or paste it to review them.";
   }
 
-  return 'This request has expired, so its slot no longer accepts answers.';
+  return "This request has expired, so its slot no longer accepts answers.";
 }
 
 /**
@@ -155,10 +166,12 @@ export function whyNotCollectable(request: SentRequest): string | undefined {
  *
  * No match is an ordinary outcome, not an error: a link from someone this browser never wrote to is
  * still perfectly reviewable. Pure, so `check:roundtrip` can assert it without a browser.
+ * @param requests
+ * @param task
  */
 export function findRequestForTask(
   requests: OutstandingRequest[],
-  task: Task | undefined
+  task: Task | undefined,
 ): OutstandingRequest | undefined {
   const id = taskCorrelationId(task);
   if (!id) {

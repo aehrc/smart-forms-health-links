@@ -1,10 +1,21 @@
-import type { Bundle, OperationOutcome, Questionnaire, QuestionnaireResponse } from 'fhir/r4';
 import {
   buildBundleFromObservationArray,
   canBeObservationExtracted,
-  extractObservationBased
-} from '@aehrc/smart-forms-renderer';
-import { canTemplateExtract, retargetSubject, templateExtract } from './templateExtract';
+  extractObservationBased,
+} from "@aehrc/smart-forms-renderer";
+
+import {
+  canTemplateExtract,
+  retargetSubject,
+  templateExtract,
+} from "./templateExtract";
+
+import type {
+  Bundle,
+  OperationOutcome,
+  Questionnaire,
+  QuestionnaireResponse,
+} from "fhir/r4";
 
 /**
  * Turn completed answers into the resources they imply — Conditions, Observations, and the rest.
@@ -22,7 +33,11 @@ import { canTemplateExtract, retargetSubject, templateExtract } from './template
  * more than one mechanism.
  */
 
-export { describeOutcome, outcomeHasErrors, retargetSubject } from './templateExtract';
+export {
+  describeOutcome,
+  outcomeHasErrors,
+  retargetSubject,
+} from "./templateExtract";
 
 /**
  * Which extraction mechanism a form declares, if any.
@@ -38,19 +53,25 @@ export { describeOutcome, outcomeHasErrors, retargetSubject } from './templateEx
  * Definition-based and StructureMap-based are both absent on purpose. smart-forms has never
  * implemented the former, and CSIRO decommissioned its demo engine for the latter on 1 July 2025.
  */
-export type ExtractMechanism = 'template-based' | 'observation-based' | null;
+export type ExtractMechanism = "template-based" | "observation-based" | null;
 
-export function extractMechanism(questionnaire: Questionnaire | undefined): ExtractMechanism {
+/**
+ *
+ * @param questionnaire
+ */
+export function extractMechanism(
+  questionnaire: Questionnaire | undefined,
+): ExtractMechanism {
   if (!questionnaire) {
     return null;
   }
 
   if (canTemplateExtract(questionnaire)) {
-    return 'template-based';
+    return "template-based";
   }
 
   if (canBeObservationExtracted(questionnaire)) {
-    return 'observation-based';
+    return "observation-based";
   }
 
   return null;
@@ -87,29 +108,38 @@ export interface ExtractOptions {
   originalSubject?: string;
 }
 
-/** Run whichever mechanism the form declares, or throw with something a reviewer can act on. */
-export async function extractFromResponse(options: ExtractOptions): Promise<Extraction> {
+/**
+ * Run whichever mechanism the form declares, or throw with something a reviewer can act on.
+ * @param options
+ */
+export async function extractFromResponse(
+  options: ExtractOptions,
+): Promise<Extraction> {
   const { response, questionnaire, originalSubject } = options;
   const mechanism = extractMechanism(questionnaire);
 
   if (mechanism === null) {
-    throw new Error('This form does not declare any form data extraction.');
+    throw new Error("This form does not declare any form data extraction.");
   }
 
-  if (mechanism === 'observation-based') {
+  if (mechanism === "observation-based") {
     const observations = extractObservationBased(questionnaire, response);
     return {
       bundle: retargetSubject(
         buildBundleFromObservationArray(observations),
         response,
-        originalSubject
+        originalSubject,
       ),
       mechanism,
-      issues: null
+      issues: null,
     };
   }
 
   const { bundle, issues } = await templateExtract(response, questionnaire);
 
-  return { bundle: retargetSubject(bundle, response, originalSubject), mechanism, issues };
+  return {
+    bundle: retargetSubject(bundle, response, originalSubject),
+    mechanism,
+    issues,
+  };
 }

@@ -1,7 +1,8 @@
-import type { Bundle, BundleEntry } from 'fhir/r4';
-import type { SmartSession } from '@/auth/smartSession';
-import { authedFetch } from './authedFetch';
-import { describeFailure } from './submit';
+import { authedFetch } from "./authedFetch";
+import { describeFailure } from "./submit";
+
+import type { SmartSession } from "@/auth/smartSession";
+import type { Bundle, BundleEntry } from "fhir/r4";
 
 /**
  * Write an extracted transaction Bundle to the EHR.
@@ -21,10 +22,10 @@ import { describeFailure } from './submit';
  *    reviewer ticked as a group.
  */
 
-const FHIR_JSON = 'application/fhir+json';
+const FHIR_JSON = "application/fhir+json";
 
 function trimTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, '');
+  return url.replace(/\/+$/, "");
 }
 
 export interface WrittenEntry {
@@ -60,21 +61,31 @@ export interface SubmitBundleOptions {
 }
 
 export const EMPTY_BUNDLE_MESSAGE =
-  'Nothing was selected to write back, so there is nothing to send.';
+  "Nothing was selected to write back, so there is nothing to send.";
 
-/** Whether every entry the server reported came back 2xx. */
+/**
+ * Whether every entry the server reported came back 2xx.
+ * @param result
+ */
 export function bundleWriteSucceeded(result: BundleWriteResult): boolean {
-  return !result.error && result.entries.length > 0 && result.entries.every((entry) => !entry.error);
+  return (
+    !result.error &&
+    result.entries.length > 0 &&
+    result.entries.every((entry) => !entry.error)
+  );
 }
 
-/** `201 Created` → true; `422 Unprocessable Entity` → false. */
+/**
+ * `201 Created` → true; `422 Unprocessable Entity` → false.
+ * @param status
+ */
 function statusIsOk(status: string | undefined): boolean {
-  const code = Number.parseInt((status ?? '').trim().slice(0, 3), 10);
+  const code = Number.parseInt((status ?? "").trim().slice(0, 3), 10);
   return Number.isFinite(code) && code >= 200 && code < 300;
 }
 
 function readEntry(entry: BundleEntry, index: number): WrittenEntry {
-  const status = entry.response?.status ?? 'no status';
+  const status = entry.response?.status ?? "no status";
   const outcome = entry.response?.outcome;
 
   if (statusIsOk(status)) {
@@ -87,14 +98,18 @@ function readEntry(entry: BundleEntry, index: number): WrittenEntry {
    * a reviewer can act on.
    */
   const diagnostics =
-    outcome?.resourceType === 'OperationOutcome'
+    outcome?.resourceType === "OperationOutcome"
       ? (outcome.issue ?? [])
           .map((issue) => issue.diagnostics ?? issue.details?.text)
           .filter((text): text is string => !!text)
-          .join('; ')
-      : '';
+          .join("; ")
+      : "";
 
-  return { index, status, error: diagnostics === '' ? status : `${status}: ${diagnostics}` };
+  return {
+    index,
+    status,
+    error: diagnostics === "" ? status : `${status}: ${diagnostics}`,
+  };
 }
 
 /**
@@ -103,9 +118,10 @@ function readEntry(entry: BundleEntry, index: number): WrittenEntry {
  * Never throws for a server-side refusal — a rejected write-back is an outcome the reviewer needs
  * described, not an exception that loses the detail on the way up. The answers themselves are already
  * safely stored by the time this runs, so there is nothing here worth aborting for.
+ * @param options
  */
 export async function submitExtractedBundle(
-  options: SubmitBundleOptions
+  options: SubmitBundleOptions,
 ): Promise<BundleWriteResult> {
   const { serverUrl, bundle, session } = options;
 
@@ -122,37 +138,43 @@ export async function submitExtractedBundle(
     const response = await authedFetch(
       `${trimTrailingSlash(serverUrl)}/`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': FHIR_JSON, Accept: FHIR_JSON },
-        body: JSON.stringify(bundle)
+        method: "POST",
+        headers: { "Content-Type": FHIR_JSON, Accept: FHIR_JSON },
+        body: JSON.stringify(bundle),
       },
-      session ?? null
+      session ?? null,
     );
 
     if (!response.ok) {
       return {
         serverUrl,
         entries: [],
-        error: `The server rejected the write-back — ${await describeFailure(response)}`
+        error: `The server rejected the write-back — ${await describeFailure(response)}`,
       };
     }
 
     const body = (await response.json()) as Bundle;
 
-    if (body.resourceType !== 'Bundle') {
+    if (body.resourceType !== "Bundle") {
       return {
         serverUrl,
         entries: [],
-        error: 'The server accepted the request but did not return a transaction response.'
+        error:
+          "The server accepted the request but did not return a transaction response.",
       };
     }
 
-    return { serverUrl, entries: (body.entry ?? []).map(readEntry) };
-  } catch (cause) {
+    return {
+      serverUrl,
+      entries: (body.entry ?? []).map((entry, index) =>
+        readEntry(entry, index),
+      ),
+    };
+  } catch (error) {
     return {
       serverUrl,
       entries: [],
-      error: cause instanceof Error ? cause.message : String(cause)
+      error: error instanceof Error ? error.message : String(error),
     };
   }
 }

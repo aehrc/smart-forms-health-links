@@ -1,9 +1,32 @@
-.claude
+# Kept out of the build context. `npm run build` type-checks tests/ and e2e/ as well as src/ and
+# server/, so those stay in; only build output, local state, secrets and tooling state go.
+
 .git
 .github
-.local
-dist
-docs
+.claude
 node_modules
-scripts
+dist
+dist-server
+coverage
+report
+test-results
+playwright-report
 *.tsbuildinfo
+
+# Local runtime state and the operator's own issuer registry. The deployed registry arrives as a
+# mounted file, never baked into the image.
+data
+config/issuers.json
+
+# Secret references, and the resolved values a developer may have put beside them.
+.env*
+
+# Deployment inputs and one-off checks, which the image does not consume.
+Dockerfile
+.dockerignore
+helm
+scripts
+
+.DS_Store
+.idea
+.vscode

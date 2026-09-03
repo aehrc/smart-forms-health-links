@@ -1,65 +1,57 @@
-import { useQuery } from '@tanstack/react-query';
-import type { Patient, Practitioner } from 'fhir/r4';
-import { useEhrServerUrl, useSmartSession } from './SmartContext';
-import { fetchPatient, fetchUser, personDisplay } from '@/fhir/ehrServer';
-
 /**
- * What a launch put in context, resolved into resources.
+ * The launch context, as the surfaces that display it need it.
  *
- * A session carries references — `Patient/123`, `Practitioner/456` — and a reference is a database key.
- * Turning those into a name a clinician recognises is a read, not a decode, so it lives in a hook
- * rather than in the session.
+ * Almost nothing is left of this hook, and that is the point. It used to fetch the launch's patient
+ * and its `fhirUser` from the EHR and cache them, because a client-side launch handed back bare
+ * references and somebody had to resolve them. The BFF resolves the user's name during the launch
+ * itself (`server/smart/requesterDisplay.ts`) and puts it in the session, so the name arrives with
+ * the session and costs no request at all.
  *
- * Shared rather than per-route on purpose. The same two resources were being fetched from two places
- * under two different query keys: the header badge wanted the user's *name* while `RequestForm` wanted
- * the user's *resource* for SDC's `user` launch context, so react-query cached them separately and
- * fetched one resource twice. One query for the resource, with the name derived, serves both.
+ * The patient is still fetched, because it is still only a reference in the session and the surfaces
+ * that show it want a name. It fails soft for the same reason it always did: a launch context
+ * patient this user cannot read is a narrowed grant, not a broken page.
+ * @author John Grimes
  */
+
+import { useQuery } from "@tanstack/react-query";
+
+import { useSmartSession } from "./SmartContext";
+
+import type { Patient } from "fhir/r4";
+
+import { fetchPatient } from "@/fhir/ehrServer";
+
+/** What the launch put in context, resolved as far as it can be. */
 export interface LaunchContext {
-  /** The patient the launch supplied, once fetched. Undefined while loading or when there is none. */
-  patient: Patient | undefined;
-
-  /** `Patient/123`, or null when the launch supplied no patient — a standalone launch may not. */
+  /** The launch context patient, once read. */
+  patient: Patient | null;
+  /** That patient as a reference, e.g. `Patient/123`, or null when the launch carried none. */
   patientReference: string | null;
-
-  /**
-   * The launched user's own resource.
-   *
-   * `Practitioner` in every realistic case, but `fhirUser` is allowed to name a `Patient`, and a
-   * patient-facing launch would. Callers that need a practitioner must narrow on `resourceType` rather
-   * than assume — pre-population does exactly that.
-   *
-   * Null means the read failed or was refused, which is not a broken session: the token still
-   * authorises and the reference is still recorded on `Provenance`.
-   */
-  user: Practitioner | Patient | null | undefined;
-
-  /** The user's name, or null when the resource carries nothing usable. Never a bare reference. */
+  /** The signed-in user's name, straight from the session. */
   userDisplay: string | null;
 }
 
+/**
+ * Read the launch context.
+ * @returns the context patient and the signed-in user's name
+ * @example
+ * const { patientReference, userDisplay } = useLaunchContext();
+ */
 export function useLaunchContext(): LaunchContext {
   const session = useSmartSession();
-  const ehrServerUrl = useEhrServerUrl();
-
-  const patientReference = session?.patientId ? `Patient/${session.patientId}` : null;
+  const patientId = session?.patientId ?? null;
 
   const { data: patient } = useQuery({
-    queryKey: ['patient', ehrServerUrl, session?.patientId],
-    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, session!.patientId!, signal, session),
-    enabled: !!patientReference && !!ehrServerUrl
+    queryKey: ["launch-patient", patientId],
+    queryFn: ({ signal }) =>
+      fetchPatient(session!.serverUrl, patientId!, signal),
+    enabled: session !== null && patientId !== null,
+    retry: false,
   });
 
-  /*
-   * Keyed on the session's own server rather than the resolved EHR base. `fhirUser` is a reference
-   * issued by the authorisation server and it resolves against the server that issued it; the resolved
-   * base can be configuration, which has nothing to say about who is signed in.
-   */
-  const { data: user } = useQuery({
-    queryKey: ['fhirUser-resource', session?.serverUrl, session?.fhirUser],
-    queryFn: ({ signal }) => fetchUser(session!.serverUrl, session!.fhirUser!, signal, session),
-    enabled: !!session?.fhirUser
-  });
-
-  return { patient, patientReference, user, userDisplay: personDisplay(user) };
+  return {
+    patient: patient ?? null,
+    patientReference: patientId === null ? null : `Patient/${patientId}`,
+    userDisplay: session?.userDisplay ?? null,
+  };
 }

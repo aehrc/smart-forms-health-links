@@ -1,12 +1,18 @@
-import type { Questionnaire } from 'fhir/r4';
-import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
-import type { OutstandingRequest } from '@/lib/requestStore';
-import { decodeUtf8 } from './binary';
-import { bundleFromJson } from './codec';
-import { parseResponseBundle, responseCanonical, type ResponsePayload } from './exchange';
-import { decryptReplyJwe } from './replyCrypto';
-import { pollReply } from './replySlot';
-import { pollWriteSlot } from './writeSlot';
+import { decodeUtf8 } from "./binary";
+import { bundleFromJson } from "./codec";
+import {
+  parseResponseBundle,
+  responseCanonical,
+  type ResponsePayload,
+} from "./exchange";
+import { decryptReplyJwe } from "./replyCrypto";
+import { pollReply } from "./replySlot";
+import { pollWriteSlot } from "./writeSlot";
+
+import type { OutstandingRequest } from "@/lib/requestStore";
+import type { Questionnaire } from "fhir/r4";
+
+import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
 
 /**
  * The requester's half of channel C: collect an encrypted reply and turn it into something reviewable.
@@ -21,24 +27,34 @@ import { pollWriteSlot } from './writeSlot';
  */
 
 export type CollectOutcome =
-  | { status: 'pending' }
+  | { status: "pending" }
   /** The slot is gone: deleted, or expired and swept. A request nobody answered ends here. */
-  | { status: 'gone' }
-  | { status: 'ready'; payload: ResponsePayload; questionnaire: Questionnaire };
+  | { status: "gone" }
+  | { status: "ready"; payload: ResponsePayload; questionnaire: Questionnaire };
 
 /**
  * Decrypt a reply and pull the answers out of it.
  *
  * Separate from the fetch so the crypto can be exercised without a slot, and so a reply captured by
  * other means can still be opened.
+ * @param jwe
+ * @param request
  */
-export async function decodeReply(jwe: string, request: OutstandingRequest): Promise<ResponsePayload> {
+export async function decodeReply(
+  jwe: string,
+  request: OutstandingRequest,
+): Promise<ResponsePayload> {
   if (!request.reply) {
-    throw new Error('This request has no reply key stored, so its reply cannot be decrypted.');
+    throw new Error(
+      "This request has no reply key stored, so its reply cannot be decrypted.",
+    );
   }
 
   return parseResponseBundle(
-    bundleFromJson(decodeUtf8(await decryptReplyJwe(jwe, request.reply.privateJwk)), 'reply')
+    bundleFromJson(
+      decodeUtf8(await decryptReplyJwe(jwe, request.reply.privateJwk)),
+      "reply",
+    ),
   );
 }
 
@@ -48,37 +64,46 @@ export async function decodeReply(jwe: string, request: OutstandingRequest): Pro
  * The Questionnaire is resolved from the response's canonical against the forms server rather than
  * carried in the reply — re-sending hundreds of kilobytes of questionnaire back would be absurd when the
  * requester is the party that already has it.
+ * @param request
+ * @param formsServerUrl
+ * @param signal
  */
 export async function collectReply(
   request: OutstandingRequest,
   formsServerUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<CollectOutcome> {
   if (!request.reply) {
-    return { status: 'gone' };
+    return { status: "gone" };
   }
 
   const poll = await pollReply(request.reply.url, signal);
-  if (poll.status !== 'ready') {
+  if (poll.status !== "ready") {
     return { status: poll.status };
   }
 
   const payload = await decodeReply(poll.jwe, request);
 
-  const canonical = responseCanonical(payload.response, request.questionnaireCanonical);
+  const canonical = responseCanonical(
+    payload.response,
+    request.questionnaireCanonical,
+  );
   if (!canonical) {
     throw new Error(
-      'The reply does not say which questionnaire it answers, so the form cannot be resolved.'
+      "The reply does not say which questionnaire it answers, so the form cannot be resolved.",
     );
   }
 
   return {
-    status: 'ready',
+    status: "ready",
     payload,
-    questionnaire: await fetchQuestionnaireByCanonical(formsServerUrl, canonical, signal)
+    questionnaire: await fetchQuestionnaireByCanonical(
+      formsServerUrl,
+      canonical,
+      signal,
+    ),
   };
 }
-
 
 /**
  * Collect the answers a request is waiting on, whichever slot it offered.
@@ -91,11 +116,14 @@ export async function collectReply(
  * There is deliberately no merging of the two. If both slots somehow hold answers, that is a fact a
  * human should see rather than something to reconcile automatically — collecting channel C leaves
  * the write slot untouched and still readable.
+ * @param request
+ * @param formsServerUrl
+ * @param signal
  */
 export async function collectAnswers(
   request: OutstandingRequest,
   formsServerUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<CollectOutcome> {
   if (request.reply) {
     return collectReply(request, formsServerUrl, signal);
@@ -112,31 +140,41 @@ export async function collectAnswers(
  * produce, with no `task` and no `provenance`, because there was nowhere to put either. What carries
  * the attribution instead is `meta.security` = `PATAST` on the response itself, which is why
  * `asNewResource` must keep it.
+ * @param request
+ * @param formsServerUrl
+ * @param signal
  */
 export async function collectWrittenAnswers(
   request: OutstandingRequest,
   formsServerUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<CollectOutcome> {
   if (!request.write) {
-    return { status: 'gone' };
+    return { status: "gone" };
   }
 
   const poll = await pollWriteSlot(request.write.url, signal);
-  if (poll.status !== 'ready') {
+  if (poll.status !== "ready") {
     return { status: poll.status };
   }
 
-  const canonical = responseCanonical(poll.response, request.questionnaireCanonical);
+  const canonical = responseCanonical(
+    poll.response,
+    request.questionnaireCanonical,
+  );
   if (!canonical) {
     throw new Error(
-      'The answers do not say which questionnaire they answer, so the form cannot be resolved.'
+      "The answers do not say which questionnaire they answer, so the form cannot be resolved.",
     );
   }
 
   return {
-    status: 'ready',
+    status: "ready",
     payload: { response: poll.response },
-    questionnaire: await fetchQuestionnaireByCanonical(formsServerUrl, canonical, signal)
+    questionnaire: await fetchQuestionnaireByCanonical(
+      formsServerUrl,
+      canonical,
+      signal,
+    ),
   };
 }

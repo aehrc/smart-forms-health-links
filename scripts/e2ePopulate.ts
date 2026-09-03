@@ -29,35 +29,43 @@
  *   SHL_BLOB_SERVER=https://proxy.smartforms.io/fhir \
  *   SHL_PATIENT=example-dm-complications npm run check:populate
  */
-import type { Patient, Questionnaire } from 'fhir/r4';
-import { searchQuestionnaires } from '../src/fhir/formsServer';
-import { questionnaireDeclaresPopulation, prePopulate } from '../src/fhir/populate';
-import { populatedRows, pruneAnswers } from '../src/lib/answerRows';
-import { fhirBinaryBlobStore } from '../src/fhir/blobStore';
-import { buildRequestBundle, isRequestBundle, parseRequestBundle } from '../src/link/exchange';
-import { shlCodec } from '../src/link/shlCodec';
-import type { SmartSession } from '../src/auth/smartSession';
+import { fhirBinaryBlobStore } from "../src/fhir/blobStore";
+import { searchQuestionnaires } from "../src/fhir/formsServer";
+import {
+  questionnaireDeclaresPopulation,
+  prePopulate,
+} from "../src/fhir/populate";
+import { populatedRows, pruneAnswers } from "../src/lib/answerRows";
+import {
+  buildRequestBundle,
+  isRequestBundle,
+  parseRequestBundle,
+} from "../src/link/exchange";
+import { shlCodec } from "../src/link/shlCodec";
 
-const FORMS_SERVER = 'https://smartforms.csiro.au/api/fhir';
+import type { SmartSession } from "../src/auth/smartSession";
+import type { Patient, Questionnaire } from "fhir/r4";
+
+const FORMS_SERVER = "https://smartforms.csiro.au/api/fhir";
 const EHR_SERVER = process.env.SHL_EHR_SERVER;
 const BLOB_SERVER = process.env.SHL_BLOB_SERVER ?? EHR_SERVER;
-const PATIENT_ID = process.env.SHL_PATIENT ?? 'example-dm-complications';
+const PATIENT_ID = process.env.SHL_PATIENT ?? "example-dm-complications";
 
 if (!EHR_SERVER) {
   console.log(
-    'Skipped: set SHL_EHR_SERVER to a FHIR server holding a patient with some history.\n' +
-      '  Nothing is created on it — populate is a read — but the encrypted payload is POSTed to\n' +
-      '  SHL_BLOB_SERVER (defaults to the same server).\n' +
+    "Skipped: set SHL_EHR_SERVER to a FHIR server holding a patient with some history.\n" +
+      "  Nothing is created on it — populate is a read — but the encrypted payload is POSTed to\n" +
+      "  SHL_BLOB_SERVER (defaults to the same server).\n" +
       `  It must NOT be the forms server (${FORMS_SERVER}), which is a read-only catalogue.\n\n` +
-      '  SHL_EHR_SERVER=https://proxy.smartforms.io/fhir npm run check:populate'
+      "  SHL_EHR_SERVER=https://proxy.smartforms.io/fhir npm run check:populate",
   );
   process.exit(0);
 }
 
-if (EHR_SERVER.replace(/\/+$/, '') === FORMS_SERVER) {
+if (EHR_SERVER.replace(/\/+$/, "") === FORMS_SERVER) {
   console.error(
     `Refusing to run: SHL_EHR_SERVER is the forms server (${FORMS_SERVER}).\n` +
-      'That server is a read-only catalogue of questionnaires, not a record to populate from.'
+      "That server is a read-only catalogue of questionnaires, not a record to populate from.",
   );
   process.exit(1);
 }
@@ -65,12 +73,14 @@ if (EHR_SERVER.replace(/\/+$/, '') === FORMS_SERVER) {
 let failures = 0;
 let total = 0;
 
-function check(name: string, condition: boolean, detail = '') {
+function check(name: string, condition: boolean, detail = "") {
   total++;
   if (!condition) {
     failures++;
   }
-  console.log(`  ${condition ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(
+    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
 }
 
 console.log(`forms server (read only): ${FORMS_SERVER}`);
@@ -78,15 +88,19 @@ console.log(`EHR server (read only):   ${EHR_SERVER}`);
 console.log(`blob server:              ${BLOB_SERVER}\n`);
 
 // ---------------------------------------------------------------------------
-console.log('--- catalogue: does the real forms server still hold populatable forms? ---');
+console.log(
+  "--- catalogue: does the real forms server still hold populatable forms? ---",
+);
 
-const catalogue = await searchQuestionnaires(FORMS_SERVER, '', 200);
-const populatable = catalogue.filter((candidate) => questionnaireDeclaresPopulation(candidate));
+const catalogue = await searchQuestionnaires(FORMS_SERVER, "", 200);
+const populatable = catalogue.filter((candidate) =>
+  questionnaireDeclaresPopulation(candidate),
+);
 
 check(
-  'catalogue/holdsPopulatableForms',
+  "catalogue/holdsPopulatableForms",
   populatable.length > 0,
-  `${populatable.length} of ${catalogue.length} declare population machinery`
+  `${populatable.length} of ${catalogue.length} declare population machinery`,
 );
 
 /*
@@ -96,27 +110,33 @@ check(
  * this check while leaving the interesting half untested.
  */
 const chosen: Questionnaire | undefined =
-  populatable.find((candidate) => candidate.id === 'GPChronicConditionManagementPlan') ??
-  populatable[0];
+  populatable.find(
+    (candidate) => candidate.id === "GPChronicConditionManagementPlan",
+  ) ?? populatable[0];
 
 if (!chosen) {
-  console.error('No populatable form on the catalogue; nothing further can be checked.');
+  console.error(
+    "No populatable form on the catalogue; nothing further can be checked.",
+  );
   process.exit(1);
 }
 
 console.log(`  form: ${chosen.title ?? chosen.id}`);
 
 // ---------------------------------------------------------------------------
-console.log('\n--- populate: against a real patient on a real record ---');
+console.log("\n--- populate: against a real patient on a real record ---");
 
-const patientResponse = await fetch(`${EHR_SERVER.replace(/\/+$/, '')}/Patient/${PATIENT_ID}`, {
-  headers: { Accept: 'application/fhir+json' }
-});
+const patientResponse = await fetch(
+  `${EHR_SERVER.replace(/\/+$/, "")}/Patient/${PATIENT_ID}`,
+  {
+    headers: { Accept: "application/fhir+json" },
+  },
+);
 
 if (!patientResponse.ok) {
   console.error(
     `Could not read Patient/${PATIENT_ID} from ${EHR_SERVER} (${patientResponse.status}). ` +
-      'Set SHL_PATIENT to a patient this server holds.'
+      "Set SHL_PATIENT to a patient this server holds.",
   );
   process.exit(1);
 }
@@ -131,7 +151,7 @@ const patient = (await patientResponse.json()) as Patient;
  */
 const session = {
   serverUrl: EHR_SERVER,
-  authorizationHeader: async () => null
+  authorizationHeader: async () => null,
 } as unknown as SmartSession;
 
 const started = Date.now();
@@ -139,56 +159,65 @@ const { response: populated, issues } = await prePopulate({
   questionnaire: chosen,
   ehrServerUrl: EHR_SERVER,
   session,
-  patient
+  patient,
 });
 const elapsed = Date.now() - started;
 
-check('populate/returnedAResponse', populated !== null, `${elapsed} ms`);
+check("populate/returnedAResponse", populated !== null, `${elapsed} ms`);
 
 if (!populated) {
-  console.error('\nPopulate returned nothing, so the rest cannot be checked.');
+  console.error("\nPopulate returned nothing, so the rest cannot be checked.");
   process.exit(1);
 }
 
 const rows = populatedRows(populated);
 check(
-  'populate/producedAnswers',
+  "populate/producedAnswers",
   rows.length > 0,
-  `${rows.length} answers${issues ? `, ${(issues.issue ?? []).length} issue(s)` : ''}`
+  `${rows.length} answers${issues ? `, ${(issues.issue ?? []).length} issue(s)` : ""}`,
 );
 check(
-  'populate/statusIsInProgress',
-  populated.status === 'in-progress',
-  'the discriminator reads this to tell an invitation from an answer'
+  "populate/statusIsInProgress",
+  populated.status === "in-progress",
+  "the discriminator reads this to tell an invitation from an answer",
 );
 
-const repeated = rows.filter((row) => row.groups.some((group) => /\s2$/.test(group)));
+const repeated = rows.filter((row) =>
+  row.groups.some((group) => /\s2$/.test(group)),
+);
 check(
-  'populate/filledARepeatingGroup',
+  "populate/filledARepeatingGroup",
   repeated.length > 0,
   repeated.length > 0
     ? `${repeated.length} answers in a second group instance — the shape item.initial cannot express`
-    : 'this patient has no list-shaped history, so the interesting case went unchecked'
+    : "this patient has no list-shaped history, so the interesting case went unchecked",
 );
 
 // ---------------------------------------------------------------------------
-console.log('\n--- choose: unticking a row removes exactly that answer ---');
+console.log("\n--- choose: unticking a row removes exactly that answer ---");
 
-const dropped = rows[rows.length - 1];
-const keep = new Set(rows.filter((row) => row.path !== dropped.path).map((row) => row.path));
+const dropped = rows.at(-1);
+const keep = new Set(
+  rows.filter((row) => row.path !== dropped.path).map((row) => row.path),
+);
 const seed = pruneAnswers(populated, keep);
 const seedRows = populatedRows(seed);
 
-check('choose/prunedExactlyOne', seedRows.length === rows.length - 1);
+check("choose/prunedExactlyOne", seedRows.length === rows.length - 1);
 check(
-  'choose/prunedTheRightOne',
+  "choose/prunedTheRightOne",
   !seedRows.some((row) => row.path === dropped.path),
-  `dropped "${dropped.text ?? dropped.linkId}"`
+  `dropped "${dropped.text ?? dropped.linkId}"`,
 );
-check('choose/leftTheOriginalAlone', populatedRows(populated).length === rows.length);
+check(
+  "choose/leftTheOriginalAlone",
+  populatedRows(populated).length === rows.length,
+);
 
 // ---------------------------------------------------------------------------
-console.log('\n--- seal: mint a real link and read the seed back out of it ---');
+console.log(
+  "\n--- seal: mint a real link and read the seed back out of it ---",
+);
 
 /*
  * `buildRequestBundle` + the codec directly, rather than `createRequestLink`. That layer is where the
@@ -198,46 +227,58 @@ console.log('\n--- seal: mint a real link and read the seed back out of it ---')
  */
 const { bundle: requestBundle } = buildRequestBundle(chosen, {
   subjectReference: `Patient/${PATIENT_ID}`,
-  subjectDisplay: patient.name?.[0]?.family ?? 'Test Patient',
-  prePopulated: seed
+  subjectDisplay: patient.name?.[0]?.family ?? "Test Patient",
+  prePopulated: seed,
 });
 
 const link = await shlCodec.encode(
-  { bundle: requestBundle, label: chosen.title ?? 'Questionnaire' },
-  { baseUrl: 'https://example.org', blobStore: fhirBinaryBlobStore(BLOB_SERVER!) }
+  { bundle: requestBundle, label: chosen.title ?? "Questionnaire" },
+  {
+    baseUrl: "https://example.org",
+    blobStore: fhirBinaryBlobStore(BLOB_SERVER!),
+  },
 );
 
-const decoded = await shlCodec.decode(link.slice(link.indexOf('#')));
+const decoded = await shlCodec.decode(link.slice(link.indexOf("#")));
 
-check('seal/stillReadsAsARequest', isRequestBundle(decoded.bundle), 'not as a completed response');
+check(
+  "seal/stillReadsAsARequest",
+  isRequestBundle(decoded.bundle),
+  "not as a completed response",
+);
 
 const payload = parseRequestBundle(decoded.bundle);
-check('seal/seedSurvivedTheRoundTrip', payload.prePopulated !== undefined);
+check("seal/seedSurvivedTheRoundTrip", payload.prePopulated !== undefined);
 check(
-  'seal/everyKeptAnswerCameBack',
+  "seal/everyKeptAnswerCameBack",
   payload.prePopulated !== undefined &&
     populatedRows(payload.prePopulated).length === seedRows.length,
-  `${payload.prePopulated ? populatedRows(payload.prePopulated).length : 0} of ${seedRows.length}`
+  `${payload.prePopulated ? populatedRows(payload.prePopulated).length : 0} of ${seedRows.length}`,
 );
 check(
-  'seal/theUntickedAnswerDidNot',
+  "seal/theUntickedAnswerDidNot",
   payload.prePopulated !== undefined &&
-    !populatedRows(payload.prePopulated).some((row) => row.path === dropped.path)
+    !populatedRows(payload.prePopulated).some(
+      (row) => row.path === dropped.path,
+    ),
 );
 check(
-  'seal/seedCarriesNoAuthorship',
-  payload.prePopulated?.author === undefined && payload.prePopulated?.meta?.security === undefined,
-  'nothing that would return as a claim about who asserted the answers'
+  "seal/seedCarriesNoAuthorship",
+  payload.prePopulated?.author === undefined &&
+    payload.prePopulated?.meta?.security === undefined,
+  "nothing that would return as a claim about who asserted the answers",
 );
 
 const questionnaireBytes = JSON.stringify(payload.questionnaire).length;
 const seedBytes = JSON.stringify(payload.prePopulated ?? {}).length;
 console.log(
   `\n  questionnaire ${(questionnaireBytes / 1024).toFixed(0)} KB · seed ${seedBytes} B · ` +
-    `+${((seedBytes / questionnaireBytes) * 100).toFixed(1)}% · link ${link.length} bytes`
+    `+${((seedBytes / questionnaireBytes) * 100).toFixed(1)}% · link ${link.length} bytes`,
 );
 
 console.log(
-  failures === 0 ? `\nAll ${total} checks passed.` : `\n${failures} of ${total} check(s) failed.`
+  failures === 0
+    ? `\nAll ${total} checks passed.`
+    : `\n${failures} of ${total} check(s) failed.`,
 );
 process.exit(failures === 0 ? 0 : 1);

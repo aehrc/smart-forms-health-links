@@ -1,0 +1,37 @@
+{
+  // TypeScript project for the Node side of the app: the BFF, its operational scripts, the
+  // Playwright suite and the Node-environment Vitest tests.
+  //
+  // `moduleResolution: "bundler"` rather than a Node ESM mode because the server shares the
+  // link crypto and codecs under `src/` (via the `@/*` alias, exactly as `vite.config.ts`
+  // does), and those modules use extensionless relative imports. Both ways the server is
+  // executed resolve those: `tsx` in development (`npm run dev:server`) and esbuild for the
+  // production bundle (`npm run build:server`).
+  "compilerOptions": {
+    "target": "ES2023",
+    // `DOM` is present because the server shares the link crypto and codecs under `src/`,
+    // which are typed against the Web Crypto, Streams and Fetch globals (`CryptoKey`,
+    // `BufferSource`, `ReadableWritablePair`, `BodyInit`). Node 22 provides all of them at
+    // runtime; `@types/node` alone does not declare them. ESLint bans the browser-only
+    // globals that come along for the ride (`window`, `document`, `localStorage`) in
+    // `server/` and `ops/`.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] },
+    "types": ["node", "fhir"]
+  },
+  "include": ["server", "ops", "tests/server", "tests/ops", "e2e"]
+}

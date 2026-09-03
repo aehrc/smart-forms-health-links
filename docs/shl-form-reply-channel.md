@@ -1,30 +1,36 @@
 # Returning answers to a SMART Health Link form request
 
-**Status:** proposal, implemented in
-[smart-forms-health-links](https://github.com/aehrc/smart-forms-health-links) — **and off by
-default there.**
+**Status:** design record. Specified and implemented in
+[smart-forms-health-links](https://github.com/aehrc/smart-forms-health-links) - **but no longer
+minted there.** Still honoured on inbound links.
 **Audience:** anyone building an app that fills in a questionnaire delivered by SMART Health Link.
 
-This document specifies three ways for a filler to return a completed `QuestionnaireResponse` to
-whoever asked for it. All are declared on the invitation's `Task`, all are optional, and an
-invitation may offer any of them, all of them, or none.
+This document specifies two ways for a filler to return a completed `QuestionnaireResponse` to
+whoever asked for it. Both are declared on the invitation's `Task`, both are optional, and an
+invitation may offer either, both, or neither.
 
-> **What "off by default" means, and does not mean.**
+> **What this app mints, and what it merely tolerates.**
 >
-> The primary return path is now the one that needs no arrangement at all: the filler mints its own
-> SMART Health Link carrying the `QuestionnaireResponse`, and the requester scans it back. Nothing
-> has to be declared on the invitation for that, so by default an invitation from
-> smart-forms-health-links offers **no** reply channel and the `Task` carries no extensions. What
-> this app accepts as an inbound response link is specified in
-> [`response-links.md`](response-links.md).
+> Nothing in this document is minted by smart-forms-health-links any more. Its invitations declare
+> no reply descriptor and no `sdc-questionnaire-endpoint`, so an invitation from that app offers
+> neither channel B nor channel C.
 >
-> The *inbound* side is unaffected. This app still parses reply descriptors tolerantly — including
-> Platypus's own extension URLs and its `replyPostToken` field name — and still delivers answers
-> through a channel an invitation asks for. Refusing to honour someone else's return channel would
-> strand their answers, not protect anyone. Nothing specified below has changed, and a filler that
-> implements it interoperates exactly as before.
+> What replaced them is a third channel, which needs no extension on the `Task` at all: the
+> manifest carries a second encrypted file, `application/smart-api-access`, holding a short-lived
+> access token for the requester's own FHIR server. The filler writes the answers there itself, as
+> one authorised transaction. That contract is summarised in
+> [`response-links.md`](response-links.md), under "The token channel".
 >
-> Deployments that need this channel offered on their own invitations set `enableEncryptedReply`.
+> **The inbound side is unaffected, and deliberately so.** This app still parses reply descriptors
+> tolerantly - including Platypus's own extension URLs and its `replyPostToken` field name - and
+> still delivers answers through a channel an invitation asks for. Refusing to honour someone
+> else's return channel would strand their answers, not protect anyone. Nothing specified below has
+> changed, and a filler that implements it interoperates with a producer that offers it exactly as
+> before.
+>
+> What did go is the requester half of channel C: there is no longer any way to make this app mint
+> a reply slot, hold its private key or poll it. The channel is specified here, and consumed here,
+> and produced by other people.
 
 It is written so it can be implemented without reading our source.
 
@@ -36,52 +42,55 @@ one-directional. Neither the SHL spec nor the HL7
 defines a submission, upload or writeback channel, and neither mentions questionnaires or requests
 for data at all.
 
-That is workable if the filler is a browser: it can publish its *own* link and let the requester scan
+That is workable if the filler is a browser: it can publish its _own_ link and let the requester scan
 it, which needs no new contract. It does not work for a native app, which has no viewer to hand back
 and no way to get a QR code onto the requester's screen. Something in the invitation has to say where
 answers may go.
 
-Three channels, because they fail in different places.
+Two channels, because they fail in different places.
 
-| | Channel B — server write | Channel C — encrypted reply | Channel D — one-shot write |
-|---|---|---|---|
-| Transport | `POST` to a FHIR endpoint | ciphertext into a reply slot | conditional `PUT` into a pre-allocated resource |
-| Filler needs | reachability of the requester's server | ECDH-ES + A256GCM | nothing but `PUT` |
-| Requester needs | a writable endpoint | nothing beyond what SHL already needs | any FHIR server it can create on |
-| Bounded capability? | **no** — an open endpoint | yes — one slot | yes — one slot, one write |
-| Writable more than once? | yes | yes, last one wins | **no** — the second is refused |
-| Reviewed before it lands? | **no** | yes | yes |
-| Host sees plaintext? | yes — it is the record | no | yes — but it is transport, not the record |
-| New extension? | one, to name the Task | one | one |
+|                           | Channel B - server write               | Channel C - encrypted reply           |
+| ------------------------- | -------------------------------------- | ------------------------------------- |
+| Transport                 | `POST` to a FHIR endpoint              | ciphertext into a reply slot          |
+| Filler needs              | reachability of the requester's server | any HTTPS host that accepts a `PUT`   |
+| Requester needs           | a writable endpoint                    | nothing beyond what SHL already needs |
+| Reviewed before it lands? | **no**                                 | yes                                   |
+| Host sees plaintext?      | yes - it is the record                 | no                                    |
+| New extension?            | one, to name the Task                  | one                                   |
 
-**Channel C is still the one to implement if you implement only one.** It is the only channel where
-the host cannot read the answers, and the only one that needs no server-side state from the requester
-beyond a file.
+Channel C is the one to implement if you implement only one of these two. It is the only one that
+works without the filler reaching the requester's infrastructure, and the only one that leaves the
+requester able to review answers before they enter a record.
 
-**Channel D is the one to implement if the filler cannot do the crypto.** That is not a hypothetical:
-channel C asks every third-party filler for ECDH-ES in Direct Key Agreement mode with a hand-rolled
-Concat-KDF, and a filler that gets it subtly wrong produces ciphertext nobody can read. Channel D asks
-for a `PUT`. What it costs is confidentiality from the slot host, which is why it is a replacement for
-B rather than for C.
-
-**Channel B is superseded.** It is documented here because invitations in the wild carry it and a
-filler should still understand it, but nothing new should offer it: it names a record server, carries
-no capability, cannot be made single-use, and lands answers unreviewed. Every one of those is fixed in
-D.
+If you are building the _requester_ side and can issue OAuth tokens, neither is the best answer any
+more. A manifest that carries an `application/smart-api-access` file lets the filler write straight
+into your FHIR server with a scoped, short-lived credential: no new extension, no slot to host, no
+polling, and the answers arrive attributed rather than relayed. That is what
+smart-forms-health-links now mints, and it is summarised in
+[`response-links.md`](response-links.md). The two channels below remain specified because they need
+nothing but a file host, which is still the only thing some producers have.
 
 ## What an invitation looks like
 
-Unchanged from a plain SHL, except for what is on the `Task`. The link is an ordinary
-`shlink:/` payload with the `U` flag, resolving to a single JWE (`alg: dir`, `enc: A256GCM`) whose
-plaintext is a `collection` Bundle:
+Unchanged from a plain SHL, except for what is on the `Task`. Either hosting mode works: a `U`-flag
+payload resolving to a single JWE, or a manifest listing one or more files. Both channels are
+properties of the `Task`, not of how the invitation was hosted, so a producer may declare them
+either way. The example below assumes a single JWE (`alg: dir`, `enc: A256GCM`) whose plaintext is
+a `collection` Bundle:
 
 ```json
 {
   "resourceType": "Bundle",
   "type": "collection",
   "entry": [
-    { "fullUrl": "urn:uuid:…", "resource": { "resourceType": "Questionnaire", "…": "…" } },
-    { "fullUrl": "urn:uuid:…", "resource": { "resourceType": "Task", "…": "…" } }
+    {
+      "fullUrl": "urn:uuid:…",
+      "resource": { "resourceType": "Questionnaire", "…": "…" }
+    },
+    {
+      "fullUrl": "urn:uuid:…",
+      "resource": { "resourceType": "Task", "…": "…" }
+    }
   ]
 }
 ```
@@ -95,7 +104,9 @@ The `Questionnaire` travels whole, so the form opens and fills with no access to
   "resourceType": "Task",
   "status": "requested",
   "intent": "order",
-  "identifier": [{ "system": "urn:ietf:rfc:3986", "value": "urn:uuid:3fb1cde7-…" }],
+  "identifier": [
+    { "system": "urn:ietf:rfc:3986", "value": "urn:uuid:3fb1cde7-…" }
+  ],
   "authoredOn": "2026-08-04T02:15:00.000Z",
   "description": "Complete \"GP Chronic Condition Management Plan\"",
   "requester": { "display": "Parkview Medical Centre" },
@@ -111,7 +122,7 @@ The `Questionnaire` travels whole, so the form opens and fills with no access to
       "valueCanonical": "http://www.health.gov.au/assessments/GPChronicConditionManagementPlan|0.1.0"
     }
   ],
-  "extension": [ "…see below…" ]
+  "extension": ["…see below…"]
 }
 ```
 
@@ -121,18 +132,18 @@ reasonably undo:
 - **`focus.reference` is the Questionnaire's canonical, not the `urn:uuid` of its Bundle entry.**
   A urn:uuid is arguably better FHIR for a bundled resource, but it stops meaning anything the moment
   the Bundle is taken apart, and a filler holding only the Task then cannot say which form it has.
-  `focus.type` is `Questionnaire` and must be set *together with* the canonical: readers exist that
+  `focus.type` is `Questionnaire` and must be set _together with_ the canonical: readers exist that
   short-circuit on `focus.type === 'Questionnaire'` and stop consulting `input`, so a `type` alongside
   a urn:uuid reference is worse than neither.
 - **`input[].valueCanonical` repeats the canonical.** `focus` is dropped on the return leg, where the
   Questionnaire is no longer in the payload and the reference would dangle. `input` is what survives.
 - **`for` carries a `display` as well as a `reference`.** A filler cannot resolve a reference into a
-  server it has no access to, so the name is the only part of "who is this for" that reaches it — and
+  server it has no access to, so the name is the only part of "who is this for" that reaches it - and
   it is what lets a filler warn that a form names someone other than the person holding the device.
 - **`identifier` is the durable correlation key.** `urn:uuid` references inside the Bundle do not
   survive the round trip; this does.
 
-## Channel C — encrypted reply
+## Channel C - encrypted reply
 
 ### The descriptor
 
@@ -142,23 +153,29 @@ reasonably undo:
 {
   "url": "http://smartforms.csiro.au/StructureDefinition/shl-reply-descriptor",
   "extension": [
-    { "url": "replyUrl", "valueUrl": "https://hapi.fhir.org/baseR4/Binary/137287373" },
+    {
+      "url": "replyUrl",
+      "valueUrl": "https://hapi.fhir.org/baseR4/Binary/137287373"
+    },
     { "url": "replyMethod", "valueCode": "PUT" },
-    { "url": "publicJwk", "valueString": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"…\",\"y\":\"…\"}" },
+    {
+      "url": "publicJwk",
+      "valueString": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"…\",\"y\":\"…\"}"
+    },
     { "url": "expiresAt", "valueInteger": 1786000000 }
   ]
 }
 ```
 
-| Field | Card. | Meaning |
-|---|---|---|
-| `replyUrl` | 1..1 | Absolute `https` URL of the reply slot. Accept `valueUrl` or `valueString`. |
-| `replyMethod` | 0..1 | How to deliver. `PUT` is specified here. Absent means `PUT`, unless a token is present (see below). |
-| `publicJwk` | 1..1 | Stringified P-256 public JWK. Replies are encrypted to this. |
-| `expiresAt` | 0..1 | Unix seconds. Mirrors the link's own `exp`. |
-| `replyToken` | 0..1 | Capability to *write* the slot, for hosts that gate writes. Never the capability to read one. |
+| Field         | Card. | Meaning                                                                                             |
+| ------------- | ----- | --------------------------------------------------------------------------------------------------- |
+| `replyUrl`    | 1..1  | Absolute `https` URL of the reply slot. Accept `valueUrl` or `valueString`.                         |
+| `replyMethod` | 0..1  | How to deliver. `PUT` is specified here. Absent means `PUT`, unless a token is present (see below). |
+| `publicJwk`   | 1..1  | Stringified P-256 public JWK. Replies are encrypted to this.                                        |
+| `expiresAt`   | 0..1  | Unix seconds. Mirrors the link's own `exp`.                                                         |
+| `replyToken`  | 0..1  | Capability to _write_ the slot, for hosts that gate writes. Never the capability to read one.       |
 
-**The descriptor appears only inside the encrypted payload — never in the `shlink:` string.**
+**The descriptor appears only inside the encrypted payload - never in the `shlink:` string.**
 Inspecting a link without its key must reveal no slot, no token and no key.
 
 **`publicJwk` is a public key.** It must never carry `d`. Encrypting to a public key rather than to a
@@ -167,7 +184,7 @@ anyone who photographs it holds everything in it, and a symmetric reply key woul
 the answers. Here a leaked invitation can at worst destroy a reply, never read one.
 
 Parse tolerantly. Anything missing or malformed means "this invitation offers no encrypted reply
-channel", not an error — a filler that cannot send answers back is degraded; one that cannot open the
+channel", not an error - a filler that cannot send answers back is degraded; one that cannot open the
 form because an extension was wrong is broken.
 
 ### Delivering the reply
@@ -180,11 +197,11 @@ Content-Type: application/jose
 ```
 
 An unconditional overwrite. The slot holds the latest reply, so a filler correcting and resending
-replaces rather than accumulates, and the requester correlates by *which slot* the reply arrived in
+replaces rather than accumulates, and the requester correlates by _which slot_ the reply arrived in
 rather than by anything in the reply itself.
 
 A slot that has not been answered holds something that is not a JWE. The requester decides
-"answered" structurally — five dot-separated segments — not by comparing against a sentinel, so hosts
+"answered" structurally - five dot-separated segments - not by comparing against a sentinel, so hosts
 are free to represent "empty" however they like.
 
 > Implementation note: whatever placeholder a requester writes when minting a slot must be **unique
@@ -193,20 +210,24 @@ are free to represent "empty" however they like.
 
 ### The reply JWE
 
-ECDH-ES in Direct Key Agreement mode + A256GCM — RFC 7518 §4.6. Compact serialisation, five
-segments, encrypted-key segment **empty** (the agreed key *is* the content encryption key):
+ECDH-ES in Direct Key Agreement mode + A256GCM - RFC 7518 §4.6. Compact serialisation, five
+segments, encrypted-key segment **empty** (the agreed key _is_ the content encryption key):
 
 ```
 BASE64URL(protected header) . <empty> . BASE64URL(iv) . BASE64URL(ciphertext) . BASE64URL(tag)
 ```
 
 ```json
-{ "alg": "ECDH-ES", "enc": "A256GCM", "epk": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" } }
+{
+  "alg": "ECDH-ES",
+  "enc": "A256GCM",
+  "epk": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+}
 ```
 
 - `epk` is a **fresh ephemeral keypair per reply**. Its public half goes in the header; its private
   half is discarded.
-- AAD is the ASCII bytes of the *encoded* protected header segment.
+- AAD is the ASCII bytes of the _encoded_ protected header segment.
 - `apu` and `apv` are absent, and Concat-KDF hashes them as zero-length.
 - CEK = Concat-KDF (NIST SP 800-56A §5.8.1, single SHA-256 round, counter = 1):
 
@@ -238,7 +259,10 @@ it.
         "resourceType": "QuestionnaireResponse",
         "status": "completed",
         "questionnaire": "http://www.health.gov.au/assessments/GPChronicConditionManagementPlan|0.1.0",
-        "subject": { "reference": "Patient/local-key", "display": "Jane Citizen" },
+        "subject": {
+          "reference": "Patient/local-key",
+          "display": "Jane Citizen"
+        },
         "meta": {
           "security": [
             {
@@ -248,7 +272,7 @@ it.
             }
           ]
         },
-        "item": [ "…" ]
+        "item": ["…"]
       }
     },
     {
@@ -273,7 +297,10 @@ it.
         ]
       }
     },
-    { "fullUrl": "urn:uuid:e5f6…", "resource": { "resourceType": "Task", "status": "completed", "…": "…" } }
+    {
+      "fullUrl": "urn:uuid:e5f6…",
+      "resource": { "resourceType": "Task", "status": "completed", "…": "…" }
+    }
   ]
 }
 ```
@@ -286,178 +313,47 @@ Rules:
   most important field in the payload. Without it, answers typed on a patient's phone are
   indistinguishable in the record from answers a clinician recorded.
 - **Do not echo the reply descriptor back.** Returning the slot URL, and especially a `replyToken`,
-  copies a write capability into the response — possibly into an unencrypted QR code.
+  copies a write capability into the response - possibly into an unencrypted QR code.
 - **Echo the `Task`** if you can. `status: 'completed'`, `output[].valueReference` pointing at the
   response's `fullUrl`, `focus` dropped, `identifier` preserved. It is what lets a requester with
   several outstanding requests for the same form tell the answers apart. Optional: a requester that
   polls a specific slot already knows which request was answered.
 - `subject.reference` will not resolve on the requester's server. That is expected and is the
-  requester's problem to reconcile — see below.
+  requester's problem to reconcile - see below.
 
 ### Collecting a reply
 
 `GET {replyUrl}` with **no `Accept` header**: a FHIR server returns a `Binary` resource wrapper for
 `application/fhir+json`, whereas what is wanted is the stored bytes. Five dot-separated segments means
-a reply; anything else means pending. `404`/`410` means the slot is gone — a normal end state for a
+a reply; anything else means pending. `404`/`410` means the slot is gone - a normal end state for a
 request nobody answered.
 
-## Channel D — one-shot write
-
-### The idea
-
-The requester creates an **empty `QuestionnaireResponse`** and tells the filler its address, the
-version it is at, and a token. The filler `PUT`s the answers to that address, conditionally on that
-version. The first write succeeds; every write after it collides with the version the first one
-created and is refused by the server's own optimistic locking.
-
-That is the whole mechanism, and it is worth being precise about why it is built this way: **"once" is
-a property of the wire, not of the token.** Any conformant FHIR server enforces `If-Match` — the
-public HAPI this was developed against refuses the second write with
-`HAPI-0989: Trying to update QuestionnaireResponse/4977/_history/1 but this is not the current
-version` — and none of them know anything about bearer tokens. So the single-use guarantee holds on
-infrastructure that already exists, with no authorisation tier to stand up.
-
-### The descriptor
-
-`http://smartforms.csiro.au/StructureDefinition/shl-write-descriptor`, on the `Task`:
-
-```json
-{
-  "url": "http://smartforms.csiro.au/StructureDefinition/shl-write-descriptor",
-  "extension": [
-    { "url": "writeUrl", "valueUrl": "https://hapi.fhir.org/baseR4/QuestionnaireResponse/4821" },
-    { "url": "writeMethod", "valueCode": "PUT" },
-    { "url": "writeEtag", "valueString": "W/\"1\"" },
-    { "url": "writeToken", "valueString": "…" },
-    { "url": "expiresAt", "valueInteger": 1786000000 }
-  ]
-}
-```
-
-| Field | Card. | Meaning |
-|---|---|---|
-| `writeUrl` | 1..1 | Absolute `https` URL of the pre-allocated `QuestionnaireResponse`. Accept `valueUrl` or `valueString`. |
-| `writeMethod` | 0..1 | `PUT` is the only value specified. Absent means `PUT`. |
-| `writeEtag` | 0..1 | What to send in `If-Match`. Absent means unconditional — still a location, no longer a *single* write. |
-| `writeToken` | 0..1 | Capability to perform the write, for hosts that gate them. Never a capability to *read* the slot. |
-| `expiresAt` | 0..1 | Unix seconds. Mirrors the link's own `exp`. |
-
-**The descriptor appears only inside the encrypted payload — never in the `shlink:` string**, and
-never on any copy of the `Task` published to a server. The same rule, and the same reason, as channel
-C's.
-
-Parse tolerantly. Anything missing, malformed, or naming an address you may not contact means "this
-invitation offers no write channel", not an error. Reject a `writeMethod` you do not implement rather
-than attempting the write anyway.
-
-**Be honest about `writeToken` where the host ignores it.** On a plain FHIR server it is advisory: it
-is carried because it is the field a gating host needs, and having it in the format means such a host
-requires no format change. It is not what makes the write single-use, and a UI that implies otherwise
-is lying to someone about the protection they have.
-
-### Delivering the answers
-
-```
-PUT {writeUrl}
-If-Match: {writeEtag}
-Authorization: Bearer {writeToken}      (only when the descriptor carries one)
-Content-Type: application/fhir+json
-
-{ "resourceType": "QuestionnaireResponse", "id": "4821", "status": "completed", … }
-```
-
-| Status | Meaning |
-|---|---|
-| `200`/`201` | Written. That was the one write the capability allowed. |
-| `409`/`412` | Already answered — by an earlier send of yours, or by somebody else. **Do not retry.** Offer the filler another route instead. |
-| `401`/`403` | The host gates writes and refused the token. |
-| `404`/`410` | The slot is gone. A normal end state for an expired request. |
-
-### The payload
-
-A bare `QuestionnaireResponse`, not a Bundle: the capability addresses exactly one resource, so there
-is nowhere to put a second one. Three consequences, each a deliberate trade:
-
-- **`id` must equal the id in `writeUrl`.** A FHIR update requires it. This is the one channel where
-  the filler *keeps* an id rather than stripping it — and it is not the filler's identity leaking, it
-  is the address being written to. Every other rule about foreign ids still applies to the requester
-  when it later writes to its own record.
-- **No `Provenance`, so `meta.security` = `PATAST` carries the entire attribution story.** Stamp it
-  whenever the answers were entered by the patient. Without it, answers typed on a phone are
-  indistinguishable in the record from answers a clinician recorded.
-- **No `Task` echo, so correlation moves onto `QuestionnaireResponse.identifier`.** R4 allows one,
-  which is exactly enough for the request's `urn:uuid`. In practice the requester also knows *which
-  slot* answered, so this is for a reader holding only the resource.
-
-**`subject` carries a `display` and no `reference`.** This is not optional politeness. A filler names
-the patient in its own terms — Platypus uses a local vault key — and that reference resolves nowhere.
-On the requester's record server that is a reconciliation for a human; on the *slot* server it is a
-hard `HAPI-1094` that fails the write outright and strands the answers. The name is what survives, and
-the requester reconciles it against the patient it addressed the request to.
-
-**Do not echo the descriptor back**, and in particular not `writeToken` — the same rule as channel C's.
-
-### Collecting
-
-```
-GET {writeUrl}
-Accept: application/fhir+json
-```
-
-Decide "answered" **structurally**, from `status` — `completed` or `amended` — rather than by
-comparing against whatever placeholder the slot was minted with. A host is free to represent an
-untouched slot however it likes, and a requester that recognised only its own placeholder would miss
-an answer that arrived any other way. `404`/`410` means the slot is gone.
-
-### Where the slot must live
-
-**Not on the record server.** This is the single design decision that separates D from B, and
-implementing D with the slot on the record server rebuilds B with extra steps.
-
-A slot holds an unreviewed assertion from a party whose only credential is that they had a link. Mint
-it on transport infrastructure of the same trust class as the SHL payload host — in this
-implementation, `blobServerUrl` — so the requester collects it, shows it to a human, and only then
-writes to the record. The honest cost, which must be stated to whoever turns this on: **the slot host
-sees the answers in plaintext.** Channel C exists precisely so that cannot happen.
-
-### Security model
-
-- **Nothing is recoverable from the `shlink:` string.** No slot, no token, no ETag.
-- **A leaked invitation can consume the write, and can read the answers if it is fast.** This is
-  strictly weaker than channel C, where a leaked invitation can destroy a reply but never read one.
-  It is the price of a channel a filler can implement without crypto, and it is why C is not being
-  retired.
-- **The write is bounded to one resource and one use.** A capability that leaks after it has been
-  spent is worth nothing, and `expiresAt` bounds one that was never spent.
-- **A requester must not trust what lands.** It arrives from an unauthenticated party who has the
-  link, which is not proof of who filled the form. Review before writing, keep the `PATAST` label.
-
-## Channel B — write to the requester's server
+## Channel B - write to the requester's server
 
 Two halves. On the embedded `Questionnaire`, SDC's standard
 [`sdc-questionnaire-endpoint`](http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint):
 
 ```json
-{ "url": "http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint",
-  "valueUri": "https://ehr.example.org/fhir" }
+{
+  "url": "http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint",
+  "valueUri": "https://ehr.example.org/fhir"
+}
 ```
 
-*"the base URL for the server(s) to which questionnaire response … should be submitted. If multiple
-repetitions are present, the completed form should be sent to all listed endpoints."*
+_"the base URL for the server(s) to which questionnaire response … should be submitted. If multiple
+repetitions are present, the completed form should be sent to all listed endpoints."_
 
 And on the `Task`, its own absolute URL on that server, so the filler can advance it:
 
 ```json
-{ "url": "http://smartforms.csiro.au/StructureDefinition/invitation-server-task-url",
-  "valueUrl": "https://ehr.example.org/fhir/Task/456" }
+{
+  "url": "http://smartforms.csiro.au/StructureDefinition/invitation-server-task-url",
+  "valueUrl": "https://ehr.example.org/fhir/Task/456"
+}
 ```
 
-> **Superseded by channel D.** Understand it, because invitations carrying it exist; do not offer it
-> on anything new. Everything below that reads as a cost — an open endpoint, no capability, no way to
-> be single-use, answers landing unreviewed — is fixed there.
-
 The filler `POST`s the `QuestionnaireResponse` to the declared base and may `PUT` the Task to
-`completed`. No token, no handshake — which is also the catch: **the endpoint must accept writes from
+`completed`. No token, no handshake - which is also the catch: **the endpoint must accept writes from
 a party holding nothing but a link**, and answers arrive **unreviewed**.
 
 The `Task` published to that server carries **no extensions**. Its invitation copy holds the reply
@@ -465,21 +361,78 @@ descriptor, including any `replyToken`; putting that on a server whose purpose i
 filler would hand the write capability to anyone who can read a Task. Both copies share one
 `identifier` so they stay correlatable.
 
+## Channel D - a slot that accepts one write
+
+Channel B's failure is that it names a _server_ and carries no capability, so the endpoint has to
+accept a write from anyone holding a link and there is no way to say "once". Channel D fixes both by
+naming **one pre-allocated resource** instead of a server.
+
+The requester's BFF mints an empty `QuestionnaireResponse` and puts its address, the version it is
+at, and a write token on the invitation `Task`:
+
+```json
+{
+  "url": "http://smartforms.csiro.au/StructureDefinition/shl-write-descriptor",
+  "extension": [
+    {
+      "url": "writeUrl",
+      "valueUrl": "https://links.example.org/shl/slot/4mV1x8"
+    },
+    { "url": "writeMethod", "valueCode": "PUT" },
+    { "url": "writeEtag", "valueString": "\"1\"" },
+    { "url": "writeToken", "valueString": "…" },
+    { "url": "expiresAt", "valueInteger": 1788000000 }
+  ]
+}
+```
+
+The exchange is three lines, and a filler can implement it with `fetch` and no library at all:
+
+```text
+mint    POST /api/write-slots         (requester, needs a session)  -> writeUrl + ETag + token
+write   PUT  {writeUrl}   If-Match: {writeEtag}   Authorization: Bearer {writeToken}
+poll    GET  {writeUrl}                                            -> in-progress | completed
+```
+
+**Once is a property of the exchange, not of trust.** `If-Match` addresses the version the slot is
+already at, so the second write collides with the first and is refused with `412`. That holds whoever
+is hosting the slot: the statuses are deliberately the ones a plain FHIR server would give - `412`
+for a failed precondition, `403` for a bad token, `404` for a slot that is gone - so a filler written
+against one reads the same outcomes here. A write with **no** `If-Match` is refused too: a request
+that declines to say which version it expects is not making the promise this channel exists to make.
+
+**Where the slot lives is the whole design.** A slot is transport, and it holds an unreviewed
+assertion from somebody whose only credential is that they had a link. So it is deliberately _not_ on
+the record server: the requester collects it, a human reads it, and only then does the record get
+written. Putting the slot on the record server instead is channel B again, and the review gate is the
+difference.
+
+It used to live on a third-party blob host, which had two consequences worth naming. The write token
+was **advisory** - a plain FHIR server has no notion of one and ignores it - and the host saw the
+plaintext. Serving the slot from the requester's own BFF fixes the first: the token is now checked,
+and a wrong one is refused. It does not fix the second, and cannot: the slot holds plaintext FHIR by
+design, which is what lets a filler answer with a `PUT` and no crypto. That is the trade against
+channel C, whose host cannot read the content but whose filler needs ECDH-ES, A256GCM and a
+hand-written Concat-KDF.
+
+**What the filler sends is normalised first.** `id`, `subject` and `author` are stripped - a
+reference minted on the filler's device names nothing on the requester's server - while the subject's
+_display_ is kept, the request's `identifier` is copied on so the answers can be matched back to the
+request rather than to whichever browser fetched them, and the `PATAST` security label is added so a
+record can tell a link-holder's assertion from a clinician's entry.
+
 ## Security model
 
 - **The reply channel lives only inside the encrypted payload.** No slot, token, or key is recoverable
   from a `shlink:` string.
 - **Replies are readable only by the requester.** ECDH-ES to a public key whose private half never
   leaves the requester, so a leaked invitation cannot decrypt a reply.
-- **A leaked invitation can destroy a reply, not read one.** With an ungated slot — a plain FHIR
-  `Binary`, say — anyone who can reach the host can overwrite it, and on servers with sequential ids
+- **A leaked invitation can destroy a reply, not read one.** With an ungated slot - a plain FHIR
+  `Binary`, say - anyone who can reach the host can overwrite it, and on servers with sequential ids
   they need not even have seen the link. The reply is still ciphertext to them. `replyToken` exists for
   hosts that can narrow this; it needs no change to the wire format.
 - **Channel B has no confidentiality story at all.** It is a plain write to a server that must accept
   anonymous writes. Use it where that is already true, and prefer channel C otherwise.
-- **Channel D has confidentiality from everyone but the slot host,** and bounds the damage a leaked
-  invitation can do to a single write that can only happen once. Its slot must be transport, not a
-  record — see above.
 - **A requester must not trust a reply.** It arrives from an unauthenticated party who has the link,
   which is not proof of who filled the form. Review before writing, keep the `PATAST` label, and keep
   the `Provenance`.
@@ -487,7 +440,7 @@ filler would hand the write capability to anyone who can read a Task. Both copie
 ## Notes for implementers
 
 - **Do not add query parameters to a `U`-flag payload `GET`.** The SHL spec defines `recipient` as a
-  field in the *manifest request body*; there is no equivalent for direct retrieval. Appending it to
+  field in the _manifest request body_; there is no equivalent for direct retrieval. Appending it to
   the file URL breaks FHIR `Binary` hosting outright:
 
   ```
@@ -499,6 +452,7 @@ filler would hand the write capability to anyone who can read a Task. Both copie
 
   That rules out the most obvious file host in FHIR for no benefit, since `recipient` is not relied on
   for trust.
+
 - **Preserve `meta.security` when writing a received response.** Stripping `meta` wholesale to discard
   a foreign server's `versionId`/`lastUpdated`/`source` is correct in intent and takes the `PATAST`
   label with it. Strip those three fields, not the element.
@@ -515,33 +469,26 @@ filler would hand the write capability to anyone who can read a Task. Both copie
 ## Relationship to Platypus
 
 [Platypus](https://github.com/aehrc/platypus) shipped this contract first
-(`docs/features/shl-form-invitations.md`) under its own identifiers, and its design decisions — the
-`Task` extension, ECDH-ES to a practice key, `PATAST` plus `Provenance` on the reply — are adopted here
+(`docs/features/shl-form-invitations.md`) under its own identifiers, and its design decisions - the
+`Task` extension, ECDH-ES to a practice key, `PATAST` plus `Provenance` on the reply - are adopted here
 essentially unchanged. What differs is packaging:
 
-| | Platypus | Here |
-|---|---|---|
+|                | Platypus                                          | Here                                              |
+| -------------- | ------------------------------------------------- | ------------------------------------------------- |
 | Extension base | `https://platypushealth.app/StructureDefinition/` | `http://smartforms.csiro.au/StructureDefinition/` |
-| Delivery | relay: register install → grant → signed `POST` | `PUT` to any host |
-| `replyMethod` | absent | explicit, so the descriptor is host-neutral |
-| Write token | `replyPostToken` | `replyToken` |
-
-Channel D reverses the direction of that borrowing: it is specified here first, and Platypus reads it
-under both namespaces. The relevant difference on their side is a trust rule rather than a wire one.
-Platypus pins a channel-C `replyUrl` to its own relay origin, because redeeming a reply grant presents
-*that install's* identity token and "safe to reach" is not "entitled to our identity". A channel-D
-write presents only the capability the invitation itself supplied, which grants the host nothing it
-did not already issue — so the applicable rule is the ordinary untrusted-URL one (`https`, no loopback
-or link-local, re-classified per redirect hop), plus a confirmation naming the host.
+| Delivery       | relay: register install → grant → signed `POST`   | `PUT` to any host                                 |
+| `replyMethod`  | absent                                            | explicit, so the descriptor is host-neutral       |
+| Write token    | `replyPostToken`                                  | `replyToken`                                      |
 
 Our implementation **reads** the Platypus URLs and the `replyPostToken` name as aliases, and treats an
 untyped descriptor carrying a token as a relay rather than something to `PUT` at blindly. Read
 tolerantly, write narrowly: no third party should have to adopt one vendor's namespace to participate.
 
 The generalisation worth pursuing beyond this document is that a reply descriptor is functionally
-*"where do answers go"* for an untrusted, account-less channel — the same question
-`sdc-questionnaire-endpoint` already answers for trusted ones. Aligning the two, in SDC or the SHL IG,
-would retire these extensions, which would be the best outcome available. Channel D is the closest of
-the three to something SDC could absorb directly: strip the token and it is a conditional `PUT` to a
-resource the requester nominated, which needs no new concepts at all — only a way to say the address
-and the version.
+_"where do answers go"_ for an untrusted, account-less channel - the same question
+`sdc-questionnaire-endpoint` already answers for trusted ones. Aligning the two, in SDC or the SHL
+IG, would retire this extension, which would be the best outcome available.
+
+The token channel is a partial answer to the same question, and a better one where it applies: it
+says "here, and with this" rather than only "here". It does not retire this document, because it
+requires the requester to run an authorisation server and these channels do not.

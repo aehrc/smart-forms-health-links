@@ -11,7 +11,7 @@ the whole design turns on a filler being able to complete a form with no account
 network path to the requester's servers. SMART App Launch does not change that, and must not.
 
 The other half was a mistake, and this is the document where it gets corrected. The same
-no-identity-needed posture had leaked into the *requester's* side, where an unlaunched visitor could
+no-identity-needed posture had leaked into the _requester's_ side, where an unlaunched visitor could
 mint invitations, file answers into a record, amend somebody else's response, register a patient and
 write back extracted resources — anonymously, against a server named in a config file. It worked only
 because the default sandbox does not care.
@@ -24,14 +24,14 @@ Everything below is about which half is which, and what must never cross between
 
 ## What a launch changes
 
-| | Without a launch | With a launch |
-| --- | --- | --- |
-| **Writing anything to the EHR** | **Refused** | Permitted |
-| Reading the EHR | Anonymous, and still works | `Authorization: Bearer …` |
-| EHR base URL | `responseServerUrl` from `config.json` | The launched server |
-| Who amended a response | — | `Practitioner/…`, vouched for by the authorisation server |
-| Who a request is from | — | The launched user |
-| Patient on a new request | — | Already filled in, from the chart |
+|                                 | Without a launch                       | With a launch                                             |
+| ------------------------------- | -------------------------------------- | --------------------------------------------------------- |
+| **Writing anything to the EHR** | **Refused**                            | Permitted                                                 |
+| Reading the EHR                 | Anonymous, and still works             | `Authorization: Bearer …`                                 |
+| EHR base URL                    | `responseServerUrl` from `config.json` | The launched server                                       |
+| Who amended a response          | —                                      | `Practitioner/…`, vouched for by the authorisation server |
+| Who a request is from           | —                                      | The launched user                                         |
+| Patient on a new request        | —                                      | Already filled in, from the chart                         |
 
 The last three rows used to say "a name typed into a box", "`senderName` from `config.json`" and
 "searched for". Those were the answers when an unlaunched requester could write; the refusal in the
@@ -44,14 +44,14 @@ slot stay exactly where they were, and stay anonymous.
 
 Two predicates in `src/lib/config.ts`, siblings of the `canUse…` family already there:
 
-| | Asks for | Enforced at |
-| --- | --- | --- |
+|                                           | Asks for                             | Enforced at                                                |
+| ----------------------------------------- | ------------------------------------ | ---------------------------------------------------------- |
 | `canWriteToRecord(session, ehrServerUrl)` | A session **and** somewhere to write | `ReviewResponse` (accept, write-back), `CreatePatientForm` |
-| `canMintRequest(session)` | A session, and nothing else | `RequestForm` |
+| `canMintRequest(session)`                 | A session, and nothing else          | `RequestForm`                                              |
 
 `canMintRequest` asks for no destination, which looks like an oversight and is not. With
 `publishRequestTasks` off, minting touches the EHR not at all — the payload goes to the blob host,
-which is untrusted by design. It is gated on the *other* thing a launch supplies: an invitation says
+which is untrusted by design. It is gated on the _other_ thing a launch supplies: an invitation says
 who it is from, and `senderName` is one string in a config file, identical on every request the
 deployment has ever sent. The filler is being asked to hand over health information on the strength of
 that name.
@@ -67,7 +67,7 @@ process write". Three reasons, and the first is the one that matters:
 - **The check harness drives `submit.ts` directly.** `check:e2e-shl`, `check:amend`, `check:patient`
   and `check:writeback` all write without a session, and they still pass unchanged. That they do is the
   evidence the gate landed in the right place.
-- **`authedFetch` owns the other boundary.** It answers "may this token go *there*", by origin. Keeping
+- **`authedFetch` owns the other boundary.** It answers "may this token go _there_", by origin. Keeping
   "may this visitor write at all" out of it keeps that file about one question.
 
 ### What is not gated
@@ -105,13 +105,13 @@ is not an absence here, it is a fact about what the next click can do.
 
 ## The boundary
 
-Three modules talk to servers that a *filler* reaches, and none of them may ever see a token:
+Three modules talk to servers that a _filler_ reaches, and none of them may ever see a token:
 
-| Module | Who fetches it | Why it must stay anonymous |
-| --- | --- | --- |
-| `src/fhir/formsServer.ts` | Both halves | A public read-only catalogue on a different host |
-| `src/fhir/blobStore.ts` | The filler | Untrusted by design — the payload is a JWE and the key is in the link |
-| `src/link/writeSlot.ts` | The filler | The caller is on another device and holds no credentials |
+| Module                    | Who fetches it | Why it must stay anonymous                                            |
+| ------------------------- | -------------- | --------------------------------------------------------------------- |
+| `src/fhir/formsServer.ts` | Both halves    | A public read-only catalogue on a different host                      |
+| `src/fhir/blobStore.ts`   | The filler     | Untrusted by design — the payload is a JWE and the key is in the link |
+| `src/link/writeSlot.ts`   | The filler     | The caller is on another device and holds no credentials              |
 
 Two talk to the EHR, and those are the ones a session authorises:
 
@@ -186,11 +186,11 @@ Standalone launch  /launch
   "enableSmartLaunch": true,
   "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
   "smartClientId": "smart-forms-health-links",
-  "smartScopes": null            // null takes DEFAULT_SMART_SCOPES
+  "smartScopes": null, // null takes DEFAULT_SMART_SCOPES
 }
 ```
 
-`canUseSmartLaunch()` returns true only when the flag is on *and* an issuer and client id are both
+`canUseSmartLaunch()` returns true only when the flag is on _and_ an issuer and client id are both
 set — the same guard `canUseEncryptedReply` and `canUseOneShotWrite` use, so a deployment whose config
 failed to load cannot start a flow whatever a future default does to the flag.
 
@@ -218,11 +218,11 @@ reads as success.
 smart-launcher-v2 reads its launch options from the `launch` parameter on an EHR launch, or from the
 issuer path on a standalone launch, and it parses them either way:
 
-| Launch | Issuer | Result |
-| --- | --- | --- |
-| EHR (`?iss=…&launch=…`) | `…/v/r4/fhir` | works — the options ride in `launch` |
-| Standalone (`/launch`) | `…/v/r4/fhir` | **`invalid_request: Invalid launch options: SyntaxError: Unexpected end of JSON input`** |
-| Standalone (`/launch`) | `…/v/r4/sim/{base64url-array}/fhir` | works |
+| Launch                  | Issuer                              | Result                                                                                   |
+| ----------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| EHR (`?iss=…&launch=…`) | `…/v/r4/fhir`                       | works — the options ride in `launch`                                                     |
+| Standalone (`/launch`)  | `…/v/r4/fhir`                       | **`invalid_request: Invalid launch options: SyntaxError: Unexpected end of JSON input`** |
+| Standalone (`/launch`)  | `…/v/r4/sim/{base64url-array}/fhir` | works                                                                                    |
 
 With no `launch` parameter and no options in the path there is nothing to parse, and an empty string
 is not valid JSON. Both `launch.smarthealthit.org` and `proxy.smartforms.io` behave identically, so
@@ -285,7 +285,7 @@ under the nav, on every screen — which is the copy to trust: it reflects the d
   [pre-population](pre-population.md) wants `user/Condition.rs`, for opposite reasons, so
   `mergePermissions` collapses them into a single request rather than asking the same question twice.
   The five `.rs` scopes are the types pre-population reads and nothing writes.
-- **Nothing is ever deleted, and the resources the app *authors* are never updated.** No `d` on
+- **Nothing is ever deleted, and the resources the app _authors_ are never updated.** No `d` on
   anything; no `u` on `Patient`, `QuestionnaireResponse`, `Task` or `Provenance`.
   [Amendments are new resources](../README.md#amendments-are-new-resources) is what makes that
   possible — a stored response never has to be edited in place. `check:roundtrip` asserts both halves.
@@ -318,7 +318,7 @@ Questionnaire, which is unchanged behaviour.
 **Level 3 is now unreachable from the app**, and it is worth being explicit about why rather than
 letting a reader discover it. `resolveDestinations` falls to `responseServerUrl` only when there is no
 session — and with no session the app will not write at all. So configuration still supplies the EHR
-base the requester *reads*, and no longer supplies one it writes to. The level stays documented and
+base the requester _reads_, and no longer supplies one it writes to. The level stays documented and
 stays in the code because the Node check scripts pass no session and reach it, which is how the write
 path is exercised offline from a launch.
 

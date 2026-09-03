@@ -1,374 +1,406 @@
-import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
-import { getResponse, removeEmptyAnswersFromResponse } from '@aehrc/smart-forms-renderer';
-import type { AppConfig } from '@/lib/config';
 import {
-  canTrackRequests,
-  canUseEncryptedReply,
-  canUseOneShotWrite,
-  canUseServerReturn,
-  resolveExpiry,
-  resolveLinkBaseUrl,
-  resolveWriteSlotServerUrl
-} from '@/lib/config';
-import { fhirBinaryBlobStore, type BlobStore } from '@/fhir/blobStore';
-import { declareResponseEndpoint, publishRequestTask } from '@/fhir/submit';
-import type { SmartSession } from '@/auth/smartSession';
-import { LINK_CODECS } from './registry';
-import { defaultLabel, encodingCodec, ensureQuestionnaireCanonical } from './codec';
+  getResponse,
+  removeEmptyAnswersFromResponse,
+} from "@aehrc/smart-forms-renderer";
+
+import { bespokeCodec } from "./bespokeCodec";
+import { encodeUtf8 } from "./binary";
+import { defaultLabel, ensureQuestionnaireCanonical } from "./codec";
 import {
   buildReplyBundle,
-  buildRequestBundle,
   buildResponseBundle,
   buildWriteResponse,
-  questionnaireCanonicalOf
-} from './exchange';
-import { encodeUtf8 } from './binary';
-import { encryptReplyJwe, generateReplyKeyPair, type ReplyPrivateJwk } from './replyCrypto';
-import { createReplySlot, putReply } from './replySlot';
+} from "./exchange";
+import { JOSE_CONTENT_TYPE } from "./jwe";
+import { encryptReplyJwe } from "./replyCrypto";
 import {
   isReplyDescriptorExpired,
   isWriteDescriptorExpired,
   type ReplyDescriptor,
-  type WriteDescriptor
-} from './replyDescriptor';
-import { createWriteSlot, putResponseToSlot, type WriteSlotOutcome } from './writeSlot';
+  type WriteDescriptor,
+} from "./replyDescriptor";
+import { putResponseToSlot, type WriteSlotOutcome } from "./writeSlot";
+
+import type { Questionnaire, QuestionnaireResponse, Task } from "fhir/r4";
+
+import {
+  canUseOneShotWrite,
+  resolveExpiry,
+  resolveLinkBaseUrl,
+  type AppConfig,
+} from "@/lib/config";
+import { sessionEndedError } from "@/lib/session";
 
 /**
- * Link creation — the boundary where the renderer's global form state and the app's config meet the
- * codecs. This is the only part of the link layer that depends on `@aehrc/smart-forms-renderer`.
- */
-
-/** Whether the app is configured to host SHL payloads at all. */
-export function canCreateHealthLinks(config: AppConfig): boolean {
-  return config.blobServerUrl !== null;
-}
-
-/**
- * Where a SMART Health Link's encrypted payload gets hosted, per config.
+ * Link creation, from the browser's side.
  *
- * Note what this does *not* do: fall back to `formsServerUrl`. That server is a read-only
- * catalogue — writing blobs into it would put transactional data in a shared reference library.
+ * The two directions are minted in two different places, and the reason is hosting.
+ *
+ * An **invitation** is no longer minted by this code; it is *asked for*. The component that mints
+ * is the component that hosts (FR-013), and that is the BFF: it holds the session's authority to
+ * publish the request Task, it hosts the encrypted payload, and it mints a fresh grant on every
+ * manifest fetch. So {@link createRequestLink} is one `POST` to `/api/invitations` and some
+ * presentation of the answer.
+ *
+ * A **return** is minted here, because there is nowhere else it could be. Whoever fills a form
+ * holds a link and nothing else, and the server's public surface takes no payloads
+ * (`contracts/http-api.md`), so {@link createResponseLink} uses the one transport that needs no
+ * host: the answers, compressed into the fragment. That is a weaker confidentiality position than
+ * a hosted encrypted payload and the surface showing the link says so.
+ *
+ * What went with the move to server-side minting is worth stating, because both were real
+ * features:
+ *
+ *  - **Channel B**, where an invitation declared a `sdc-questionnaire-endpoint` and invited a
+ *    filler to write to it anonymously, is replaced by the grant. A filler now writes with a
+ *    token that expires, scoped to four operations, rather than to an open endpoint.
+ *  - **Channel C**, the encrypted reply slot, is no longer minted. Its requester half - creating
+ *    a slot, holding the private key in one browser, polling - is gone with it. The *filler*
+ *    half stays: {@link sendEncryptedReply} still honours a reply channel declared by somebody
+ *    else's invitation, because refusing to would strand a Platypus user's answers (FR-029).
+ * @author John Grimes
  */
-export function resolveBlobStore(config: AppConfig): BlobStore {
-  if (!config.blobServerUrl) {
-    throw new Error(
-      'No `blobServerUrl` is configured, so there is nowhere to host the encrypted payload. ' +
-        'Set it in config.json — it deliberately does not default to the forms server, which is ' +
-        'a read-only catalogue.'
-    );
-  }
 
-  switch (config.blobStore) {
-    case 'fhir-binary':
-      return fhirBinaryBlobStore(config.blobServerUrl);
-  }
-}
+/** Where the BFF mints invitations. */
+export const INVITATIONS_ENDPOINT = "/api/invitations";
 
+/** Details of the request being made, beyond which form it is for. */
 export interface CreateRequestOptions {
-  /** Who the form is for, e.g. `Patient/123`. */
+  /** Who the form is for, e.g. `Patient/pt-1`. */
   subjectReference?: string;
-  /** Who the form is for, in words — the part a filler can actually read. */
+  /** Who the form is for, in words - the part a filler can actually read. */
   subjectDisplay?: string;
   /** Overrides the expiry derived from `linkLifetimeDays`. */
   expiresAt?: number;
   /**
-   * The launched session, when there is one. Supplies the server to publish the request `Task` to, and
-   * authorises that write.
+   * Answers filled in from the record before sending, already pruned to what the clinician kept.
    *
-   * It does **not** reach the reply slot or the write slot. Those are hosted on the transport tier and
-   * fetched by a filler who holds no credentials; pointing them at an authenticated server would mint
-   * a link that only the person who minted it can use.
-   */
-  session?: SmartSession | null;
-  /** Who the request appears to come from, overriding `senderName`. The launched user, in practice. */
-  requesterDisplay?: string;
-  /**
-   * Answers filled in from the record and kept by the clinician, when pre-population was used.
-   *
-   * Already pruned to the ticked rows by the time it arrives — this layer seals what it is given and
-   * does not decide what belongs in it.
+   * Sent to the BFF rather than sealed here, because the BFF is what seals the payload. It is the
+   * one piece of record content that travels outward on this route, which is why the surface that
+   * offers it makes the clinician tick each answer they are willing to disclose.
    */
   prePopulated?: QuestionnaireResponse;
 }
 
+/** What the BFF answers a mint with, plus the viewer URL built from it. */
 export interface CreatedRequest {
+  /** Viewer URL carrying the link in its fragment: what goes into the QR code. */
   link: string;
-  task: Task;
-  /** When the link and its reply slot stop being usable, as Epoch seconds. */
-  expiresAt?: number;
-  /**
-   * Channel C, when a slot was minted: where the reply will appear, and the key to open it.
-   *
-   * The private key exists nowhere else. It has to be persisted with the outstanding request or a
-   * reply arriving later cannot be read by anyone, including us — see `src/lib/requestStore.ts`.
-   */
-  reply?: { url: string; privateJwk: ReplyPrivateJwk };
-  /**
-   * The published Task on the EHR, when one was written.
-   *
-   * Present for tracking alone as well as for channel B — {@link CreatedRequest.serverReturnOffered}
-   * distinguishes them, because only the latter was named in the invitation.
-   */
-  serverTaskUrl?: string;
-  /** Whether the invitation invites the filler to write to `serverTaskUrl`'s server directly. */
-  serverReturnOffered: boolean;
-  /**
-   * Channel D, when a slot was minted: the capability that was handed out.
-   *
-   * Kept with the outstanding request so the requester can poll the slot later. Unlike the reply
-   * key, none of this is irreplaceable — the slot is readable by anyone who can reach it — but
-   * losing it means losing track of where the answers will appear.
-   */
-  write?: { url: string; etag: string; token: string };
+  /** The bare `shlink:/…`, for anyone who wants the link itself. */
+  shlink: string;
+  /** Where the link's manifest is served from. */
+  manifestUrl: string;
+  /** When the link stops being openable, in epoch seconds. */
+  expiresAt: number;
+  /** Absolute URL of the request Task published on the launched server. */
+  taskUrl: string;
+  /** The durable `urn:uuid:` identifier correlating this request with its answers. */
+  requestIdentifier: string;
+}
+
+/** The mint response, before the viewer URL is built onto it. */
+interface MintResponse {
+  shlink: string;
+  manifestUrl: string;
+  expiresAt: number;
+  taskUrl: string;
+  requestIdentifier: string;
 }
 
 /**
- * Build a "please fill this in" link, with whatever return channels are configured.
- *
- * The Questionnaire is embedded whole so the filler needs no forms-server access, which is what
- * pushes this onto the hosted-SHL path — hundreds of kilobytes cannot ride inside a QR code.
- *
- * By default the only return channel is the one that needs no arrangement at all: the filler mints
- * its own SMART Health Link and the requester scans it back. Nothing about that has to be described
- * in the invitation, so a default request is just the form.
- *
- * When the requester pre-filled the form, `prePopulated` rides along as a seed inside the same
- * payload. It changes nothing about the filler's position — they still hold only a link — but it does
- * change what the payload *is*, from a public questionnaire plus a name to an extract from a chart.
- * `publishRequestTask` is unaffected by design: it names the three fields it wants rather than
- * spreading what it is given, so no answer ever reaches the tracking Task on a shared server.
- *
- * Ordering matters for the channels that *are* described inside the payload, when they are enabled.
- * A slot URL cannot be added to a link that has already been sealed and uploaded, so the slot is
- * minted first, the Task published second, and only then is the Bundle built. The cost is that a
- * failure at the encryption step leaves an unused slot behind, which is harmless — a `Binary`
- * holding the word "pending".
+ * Whether a parsed body is a mint response.
+ * @param value the parsed body
+ * @returns true when every field is present and of the right type
  */
-export async function createRequestLink(
-  questionnaire: Questionnaire,
-  config: AppConfig,
-  options: CreateRequestOptions = {}
-): Promise<CreatedRequest> {
-  const blobStore = resolveBlobStore(config);
-  const expiresAt = options.expiresAt ?? resolveExpiry(config);
-  /*
-   * Fixed up front rather than left to `buildRequestBundle`, because channel B publishes a second copy
-   * of this Task to a server and the two copies have to share one business identifier — otherwise a
-   * response returned through either channel could not be matched to the other's record of the request.
-   */
-  const requestId = crypto.randomUUID();
+function isMintResponse(value: unknown): value is MintResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.shlink === "string" &&
+    typeof candidate.manifestUrl === "string" &&
+    typeof candidate.expiresAt === "number" &&
+    typeof candidate.taskUrl === "string" &&
+    typeof candidate.requestIdentifier === "string"
+  );
+}
 
-  /*
-   * Channel C, when it is enabled. Off by default: the answers come back as a link the filler mints,
-   * so there is nothing to describe and no slot to mint. With it on, the reply key generated here is
-   * the only copy — see `CreatedRequest.reply`.
-   */
-  const keyPair = canUseEncryptedReply(config) ? await generateReplyKeyPair() : undefined;
-  const replyUrl = keyPair ? await createReplySlot(blobStore) : undefined;
-  const replyDescriptor: ReplyDescriptor | undefined =
-    keyPair && replyUrl
-      ? {
-          replyUrl,
-          replyMethod: 'PUT',
-          publicJwk: keyPair.publicJwk,
-          ...(expiresAt !== undefined ? { expiresAt } : {})
-        }
+/**
+ * The patient id inside a subject reference.
+ *
+ * The picker hands back `Patient/pt-1`; the mint API takes the id alone, because it builds the
+ * reference itself against the launched server.
+ * @param subjectReference a reference, or undefined
+ * @returns the id, or undefined when no subject was named
+ */
+function patientIdOf(subjectReference?: string): string | undefined {
+  const trimmed = subjectReference?.trim();
+  if (trimmed === undefined || trimmed === "") {
+    return undefined;
+  }
+  return trimmed.split("/").findLast(Boolean);
+}
+
+/**
+ * Describe a failed mint in terms a requester can act on.
+ * @param status the HTTP status the BFF answered with
+ * @param body the parsed error body, when there was one
+ * @returns the message to show
+ */
+function mintFailureMessage(status: number, body: unknown): string {
+  const error =
+    typeof body === "object" && body !== null && "error" in body
+      ? String((body as Record<string, unknown>).error)
       : undefined;
-
-  /*
-   * Channel D, when it is enabled. Minted before the payload is sealed for the same reason the reply
-   * slot is: the invitation has to name a resource that already exists, and nothing can be added to a
-   * link once it is encrypted and uploaded. A failure further down leaves an unanswered slot behind,
-   * which is harmless — an empty `in-progress` QuestionnaireResponse.
-   */
-  const writeSlotServerUrl = canUseOneShotWrite(config) ? resolveWriteSlotServerUrl(config) : null;
-  const slot = writeSlotServerUrl
-    ? await createWriteSlot(writeSlotServerUrl, {
-        questionnaireCanonical: questionnaireCanonicalOf(questionnaire),
-        requestId
-      })
-    : undefined;
-  const writeDescriptor: WriteDescriptor | undefined = slot
-    ? {
-        writeUrl: slot.writeUrl,
-        writeMethod: 'PUT',
-        writeEtag: slot.writeEtag,
-        writeToken: slot.writeToken,
-        ...(expiresAt !== undefined ? { expiresAt } : {})
-      }
-    : undefined;
-
-  /*
-   * Publishing the Task and offering channel B are separate decisions, and conflating them would be a
-   * mistake in both directions. Publishing only records that a request was sent, so `/requests` can
-   * list it from any browser; channel B additionally tells the filler to write answers straight to that
-   * server, unreviewed. So a Task may be published without channel B, but never the reverse — channel B
-   * needs a Task to point at.
-   */
-  const serverReturn = canUseServerReturn(config);
-
-  /*
-   * A launch outranks configuration for the same reason it does everywhere else: it is the EHR saying
-   * which record this clinician is working in, and it is backed by a token that configuration is not.
-   */
-  const taskServerUrl = options.session?.serverUrl ?? config.responseServerUrl;
-  let serverTaskUrl: string | undefined;
-
-  if (serverReturn) {
-    /*
-     * Fatal when channel B is on: the invitation is about to name this Task as somewhere the filler
-     * may write, and naming one that does not exist would be worse than not offering the channel.
-     */
-    serverTaskUrl = await publishRequestTask(taskServerUrl!, questionnaire, {
-      ...options,
-      requestId
-    });
-  } else if (canTrackRequests(config, taskServerUrl)) {
-    /*
-     * Not fatal when publishing is only for tracking. The default return path — the filler mints a
-     * link and the requester scans it back — needs nothing from this server, so an EHR that is down
-     * would otherwise block a flow that does not depend on it. The request still works and is still
-     * saved locally; it just shows as local-only in `/requests` until it is sent from a browser that
-     * could reach the server.
-     */
-    try {
-      serverTaskUrl = await publishRequestTask(taskServerUrl!, questionnaire, {
-        ...options,
-        requestId
-      });
-    } catch (cause) {
-      console.warn('Could not publish the request Task for tracking; continuing without it.', cause);
+  switch (error) {
+    case "task-publish-failed": {
+      return (
+        "The request could not be recorded on the server you are signed in to, so no link was " +
+        "created. Nothing has been sent, and nothing is hosted."
+      );
+    }
+    case "questionnaire-unreadable": {
+      return "This form could not be read from the server you are signed in to, so no link was created.";
+    }
+    case "questionnaire-not-invitable": {
+      return (
+        "This form has no canonical URL, so an invitation to it could not say which form to " +
+        "fill in. Nothing was created."
+      );
+    }
+    default: {
+      return `The link could not be created (${status}).`;
     }
   }
+}
 
-  const { bundle, task } = buildRequestBundle(
-    serverReturn ? declareResponseEndpoint(questionnaire, config.responseServerUrl!) : questionnaire,
-    {
-      requestId,
-      subjectReference: options.subjectReference,
-      subjectDisplay: options.subjectDisplay,
-      // The launched user when signed in, `senderName` otherwise. An invitation that cannot say who
-      // sent it is one a patient has every reason to decline.
-      requesterDisplay: options.requesterDisplay ?? config.senderName ?? undefined,
-      replyDescriptor,
-      writeDescriptor,
-      // Named in the invitation only when the filler is actually invited to write there. Tracking is
-      // ours; there is no reason to tell a filler about a Task it must not touch.
-      serverTaskUrl: serverReturn ? serverTaskUrl : undefined,
-      prePopulated: options.prePopulated
-    }
-  );
+/**
+ * Ask the BFF to mint a "please fill this in" link.
+ *
+ * The Questionnaire is read, the request Task is published and the encrypted payload is hosted
+ * on the server, under the session's authority. What comes back is a `shlink:/` that resolves to
+ * a two-file manifest: the invitation, and a grant minted fresh at every fetch.
+ * @param questionnaireId id of the Questionnaire on the launched server
+ * @param config the app configuration, for the link origin, sender name and lifetime
+ * @param options who the form is for, and any expiry override
+ * @returns the minted link and what was created alongside it
+ * @throws {Error} when the mint is refused; marked as session-ended when the session has gone,
+ *   so the surface offers a re-launch rather than an error
+ * @example
+ * const created = await createRequestLink("q-715", config, {
+ *   subjectReference: "Patient/pt-1",
+ *   subjectDisplay: "Jane Citizen",
+ * });
+ */
+export async function createRequestLink(
+  questionnaireId: string,
+  config: AppConfig,
+  options: CreateRequestOptions = {},
+): Promise<CreatedRequest> {
+  const patientId = patientIdOf(options.subjectReference);
+  const subjectDisplay = options.subjectDisplay?.trim();
+  const expiresAt = options.expiresAt ?? resolveExpiry(config);
 
-  const codec = encodingCodec(config, LINK_CODECS);
+  const response = await fetch(INVITATIONS_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      questionnaireId,
+      ...(patientId === undefined ? {} : { patientId }),
+      ...(subjectDisplay === undefined || subjectDisplay === ""
+        ? {}
+        : { patientDisplay: subjectDisplay }),
+      ...(config.senderName === null ? {} : { senderName: config.senderName }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+      // Channel D is minted server-side, because the slot has to exist before the payload is
+      // sealed and only the BFF can host it. The flag travels rather than the slot.
+      ...(canUseOneShotWrite(config) ? { offerWriteSlot: true } : {}),
+      ...(options.prePopulated === undefined
+        ? {}
+        : { prePopulated: options.prePopulated }),
+    }),
+  });
 
-  const link = await codec.encode(
-    { bundle, label: defaultLabel(questionnaire) },
-    { baseUrl: resolveLinkBaseUrl(config), blobStore, expiresAt }
-  );
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
 
-  return {
-    link,
-    task,
-    ...(expiresAt !== undefined ? { expiresAt } : {}),
-    ...(keyPair && replyUrl ? { reply: { url: replyUrl, privateJwk: keyPair.privateJwk } } : {}),
-    ...(serverTaskUrl ? { serverTaskUrl } : {}),
-    serverReturnOffered: serverReturn,
-    ...(slot
-      ? { write: { url: slot.writeUrl, etag: slot.writeEtag, token: slot.writeToken } }
-      : {})
-  };
+  if (response.status === 401) {
+    throw sessionEndedError(
+      "The session has ended, so nothing was created. Sign in again to send this request.",
+    );
+  }
+  if (!response.ok || !isMintResponse(body)) {
+    throw new Error(mintFailureMessage(response.status, body));
+  }
+
+  /*
+   * The QR carries a viewer URL rather than the bare `shlink:/`, which is the form the SHL
+   * specification itself uses: a scanner that knows nothing about the scheme still opens
+   * something, and the fragment never leaves the device.
+   */
+  const base = resolveLinkBaseUrl(config).replace(/\/+$/, "");
+
+  return { ...body, link: `${base}/view#${body.shlink}` };
 }
 
 /**
  * Build a "here are the answers" link from the form's current state.
  *
- * Empty and enableWhen-hidden answers are stripped first — partly hygiene, mostly size, since
- * everything removed here is payload that would otherwise count against the QR budget on the return
- * leg.
+ * The fallback channel, and the only one available to whoever is filling the form: they mint this,
+ * show it to the requester, and the requester scans it and accepts under their own session
+ * (FR-028). It is what the surface promotes when a direct send is not possible - an expired grant,
+ * a refused credential, or an invitation that carried no grant at all - so it must work with no
+ * session, no host and no network.
+ *
+ * Hence the inline transport. The whole payload is compressed into the fragment, which costs
+ * confidentiality against anyone who sees the QR code and buys the ability to hand answers back
+ * from a device that has no account anywhere. `ShareLinkPanel` states the trade where the link is
+ * shown.
+ *
+ * Empty and enableWhen-hidden answers are stripped first - partly hygiene, mostly size, since
+ * everything removed here is payload that would otherwise count against the QR budget.
  *
  * `requestTask` is the Task that arrived with the request; passing it through is what lets the
  * requester match these answers to what it asked for.
+ * @param questionnaire the form the answers belong to
+ * @param config the app configuration, for the link origin
+ * @param requestTask the Task that arrived with the request, when there was one
+ * @returns the link
+ * @throws {Error} when the answers cannot be compressed into a link
+ * @example
+ * setLink(await createResponseLink(questionnaire, config, task));
  */
 export async function createResponseLink(
   questionnaire: Questionnaire,
   config: AppConfig,
-  requestTask?: Task
+  requestTask?: Task,
 ): Promise<string> {
   const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
   const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
   const { bundle } = buildResponseBundle(response, requestTask);
 
-  const codec = encodingCodec(config, LINK_CODECS);
-
-  return codec.encode(
+  return bespokeCodec.encode(
     { bundle, label: defaultLabel(questionnaire) },
-    { baseUrl: resolveLinkBaseUrl(config), blobStore: resolveBlobStore(config) }
+    { baseUrl: resolveLinkBaseUrl(config) },
   );
+}
+
+/**
+ * Deliver an encrypted reply to a slot somebody else minted.
+ *
+ * A blind overwrite, by design: the slot's whole purpose is to hold the latest reply, and a
+ * filler correcting and resending should replace rather than accumulate. The requester
+ * correlates by *which slot* the reply arrived in, so nothing depends on the slot's history.
+ * @param replyUrl the absolute slot URL from the invitation's descriptor
+ * @param jwe the encrypted reply
+ * @returns nothing; resolves once the slot has accepted the ciphertext
+ * @throws {Error} when the slot refused the write
+ */
+async function putReply(replyUrl: string, jwe: string): Promise<void> {
+  const response = await fetch(replyUrl, {
+    method: "PUT",
+    headers: { "Content-Type": JOSE_CONTENT_TYPE },
+    body: encodeUtf8(jwe) as BodyInit,
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Could not deliver the reply to ${replyUrl} (${response.status} ${response.statusText}). ` +
+        "The answers have not been sent.",
+    );
+  }
 }
 
 /**
  * Send the answers back through the request's encrypted reply channel.
  *
- * The filler's half of channel C, and the reason this app is a reference implementation on both sides
- * rather than only the requesting one. Everything happens on this device: the reply Bundle is built,
- * labelled patient-asserted, encrypted to the requester's public key, and only the ciphertext is
- * uploaded. The slot host — quite possibly a server nobody involved trusts — never sees plaintext.
+ * The filler's half of channel C, kept after this app stopped minting such channels of its own.
+ * An invitation from another producer - Platypus, or an older build of this app - may still
+ * declare one, and refusing to honour it would strand the answers of someone who did nothing
+ * wrong (FR-029).
+ *
+ * Everything happens on this device: the reply Bundle is built, labelled patient-asserted,
+ * encrypted to the requester's public key, and only the ciphertext is uploaded. The slot host -
+ * quite possibly a server nobody involved trusts - never sees plaintext.
  *
  * What this can and cannot confirm is worth being precise about, because the UI has to say it: a
  * successful return means the ciphertext reached the slot. It does **not** mean the requester has
  * collected it, and there is nothing to poll that would say otherwise.
+ * @param questionnaire the form that was answered
+ * @param descriptor the reply channel the invitation declared
+ * @param requestTask the Task that arrived with the request, when there was one
+ * @returns nothing; resolves once the ciphertext has reached the slot
+ * @throws {Error} when the channel uses a delivery method this app does not implement, when it
+ *   has expired, or when the slot refused the write
  */
 export async function sendEncryptedReply(
   questionnaire: Questionnaire,
   descriptor: ReplyDescriptor,
-  requestTask?: Task
+  requestTask?: Task,
 ): Promise<void> {
-  if (descriptor.replyMethod !== 'PUT') {
+  if (descriptor.replyMethod !== "PUT") {
     throw new Error(
       `This request expects its reply to be delivered by "${descriptor.replyMethod}", which this app ` +
-        'does not implement. Return the answers as a link instead.'
+        "does not implement. Return the answers as a link instead.",
     );
   }
 
   if (isReplyDescriptorExpired(descriptor)) {
-    throw new Error('This request has expired, so its reply slot will no longer accept answers.');
+    throw new Error(
+      "This request has expired, so its reply slot will no longer accept answers.",
+    );
   }
 
   const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
   const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
   const { bundle } = buildReplyBundle(response, { requestTask });
 
-  await putReply(descriptor.replyUrl, await encryptReplyJwe(encodeUtf8(JSON.stringify(bundle)), descriptor.publicJwk));
+  await putReply(
+    descriptor.replyUrl,
+    await encryptReplyJwe(
+      encodeUtf8(JSON.stringify(bundle)),
+      descriptor.publicJwk,
+    ),
+  );
 }
 
-
 /**
- * Send the answers through the request's one-shot write channel (channel D).
+ * Send the completed answers to a channel D slot.
  *
- * The filler's half, and — like {@link sendEncryptedReply} — the reason this app is a reference
- * implementation on both sides rather than only the requesting one. Everything worth knowing about
- * what this does and does not claim:
- *
- *  - **It is conditional.** The `If-Match` the descriptor carries is what makes this a *single*
- *    write. A slot someone has already answered refuses the second write rather than silently
- *    overwriting it, and that outcome comes back as `taken` — not as a failure to retry.
- *  - **It confirms delivery to a slot and nothing more.** The requester still has to collect the
- *    answers and a human still has to review them before anything reaches a record. There is no
- *    signal available for either, so nothing here may imply one.
- *  - **The slot host sees the answers.** This is plaintext FHIR; channel C is what to use when the
- *    host must not.
+ * The fallback path, and the one that still works when the direct send cannot. Two failures are
+ * distinguished on purpose: an expired descriptor is refused here, before anything is sent, because
+ * telling somebody their answers went nowhere is worse than telling them the window has closed; and
+ * `putResponseToSlot` reports "taken" separately from "refused", because a slot that has already
+ * been written usually means the answers arrived and this is a duplicate.
+ * @param questionnaire the form that was filled in
+ * @param descriptor the slot from the invitation
+ * @param requestTask the invitation's Task, for the subject display and the request identifier
+ * @returns what the slot did with the answers
+ * @throws {Error} when the descriptor has expired, or the slot could not be reached at all
+ * @example
+ * const outcome = await sendOneShotWrite(questionnaire, channels.write, payload.task);
  */
 export async function sendOneShotWrite(
   questionnaire: Questionnaire,
   descriptor: WriteDescriptor,
-  requestTask?: Task
+  requestTask?: Task,
 ): Promise<WriteSlotOutcome> {
   if (isWriteDescriptorExpired(descriptor)) {
-    throw new Error('This request has expired, so its slot will no longer accept answers.');
+    throw new Error(
+      "This request has expired, so its slot will no longer accept answers.",
+    );
   }
 
   const trimmed = removeEmptyAnswersFromResponse(questionnaire, getResponse());
   const response = ensureQuestionnaireCanonical(trimmed, questionnaire);
 
-  return putResponseToSlot(descriptor, buildWriteResponse(response, { requestTask }));
+  return putResponseToSlot(
+    descriptor,
+    buildWriteResponse(response, { requestTask }),
+  );
 }

@@ -1,5 +1,13 @@
-import type { Bundle, BundleEntry, CodeableConcept, FhirResource, HumanName, Quantity } from 'fhir/r4';
-import { parametersIsFhirPatch } from '@aehrc/sdc-template-extract';
+import { parametersIsFhirPatch } from "@aehrc/sdc-template-extract";
+
+import type {
+  Bundle,
+  BundleEntry,
+  CodeableConcept,
+  FhirResource,
+  HumanName,
+  Quantity,
+} from "fhir/r4";
 
 /**
  * Describing an extracted Bundle so a clinician can decide what belongs in the record.
@@ -19,31 +27,42 @@ export interface EntryRow {
   /** What this resource is *about*, in clinical terms. Never a JSON blob. */
   display: string;
   /** POST creates; PUT and PATCH change something already there. Worth distinguishing loudly. */
-  method: 'new' | 'update';
+  method: "new" | "update";
   /** The request URL, for an update — a reviewer should see which resource is being changed. */
   target?: string;
   /** Set only for FHIRPatch entries, to say how much is bundled into the one checkbox. */
   patchOperationCount?: number;
 }
 
-/** `given family`, the way a person would say it. */
+/**
+ * `given family`, the way a person would say it.
+ * @param names
+ */
 function constructName(names: HumanName[] | undefined): string {
-  const name = names?.find((candidate) => candidate.use === 'official') ?? names?.[0];
+  const name =
+    names?.find((candidate) => candidate.use === "official") ?? names?.[0];
 
   if (!name) {
-    return 'Unnamed';
+    return "Unnamed";
   }
 
   if (name.text) {
     return name.text;
   }
 
-  return [name.given?.join(' '), name.family].filter(Boolean).join(' ') || 'Unnamed';
+  return (
+    [name.given?.join(" "), name.family].filter(Boolean).join(" ") || "Unnamed"
+  );
 }
 
-/** A coded concept's display, its text, or nothing useful. */
+/**
+ * A coded concept's display, its text, or nothing useful.
+ * @param concept
+ */
 function codeText(concept: CodeableConcept | undefined): string | undefined {
-  return concept?.coding?.find((coding) => coding.display)?.display ?? concept?.text;
+  return (
+    concept?.coding?.find((coding) => coding.display)?.display ?? concept?.text
+  );
 }
 
 function quantityText(quantity: Quantity | undefined): string | undefined {
@@ -51,7 +70,9 @@ function quantityText(quantity: Quantity | undefined): string | undefined {
     return undefined;
   }
 
-  return [quantity.value, quantity.unit ?? quantity.code].filter(Boolean).join(' ');
+  return [quantity.value, quantity.unit ?? quantity.code]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**
@@ -60,50 +81,79 @@ function quantityText(quantity: Quantity | undefined): string | undefined {
  * A departure from upstream, which shows the code alone. "Temperature" tells a reviewer which box was
  * ticked; "Temperature 38.4 °C" tells them whether to tick it — and deciding is the entire purpose of
  * the screen this feeds.
+ * @param resource
  */
-function observationValue(resource: Extract<FhirResource, { resourceType: 'Observation' }>): string | undefined {
+/**
+ * A boolean answer in words.
+ * @param value the boolean, when the Observation carries one
+ * @returns "yes", "no", or undefined when there is no boolean to describe
+ */
+function booleanText(value: boolean | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value ? "yes" : "no";
+}
+
+function observationValue(
+  resource: Extract<FhirResource, { resourceType: "Observation" }>,
+): string | undefined {
   return (
     quantityText(resource.valueQuantity) ??
     codeText(resource.valueCodeableConcept) ??
     resource.valueString ??
-    (resource.valueBoolean === undefined ? undefined : resource.valueBoolean ? 'yes' : 'no') ??
-    (resource.valueInteger === undefined ? undefined : String(resource.valueInteger))
+    booleanText(resource.valueBoolean) ??
+    (resource.valueInteger === undefined
+      ? undefined
+      : String(resource.valueInteger))
   );
 }
 
 /**
  * What a resource is, in words. Not exhaustive; the fallback is the resource type, which is honest.
+ * @param resource
  */
 export function describeResource(resource: FhirResource | undefined): string {
   if (!resource?.resourceType) {
-    return 'Unknown resource';
+    return "Unknown resource";
   }
 
   switch (resource.resourceType) {
-    case 'Patient':
+    case "Patient": {
       return constructName(resource.name);
-    case 'Encounter':
-      return `${resource.class?.display ?? 'Encounter'} (${resource.status})`;
-    case 'Condition':
-      return codeText(resource.code) ?? 'Unspecified condition';
-    case 'MedicationStatement':
-      return codeText(resource.medicationCodeableConcept) ?? 'Unspecified medication';
-    case 'AllergyIntolerance':
-      return codeText(resource.code) ?? 'Unspecified allergy';
-    case 'Procedure':
-      return codeText(resource.code) ?? 'Unspecified procedure';
-    case 'Immunization':
-      return codeText(resource.vaccineCode) ?? 'Unspecified vaccine';
-    case 'Observation': {
-      const name = codeText(resource.code) ?? 'Observation';
+    }
+    case "Encounter": {
+      return `${resource.class?.display ?? "Encounter"} (${resource.status})`;
+    }
+    case "Condition": {
+      return codeText(resource.code) ?? "Unspecified condition";
+    }
+    case "MedicationStatement": {
+      return (
+        codeText(resource.medicationCodeableConcept) ?? "Unspecified medication"
+      );
+    }
+    case "AllergyIntolerance": {
+      return codeText(resource.code) ?? "Unspecified allergy";
+    }
+    case "Procedure": {
+      return codeText(resource.code) ?? "Unspecified procedure";
+    }
+    case "Immunization": {
+      return codeText(resource.vaccineCode) ?? "Unspecified vaccine";
+    }
+    case "Observation": {
+      const name = codeText(resource.code) ?? "Observation";
       const value = observationValue(resource);
       return value ? `${name} — ${value}` : name;
     }
-    case 'ServiceRequest':
-      return codeText(resource.code) ?? 'Unspecified request';
-    case 'Parameters':
-      return parametersIsFhirPatch(resource) ? 'Changes to an existing record' : 'Parameters';
-    default:
+    case "ServiceRequest": {
+      return codeText(resource.code) ?? "Unspecified request";
+    }
+    case "Parameters": {
+      return parametersIsFhirPatch(resource)
+        ? "Changes to an existing record"
+        : "Parameters";
+    }
+    default: {
       /*
        * A last attempt before falling back to the bare type. Extraction writes whatever a form's
        * templates say, so the enumeration above will always be behind some questionnaire somewhere —
@@ -116,12 +166,21 @@ export function describeResource(resource: FhirResource | undefined): string {
         codeText((resource as { type?: CodeableConcept }).type) ??
         resource.resourceType
       );
+    }
   }
 }
 
-/** How many operations a FHIRPatch entry bundles up, when it is one. */
-function patchOperationCount(resource: FhirResource | undefined): number | undefined {
-  if (resource?.resourceType !== 'Parameters' || !parametersIsFhirPatch(resource)) {
+/**
+ * How many operations a FHIRPatch entry bundles up, when it is one.
+ * @param resource
+ */
+function patchOperationCount(
+  resource: FhirResource | undefined,
+): number | undefined {
+  if (
+    resource?.resourceType !== "Parameters" ||
+    !parametersIsFhirPatch(resource)
+  ) {
     return undefined;
   }
 
@@ -133,6 +192,7 @@ function patchOperationCount(resource: FhirResource | undefined): number | undef
  *
  * Entries with no `request` are skipped rather than shown: a transaction entry without one cannot be
  * submitted, so offering it as a tickbox would promise something the write cannot keep.
+ * @param bundle
  */
 export function describeEntries(bundle: Bundle): EntryRow[] {
   return (bundle.entry ?? []).flatMap((entry, index) => {
@@ -144,11 +204,11 @@ export function describeEntries(bundle: Bundle): EntryRow[] {
 
     const row: EntryRow = {
       index,
-      resourceType: entry.resource?.resourceType ?? 'Unknown',
+      resourceType: entry.resource?.resourceType ?? "Unknown",
       display: describeResource(entry.resource),
-      method: method === 'POST' ? 'new' : 'update',
-      target: method === 'POST' ? undefined : entry.request?.url,
-      patchOperationCount: patchOperationCount(entry.resource)
+      method: method === "POST" ? "new" : "update",
+      target: method === "POST" ? undefined : entry.request?.url,
+      patchOperationCount: patchOperationCount(entry.resource),
     };
 
     return [row];
@@ -164,10 +224,15 @@ export function describeEntries(bundle: Bundle): EntryRow[] {
  *
  * Returns entries in bundle order regardless of the order the reviewer ticked them, because template
  * extraction can emit entries whose order matters — a POST that a later PATCH targets, for instance.
+ * @param bundle
+ * @param selected
  */
-export function filterBundle(bundle: Bundle, selected: ReadonlySet<number>): Bundle {
+export function filterBundle(
+  bundle: Bundle,
+  selected: ReadonlySet<number>,
+): Bundle {
   const entries: BundleEntry[] = (bundle.entry ?? []).filter((_entry, index) =>
-    selected.has(index)
+    selected.has(index),
   );
 
   return { ...bundle, entry: entries };

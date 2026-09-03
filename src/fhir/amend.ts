@@ -1,5 +1,9 @@
-import type { Meta, Provenance, QuestionnaireResponse } from 'fhir/r4';
-import { PATIENT_ASSERTED_SECURITY, PROVENANCE_PARTICIPANT_TYPE } from '@/link/exchange';
+import type { Meta, Provenance, QuestionnaireResponse } from "fhir/r4";
+
+import {
+  PATIENT_ASSERTED_SECURITY,
+  PROVENANCE_PARTICIPANT_TYPE,
+} from "@/link/exchange";
 
 /**
  * Amending answers somebody else gave — as a new resource, never as an edit.
@@ -26,9 +30,9 @@ import { PATIENT_ASSERTED_SECURITY, PROVENANCE_PARTICIPANT_TYPE } from '@/link/e
  * rather than a requirement; v3-DataOperation is the set the base spec itself illustrates with.
  */
 export const PROVENANCE_ACTIVITY_UPDATE = {
-  system: 'http://terminology.hl7.org/CodeSystem/v3-DataOperation',
-  code: 'UPDATE',
-  display: 'revise'
+  system: "http://terminology.hl7.org/CodeSystem/v3-DataOperation",
+  code: "UPDATE",
+  display: "revise",
 } as const;
 
 /**
@@ -37,7 +41,7 @@ export const PROVENANCE_ACTIVITY_UPDATE = {
  * `Provenance.target` is 1..*, so it cannot be left off while the resource is being built, and the id
  * it should point at does not exist until the POST returns. {@link submitAmendment} rewrites it.
  */
-export const AMENDMENT_TARGET_PLACEHOLDER = 'urn:uuid:amended-response';
+export const AMENDMENT_TARGET_PLACEHOLDER = "urn:uuid:amended-response";
 
 export interface Amendment {
   response: QuestionnaireResponse;
@@ -83,6 +87,7 @@ export interface BuildAmendmentOptions {
  *
  * Everything else in `meta` survives, for the same reason `asNewResource` keeps it: `profile` and
  * `tag` are claims about the content rather than the sender's bookkeeping.
+ * @param meta
  */
 function withoutPatientAsserted(meta: Meta | undefined): Meta | undefined {
   if (!meta) {
@@ -95,7 +100,7 @@ function withoutPatientAsserted(meta: Meta | undefined): Meta | undefined {
       !(
         coding.system === PATIENT_ASSERTED_SECURITY.system &&
         coding.code === PATIENT_ASSERTED_SECURITY.code
-      )
+      ),
   );
 
   const next: Meta = kept.length > 0 ? { ...rest, security: kept } : rest;
@@ -109,9 +114,11 @@ function withoutPatientAsserted(meta: Meta | undefined): Meta | undefined {
  * from the stored original, so an amendment cannot quietly repoint the answers at a different form or
  * a different person — the renderer's store is seeded from the original, but it is a module-level
  * singleton and not something to trust with the identity of the record.
+ * @param options
  */
 export function buildAmendment(options: BuildAmendmentOptions): Amendment {
-  const { original, originalResponseId, edited, amender, amenderReference } = options;
+  const { original, originalResponseId, edited, amender, amenderReference } =
+    options;
 
   /** `who` is 1..1 on a Provenance agent, so this is built once and used for both places it appears. */
   const who = amenderReference
@@ -125,35 +132,41 @@ export function buildAmendment(options: BuildAmendmentOptions): Amendment {
     ...withoutIdentity,
     ...(keptMeta ? { meta: keptMeta } : {}),
     item: edited.item,
-    status: 'completed',
+    status: "completed",
     authored: recorded,
     /*
      * `author` is who *recorded* the answers and `source` is who *answered* them, and the distinction
      * is the whole point here. The amender becomes the author of this version; `source` rides through
      * untouched, because the patient still answered the questions.
      */
-    author: who
+    author: who,
   };
 
   const provenance: Provenance = {
-    resourceType: 'Provenance',
+    resourceType: "Provenance",
     target: [{ reference: AMENDMENT_TARGET_PLACEHOLDER }],
     recorded,
     activity: { coding: [{ ...PROVENANCE_ACTIVITY_UPDATE }] },
     agent: [
       {
         type: {
-          coding: [{ system: PROVENANCE_PARTICIPANT_TYPE, code: 'author', display: 'Author' }]
+          coding: [
+            {
+              system: PROVENANCE_PARTICIPANT_TYPE,
+              code: "author",
+              display: "Author",
+            },
+          ],
         },
-        who
-      }
+        who,
+      },
     ],
     entity: [
       {
-        role: 'revision',
-        what: { reference: `QuestionnaireResponse/${originalResponseId}` }
-      }
-    ]
+        role: "revision",
+        what: { reference: `QuestionnaireResponse/${originalResponseId}` },
+      },
+    ],
   };
 
   return { response, provenance };

@@ -1,10 +1,18 @@
-import { Fragment } from 'react';
-import type { OperationOutcome } from 'fhir/r4';
-import type { PopulatedRow } from '@/lib/answerRows';
-import { describeOutcome, outcomeHasErrors } from '@/fhir/templateExtract';
-import { Alert } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Fragment } from "react";
+
+import type { PopulatedRow } from "@/lib/answerRows";
+import type { OperationOutcome } from "fhir/r4";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { describeOutcome, outcomeHasErrors } from "@/fhir/templateExtract";
 
 /**
  * What the record already says, as a list a clinician can tick before any of it leaves the building.
@@ -36,8 +44,19 @@ export interface PrePopulatePanelProps {
   disabled?: boolean;
 }
 
+/**
+ *
+ * @param props
+ */
 export default function PrePopulatePanel(props: PrePopulatePanelProps) {
-  const { rows, issues, selected, onSelectedChange, sourceLabel, disabled = false } = props;
+  const {
+    rows,
+    issues,
+    selected,
+    onSelectedChange,
+    sourceLabel,
+    disabled = false,
+  } = props;
 
   function toggle(path: string) {
     const next = new Set(selected);
@@ -56,11 +75,14 @@ export default function PrePopulatePanel(props: PrePopulatePanelProps) {
       <CardHeader>
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">Filled in from the record</CardTitle>
+            <CardTitle className="text-base">
+              Filled in from the record
+            </CardTitle>
             <CardDescription>
-              Read from <span className="font-mono text-xs">{sourceLabel}</span>. Everything ticked
-              travels inside the encrypted link, where the person filling the form can change or clear
-              it. Untick anything they should answer themselves, or that the record has wrong.
+              Read from <span className="font-mono text-xs">{sourceLabel}</span>
+              . Everything ticked travels inside the encrypted link, where the
+              person filling the form can change or clear it. Untick anything
+              they should answer themselves, or that the record has wrong.
             </CardDescription>
           </div>
           {!disabled && rows.length > 0 ? (
@@ -68,15 +90,19 @@ export default function PrePopulatePanel(props: PrePopulatePanelProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => onSelectedChange(new Set(rows.map((row) => row.path)))}
-                disabled={selected.size === rows.length}>
+                onClick={() =>
+                  onSelectedChange(new Set(rows.map((row) => row.path)))
+                }
+                disabled={selected.size === rows.length}
+              >
                 Select all
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => onSelectedChange(new Set())}
-                disabled={selected.size === 0}>
+                disabled={selected.size === 0}
+              >
                 Clear
               </Button>
             </div>
@@ -86,11 +112,15 @@ export default function PrePopulatePanel(props: PrePopulatePanelProps) {
 
       <CardContent className="space-y-3">
         {issues && !outcomeHasErrors(issues) ? (
-          <Alert tone="warning" title="Population reported something worth reading">
+          <Alert
+            tone="warning"
+            title="Population reported something worth reading"
+          >
             <p>{describeOutcome(issues)}</p>
             <p className="mt-1">
-              Some of this may be less complete than it looks. A part of the record the server would
-              not return is indistinguishable here from a part that is empty.
+              Some of this may be less complete than it looks. A part of the
+              record the server would not return is indistinguishable here from
+              a part that is empty.
             </p>
           </Alert>
         ) : null}
@@ -98,22 +128,23 @@ export default function PrePopulatePanel(props: PrePopulatePanelProps) {
         {rows.length === 0 ? (
           <Alert title="The record filled in nothing">
             <p>
-              This form declares pre-population and the reads succeeded, so this is most likely what
-              the record holds for this patient rather than a failure. The form can still be sent; it
-              will go out blank.
+              This form declares pre-population and the reads succeeded, so this
+              is most likely what the record holds for this patient rather than
+              a failure. The form can still be sent; it will go out blank.
             </p>
           </Alert>
         ) : (
           <>
             <ul className="divide-y divide-slate-200 rounded-md border border-slate-200">
               {rows.map((row, index) => {
-                const heading = row.groups.join(' › ');
-                const newGroup = index === 0 || heading !== rows[index - 1].groups.join(' › ');
+                const heading = row.groups.join(" › ");
+                const newGroup =
+                  index === 0 || heading !== rows[index - 1].groups.join(" › ");
                 const inputId = `pre-populate-${row.path}`;
 
                 return (
                   <Fragment key={row.path}>
-                    {newGroup && heading !== '' ? (
+                    {newGroup && heading !== "" ? (
                       <li className="bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
                         {heading}
                       </li>
@@ -127,7 +158,10 @@ export default function PrePopulatePanel(props: PrePopulatePanelProps) {
                         disabled={disabled}
                         onChange={() => toggle(row.path)}
                       />
-                      <label htmlFor={inputId} className="min-w-0 flex-1 cursor-pointer">
+                      <label
+                        htmlFor={inputId}
+                        className="min-w-0 flex-1 cursor-pointer"
+                      >
                         <span className="block font-medium text-slate-900">
                           {row.text ?? row.linkId}
                         </span>
@@ -144,8 +178,8 @@ export default function PrePopulatePanel(props: PrePopulatePanelProps) {
             <p className="text-xs text-slate-500">
               {kept} of {rows.length} answers will be sent.
               {kept === 0
-                ? ' With none ticked the form goes out blank, exactly as it would without pre-filling.'
-                : ''}
+                ? " With none ticked the form goes out blank, exactly as it would without pre-filling."
+                : ""}
             </p>
           </>
         )}

@@ -5,7 +5,31 @@
 # cluster names the code that is running and every deployment pulls a distinct
 # reference. Both architectures are built because the cluster's node pool takes
 # amd64 and arm64 capacity, and a single-architecture image works only until the
-# node it landed on is replaced by one of the other kind.
+# node it landed on is replaced by one of the other kind. The image now carries a
+# Node process rather than nginx, and `npm ci` compiles better-sqlite3 from
+# source when no prebuilt binary matches, so the non-native architecture builds
+# under emulation and this step is slower than it was.
+#
+# ## Two prerequisites this workflow does not create
+#
+# The release will not start without a Secret named
+# `smart-forms-health-links-secrets` in the `formlinks` namespace, holding
+# SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET and BACKEND_PRIVATE_JWK. The chart
+# refuses to render without the name and the pod refuses to boot without the
+# values, which is deliberate: nothing here should be able to template a
+# credential.
+#
+# The launched server named in deploy/demo/values.yaml must also have both
+# clients registered, which `npm run setup:aidbox` does idempotently. See
+# docs/aidbox-validation.md.
+#
+# ## Why the rollout looks different
+#
+# One replica, and `Recreate` rather than a rolling update: the sessions and the
+# hosted invitations are one SQLite file on one ReadWriteOnce volume, so two pods
+# would either fail to schedule or contend for the file. Expect a few seconds of
+# downtime per deployment, and expect existing sessions to survive it - they are
+# in the file, not in memory.
 #
 # This runs on the self-hosted runner rather than a GitHub-hosted one, so it
 # costs no Actions minutes. The runner is an amd64 Linux host with Docker,
