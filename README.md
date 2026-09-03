@@ -338,7 +338,7 @@ The second manifest file is `application/smart-api-access`, and its plaintext is
   "access_token": "<opaque>",
   "token_type": "Bearer",
   "expires_in": 3600,
-  "aud": "https://kuzfdswqmz.edge.aidbox.app/fhir",
+  "aud": "https://sczsqtqcgi.aidbox.app/fhir",
   "patient": "pt-1"
 }
 ```
@@ -685,7 +685,7 @@ template and the authoritative shape:
 ```json
 [
   {
-    "issuer": "https://kuzfdswqmz.edge.aidbox.app/fhir",
+    "issuer": "https://sczsqtqcgi.aidbox.app/fhir",
     "label": "Aidbox demo",
     "launchClient": {
       "clientId": "smart-forms-health-links",

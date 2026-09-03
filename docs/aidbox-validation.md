@@ -16,14 +16,14 @@ of on-screen text to look for, which is more use to a reader than an image of a 
 
 ## What you need
 
-| Thing                    | Where it comes from                                                                                                                                                  |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The Aidbox instance      | `https://kuzfdswqmz.edge.aidbox.app`                                                                                                                                 |
-| Operator API credentials | 1Password item **Smart Problems Admin Client for Aidbox** (`username`, `password`) in the **Work Agent** vault                                                       |
-| App secrets              | 1Password item **Smart Forms Health Links** in the **Work Agent** vault: `session cookie secret`, `launch client secret`, `backend private jwk`, `e2e user password` |
-| `.env`                   | Copy `.env.example`. It holds `op://` references, never values, and is gitignored                                                                                    |
-| `config/issuers.json`    | Copy `config/issuers.example.json`. Secret-bearing fields hold `env:VARIABLE_NAME` references, resolved from the environment at load                                 |
-| 1Password CLI            | `op` on the path, signed in (a service account token works)                                                                                                          |
+| Thing                    | Where it comes from                                                                                                                                                                                                                      |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The Aidbox instance      | `https://sczsqtqcgi.aidbox.app`                                                                                                                                                                                                          |
+| Operator API credentials | 1Password item **Smart Forms Health Links Aidbox Operator** (`username`, `password`) in the **Work Agent** vault. On a fresh instance this client does not exist yet - see [Creating the operator client](#creating-the-operator-client) |
+| App secrets              | 1Password item **Smart Forms Health Links** in the **Work Agent** vault: `session cookie secret`, `launch client secret`, `backend private jwk`, `e2e user password`                                                                     |
+| `.env`                   | Copy `.env.example`. It holds `op://` references, never values, and is gitignored                                                                                                                                                        |
+| `config/issuers.json`    | Copy `config/issuers.example.json`. Secret-bearing fields hold `env:VARIABLE_NAME` references, resolved from the environment at load                                                                                                     |
+| 1Password CLI            | `op` on the path, signed in (a service account token works)                                                                                                                                                                              |
 
 The `launch client secret`, `backend private jwk` and `e2e user password` fields are _created by the
 first setup run_, which prints them once. If the 1Password item does not have them yet, run the
@@ -37,6 +37,53 @@ op run --env-file .env -- <command>
 
 Never use `op read` and never print a resolved value; the whole arrangement exists so that no secret
 lands in a shell history, a log or a transcript.
+
+## Creating the operator client
+
+`setup:aidbox` writes `Client`, `AccessPolicy` and FHIR resources, so it needs credentials that may
+do all three. **A fresh Aidbox has none**, and this is the one step the script cannot do for itself:
+it would need the very credentials it is creating. So it is done once, by hand, in the instance's
+own REST console.
+
+Sign in to the Aidbox console and open the REST console, then send these two. Choose a long random
+secret - `openssl rand -base64 32` - and keep it; nothing recovers it afterwards.
+
+```yaml
+POST /fhir/Client
+Content-Type: text/yaml
+
+id: shl-operator
+secret: PASTE-A-LONG-RANDOM-SECRET
+grant_types:
+  - basic
+```
+
+```yaml
+POST /fhir/AccessPolicy
+Content-Type: text/yaml
+
+id: shl-operator-policy
+engine: allow
+description: Operator access for smart-forms-health-links setup
+link:
+  - reference: Client/shl-operator
+```
+
+`engine: allow` is unrestricted, which is what setup needs and more than the app ever gets - the two
+clients the script goes on to register are each held to a narrow `AccessPolicy`. Treat this one as an
+operator credential: it belongs in 1Password, not in a shell history, and it is not referenced by
+the running app at all.
+
+Confirm it works before going further:
+
+```bash
+op run --env-file .env -- sh -c \
+  'curl -s -o /dev/null -w "%{http_code}\n" -u "$AIDBOX_CLIENT_ID:$AIDBOX_CLIENT_SECRET" \
+   "$AIDBOX_BASE_URL/fhir/Patient?_count=1"'
+```
+
+`200` means the client and its policy are both in place. `401` is the credentials, `403` is the
+`AccessPolicy`.
 
 ## One-time setup
 
@@ -92,8 +139,26 @@ Check it is up and knows the issuer:
 curl -s http://localhost:3000/api/issuers
 ```
 
-Expect a one-element array naming `https://kuzfdswqmz.edge.aidbox.app/fhir`. An empty array means
+Expect a one-element array naming `https://sczsqtqcgi.aidbox.app/fhir`. An empty array means
 `ISSUER_REGISTRY_PATH` is pointing at a file that is not there.
+
+### What this instance supports
+
+Checked against `/fhir/.well-known/smart-configuration` on 3 September 2026, because the whole
+architecture rests on two capabilities that not every SMART server has:
+
+| Needed for                     | Capability                                                   | Present |
+| ------------------------------ | ------------------------------------------------------------ | ------- |
+| The confidential launch client | `client-confidential-symmetric`                              | yes     |
+| Backend Services token minting | `client-confidential-asymmetric`, `private_key_jwt`, `RS384` | yes     |
+| EHR and standalone launches    | `launch-ehr`, `launch-standalone`, `context-ehr-patient`     | yes     |
+| `fhirUser` for attribution     | `sso-openid-connect`                                         | yes     |
+| The grant's scopes             | `permission-v2`, `system/*.cruds`, `user/*.cruds`            | yes     |
+
+FHIR `4.0.1`, with `Questionnaire`, `QuestionnaireResponse`, `Task`, `Patient`, `Practitioner` and
+`Provenance` all present. **This is the second capability that matters**: the smart-launcher facade
+the demo used before offers no Backend Services at all, which is why a link minted against it has no
+grant to carry and every request falls back to the scan-back path.
 
 ## Scenario 1 - the full loop
 
@@ -129,7 +194,7 @@ window, because the point is that it has no session.
 3. **Window B: open it with no account.** Paste the link into a private window.
 
    Expect: the form renders. No sign-in, no configuration, nothing to install. Above it, a
-   disclosure headed "Answers go straight to kuzfdswqmz.edge.aidbox.app", and below that the
+   disclosure headed "Answers go straight to sczsqtqcgi.aidbox.app", and below that the
    request names who asked ("Dr Alex Fielding has asked for this form to be completed"), who it is
    for ("Addressed to Jane Citizen") and the request reference. The header carries the product name
    and nothing else - no navigation this window could use.
@@ -138,11 +203,11 @@ window, because the point is that it has no session.
    are deliberately read-only, because they come from the patient record rather than from whoever
    is answering. The Yes/No items are all editable.
 
-   Press **Send answers to kuzfdswqmz.edge.aidbox.app**. It does not send: it asks again, naming
+   Press **Send answers to sczsqtqcgi.aidbox.app**. It does not send: it asks again, naming
    the host, because a send writes into a medical record and cannot be taken back. Press **Confirm
    and send**.
 
-   Expect: "Accepted by kuzfdswqmz.edge.aidbox.app", and the form and the return-as-a-link offer
+   Expect: "Accepted by sczsqtqcgi.aidbox.app", and the form and the return-as-a-link offer
    both _gone_ rather than disabled - there is nothing further to return.
 
 5. **Window A: see it arrive.** Go to **Responses**, headed "Responses on the server - Completed
@@ -293,7 +358,7 @@ Two windows have to be open at once for this one. Before sending in scenario 1, 
 in a second private window and answer the form there too. Send from the first window, then send
 from the second.
 
-Expect: "Accepted by kuzfdswqmz.edge.aidbox.app" in both windows, and re-running the
+Expect: "Accepted by sczsqtqcgi.aidbox.app" in both windows, and re-running the
 `QuestionnaireResponse` search above still reports `total: 1`, with the same `id`. The response
 entry in the transaction carries a conditional-create key on the request identifier, so the second
 send resolves to the response already stored rather than adding another. See the first known
@@ -306,7 +371,7 @@ longer offers one - which is the next scenario.
 
 Open the link from scenario 1 again, in a third private window.
 
-Expect: "Accepted by kuzfdswqmz.edge.aidbox.app", with no form, no "Send answers to..." button and
+Expect: "Accepted by sczsqtqcgi.aidbox.app", with no form, no "Send answers to..." button and
 no pre-send disclosure. The page asks the destination what the published `Task` says as it opens;
 finding the answers already recorded against it, it shows the state a completed send leaves rather
 than a second empty form. Nothing is written - the browser's network panel shows the `GET` of
@@ -446,6 +511,12 @@ makes the suite a local-stack instrument; pointed at a deployment whose database
 refusal spec is the one that will complain.
 
 ## Validation record
+
+> This record describes what was run on the instance that existed at the time,
+> `kuzfdswqmz.edge.aidbox.app`, which is gone. The host is left as it was on purpose: the record
+> is a statement about what actually happened, and renaming it would make it a false one. The
+> setup steps above now target the current instance, and this suite has **not** been re-run
+> against it.
 
 **Date:** 22 August 2026. **Instance:** `https://kuzfdswqmz.edge.aidbox.app`. **Commit:** branch
 `001-confidential-smart-app` at the completion of T053.

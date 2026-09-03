@@ -24,11 +24,20 @@
 # the second one there is no grant to put in the link, and the direct-send
 # channel degrades to the scan-back fallback on every request.
 #
-# So the registry names the Aidbox instance this change was validated against.
+# So the registry names an Aidbox instance, which does offer both.
 # `ops/aidboxSetup.ts` applies both client registrations, their access policies
 # and the demonstration data idempotently; `docs/aidbox-validation.md` walks
 # through it. Point this at a different server by replacing the entry, not by
 # adding configuration to the browser.
+#
+# ## This entry is not yet a deployable demo
+#
+# `sczsqtqcgi.aidbox.app` is a **free-tier** instance, and it is the one the
+# development setup targets. It is right for local bring-up and for validating
+# the loop; it is a poor choice for a continuously deployed public demo, because
+# a free tier carries its own limits and because a shared demo should not depend
+# on somebody's personal instance. Before this deploys, either point it at an
+# instance provisioned for the demo, or accept the free tier deliberately.
 #
 # ## Before this deploys, a Secret has to exist
 #
@@ -49,7 +58,7 @@ smartFormsHealthLinks:
   # A second replica would not see the first one's links.
 
   issuers:
-    - issuer: "https://kuzfdswqmz.edge.aidbox.app/fhir"
+    - issuer: "https://sczsqtqcgi.aidbox.app/fhir"
       label: "Aidbox demo"
       launchClient:
         clientId: "smart-forms-health-links"

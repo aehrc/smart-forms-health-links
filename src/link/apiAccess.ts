@@ -238,7 +238,7 @@ export function parseGrant(plaintext: string): ApiAccessGrant | undefined {
  * The host a grant's answers will be sent to.
  *
  * The host rather than the whole URL, because this is what a disclosure has to name (FR-020) and
- * `https://kuzfdswqmz.edge.aidbox.app/fhir` is not something a person can read as a destination.
+ * `https://sczsqtqcgi.aidbox.app/fhir` is not something a person can read as a destination.
  * @param grant the grant
  * @returns the destination's host, e.g. `ehr.example.org`
  * @example

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
  * The direct-return surface, from disclosure to outcome.
  *
  * Everything this panel says names the destination host, because that is the only part of a
- * `https://kuzfdswqmz.edge.aidbox.app/fhir` a person can weigh (FR-020). The wording of each
+ * `https://sczsqtqcgi.aidbox.app/fhir` a person can weigh (FR-020). The wording of each
  * outcome comes from {@link SendStatus.detail} rather than from here: the state machine already
  * has to be precise about what a 2xx, a 401 and a dropped connection each mean, and restating it
  * in the component would be two places to drift.

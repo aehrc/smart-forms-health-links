@@ -30,7 +30,7 @@ import type { ApiAccessGrant, GrantOptions } from "@/link/apiAccess";
 import { GRANT_CONTENT_TYPE, buildGrant } from "@/link/apiAccess";
 
 /** The destination every vector points at. */
-const AUD = "https://kuzfdswqmz.edge.aidbox.app/fhir";
+const AUD = "https://sczsqtqcgi.aidbox.app/fhir";
 
 /** A token response that mints cleanly, as the basis for each vector. */
 const WELL_FORMED: GrantOptions = {

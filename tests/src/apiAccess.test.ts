@@ -38,7 +38,7 @@ import { encryptJwe, generateKey, keyToBase64Url } from "@/link/jwe";
 import { shlCodec } from "@/link/shlCodec";
 
 /** The destination every grant in this file points at. */
-const AUD = "https://kuzfdswqmz.edge.aidbox.app/fhir";
+const AUD = "https://sczsqtqcgi.aidbox.app/fhir";
 
 /** A grant exactly as the contract writes it. */
 const WELL_FORMED = {
@@ -241,7 +241,7 @@ describe("grant consumption", () => {
     // The host, not the whole URL: it is what the disclosure has to name (FR-020).
     it("names the destination by host, not by URL", () => {
       expect(destinationHost(parse(WELL_FORMED)!)).toBe(
-        "kuzfdswqmz.edge.aidbox.app",
+        "sczsqtqcgi.aidbox.app",
       );
     });
   });

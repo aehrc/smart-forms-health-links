@@ -5,7 +5,7 @@
  * FR-020 is the requirement under test, and it is a requirement about a *name*. "Your answers
  * will be sent directly to the destination" is not a disclosure - a patient cannot decide
  * anything from it. The host is what makes it a decision, and the host rather than the whole URL
- * because `https://kuzfdswqmz.edge.aidbox.app/fhir` is not something a person reads as a place.
+ * because `https://sczsqtqcgi.aidbox.app/fhir` is not something a person reads as a place.
  *
  * The second requirement is negative and just as important: a malformed grant must show no
  * disclosure and block nothing (FR-020). The form still renders, and the scan-back return still

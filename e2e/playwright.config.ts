@@ -21,7 +21,7 @@
  *                             Required; there is no default, because this is also the origin
  *                             the launch client's `redirect_uri` is registered against, so the
  *                             suite cannot simply be aimed elsewhere.
- *   AIDBOX_BASE_URL           Aidbox root, e.g. `https://kuzfdswqmz.edge.aidbox.app`, which is
+ *   AIDBOX_BASE_URL           Aidbox root, e.g. `https://sczsqtqcgi.aidbox.app`, which is
  *                             where `/rpc` and the authorisation endpoints live.
  *   E2E_ISSUER                the registered SMART issuer. Optional; defaults to
  *                             `${AIDBOX_BASE_URL}/fhir`, which is what setup registers.

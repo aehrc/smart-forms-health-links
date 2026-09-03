@@ -15,7 +15,7 @@
  * ```json
  * [
  *   {
- *     "issuer": "https://kuzfdswqmz.edge.aidbox.app/fhir",
+ *     "issuer": "https://sczsqtqcgi.aidbox.app/fhir",
  *     "label": "Aidbox demo",
  *     "launchClient": {
  *       "clientId": "smart-forms-launch",
