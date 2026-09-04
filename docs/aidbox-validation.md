@@ -48,26 +48,40 @@ own REST console.
 Sign in to the Aidbox console and open the REST console, then send these two. Choose a long random
 secret - `openssl rand -base64 32` - and keep it; nothing recovers it afterwards.
 
-```yaml
-POST /fhir/Client
-Content-Type: text/yaml
+```json
+PUT /Client/sfl-operator
 
-id: shl-operator
-secret: PASTE-A-LONG-RANDOM-SECRET
-grant_types:
-  - basic
+{
+  "secret": "PASTE-A-LONG-RANDOM-SECRET",
+  "grant_types": ["basic"]
+}
 ```
 
-```yaml
-POST /fhir/AccessPolicy
-Content-Type: text/yaml
+```json
+PUT /AccessPolicy/sfl-operator-policy
 
-id: shl-operator-policy
-engine: allow
-description: Operator access for smart-forms-health-links setup
-link:
-  - reference: Client/shl-operator
+{
+  "engine": "allow",
+  "description": "Operator access for smart-forms-health-links setup",
+  "link": [{ "resourceType": "Client", "id": "sfl-operator" }]
+}
 ```
+
+Three details, each of which produces a confusing failure if it is got wrong.
+
+**The Aidbox endpoints, not the FHIR ones.** `Client` and `AccessPolicy` are Aidbox's own resources.
+`POST /fhir/Client` reaches them through the FHIR API, which will not accept a client-assigned `id`
+on a create - and the id is the whole point here, because it is half of the credential.
+
+**`PUT` at a fixed id, not `POST`.** Same reason the setup script does: re-running it is then a
+no-op rather than a second client.
+
+**JSON, not YAML.** The console parses the body as JSON whatever `Content-Type` says, so a YAML body
+comes back as `Unrecognized token 'id': was expecting (JSON String, Number, Array, Object...)`.
+
+**`link` takes Aidbox references, not FHIR ones** - `{ "resourceType": "Client", "id": "..." }`,
+not `{ "reference": "Client/..." }`. A FHIR-shaped link is accepted and silently matches nothing,
+which reads as a working policy that authorises no one.
 
 `engine: allow` is unrestricted, which is what setup needs and more than the app ever gets - the two
 clients the script goes on to register are each held to a narrow `AccessPolicy`. Treat this one as an
