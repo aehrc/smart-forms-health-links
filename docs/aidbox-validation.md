@@ -25,18 +25,50 @@ of on-screen text to look for, which is more use to a reader than an image of a 
 | `config/issuers.json`    | Copy `config/issuers.example.json`. Secret-bearing fields hold `env:VARIABLE_NAME` references, resolved from the environment at load                                                                                                     |
 | 1Password CLI            | `op` on the path, signed in (a service account token works)                                                                                                                                                                              |
 
-The `launch client secret`, `backend private jwk` and `e2e user password` fields are _created by the
-first setup run_, which prints them once. If the 1Password item does not have them yet, run the
-setup step below first and paste what it prints into those fields.
+`launch client secret` and `backend private jwk` are _created by the first setup run_, which prints
+them once; leave them unset until then. `e2e user password` is **not** generated - it is input, and
+the setup run fails without it, so choose one up front.
 
-`op run` resolves the references and passes the values to one process. Nothing is ever echoed:
+## Holding the secrets
+
+Two routes. They differ only in how the values reach the process; nothing in the code reads `.env`
+itself.
+
+### Locally: real values in `.env`
+
+`.env` is gitignored, and for a disposable instance this is enough. Put real values in it and load
+it into the shell before running anything:
 
 ```bash
-op run --env-file .env -- <command>
+set -a; . ./.env; set +a
+npm run setup:aidbox
 ```
 
-Never use `op read` and never print a resolved value; the whole arrangement exists so that no secret
-lands in a shell history, a log or a transcript.
+`set -a` exports what the file defines, so any command after it inherits the values.
+
+**Quote anything with punctuation.** `BACKEND_PRIVATE_JWK` is a line of JSON, and a base64 secret
+can carry `/` and `=`; unquoted, the shell mangles both. Single quotes are safe because neither
+value contains one:
+
+```bash
+BACKEND_PRIVATE_JWK='{"kty":"RSA",...}'
+```
+
+**Leave a credential you do not have yet commented out, not blank.** A variable set to the empty
+string is treated as absent, but only since the fix that accompanied this note - an older build
+parses `""` as JSON and fails with `Unexpected end of JSON input`.
+
+### Shared or deployed: `op://` references
+
+For anything beyond one machine, `.env` holds references and the values stay in 1Password:
+
+```bash
+op run --env-file .env -- npm run setup:aidbox
+```
+
+`op run` resolves each `op://vault/item/field` and passes the values to that one process, so no
+secret is written to disk or left in a shell history. `.env.example` ships in this form. Never use
+`op read` and never print a resolved value.
 
 ## Creating the operator client
 
@@ -91,9 +123,10 @@ the running app at all.
 Confirm it works before going further:
 
 ```bash
-op run --env-file .env -- sh -c \
-  'curl -s -o /dev/null -w "%{http_code}\n" -u "$AIDBOX_CLIENT_ID:$AIDBOX_CLIENT_SECRET" \
-   "$AIDBOX_BASE_URL/fhir/Patient?_count=1"'
+set -a; . ./.env; set +a
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -u "$AIDBOX_CLIENT_ID:$AIDBOX_CLIENT_SECRET" \
+  "$AIDBOX_BASE_URL/fhir/Patient?_count=1"
 ```
 
 `200` means the client and its policy are both in place. `401` is the credentials, `403` is the
@@ -103,7 +136,8 @@ op run --env-file .env -- sh -c \
 
 ```bash
 npm install
-op run --env-file .env -- npm run setup:aidbox
+set -a; . ./.env; set +a       # or: op run --env-file .env --
+npm run setup:aidbox
 ```
 
 `ops/aidboxSetup.ts` writes, by `PUT` on a fixed id, so it is idempotent - safe to re-run, and the

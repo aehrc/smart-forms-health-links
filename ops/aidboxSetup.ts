@@ -1036,8 +1036,20 @@ async function resolveCredentials(
   publicJwk: JWK;
   generated: boolean;
 }> {
-  const storedSecret = force ? undefined : env.LAUNCH_CLIENT_SECRET;
-  const storedJwk = force ? undefined : env.BACKEND_PRIVATE_JWK;
+  /*
+   * An empty value means absent, the same as everywhere else this reads the environment
+   * ({@link requireEnv} applies the same rule). Without it, the natural first state of a `.env`
+   * copied from the template - the variable present and blank, because the value it will hold does
+   * not exist yet - reaches `JSON.parse("")` and fails as `Unexpected end of JSON input`, which
+   * reads like a corrupt key rather than a missing one.
+   */
+  const stored = (name: string): string | undefined => {
+    const value = env[name];
+    return value === undefined || value.trim() === "" ? undefined : value;
+  };
+
+  const storedSecret = force ? undefined : stored("LAUNCH_CLIENT_SECRET");
+  const storedJwk = force ? undefined : stored("BACKEND_PRIVATE_JWK");
 
   const launchClientSecret = storedSecret ?? generateClientSecret();
   if (storedJwk !== undefined) {
