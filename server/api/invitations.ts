@@ -452,6 +452,9 @@ export const invitationRoutes: FastifyPluginCallback = (
       patientId: body.patientId ?? null,
       requestIdentifier: invitation.requestIdentifier,
       publishedTaskUrl: taskUrl,
+      // Kept in the clear so the facade can refuse answers to a different questionnaire
+      // without decrypting the payload on every write.
+      questionnaireCanonical: questionnaire.url ?? null,
     });
 
     const manifestUrl = `${config.appOrigin.replace(/\/+$/, "")}/shl/${row.id}`;

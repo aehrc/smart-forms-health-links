@@ -203,6 +203,90 @@ export async function mintAccessToken(
 }
 
 /**
+ * A cached token, with the moment it stops being offered.
+ *
+ * The expiry is held as an absolute instant rather than the `expires_in` duration the server
+ * reported, because the duration is only meaningful against the moment it was received.
+ */
+interface CachedToken {
+  /** The token response, exactly as it was minted. */
+  readonly token: BackendTokenResponse;
+  /** Epoch milliseconds after which this entry is no longer offered. */
+  readonly staleAt: number;
+}
+
+/**
+ * How long before its stated expiry a cached token stops being offered.
+ *
+ * A token handed out with one second left is a request that fails on arrival. A minute is
+ * comfortably longer than any single forward takes and short enough not to waste most of a
+ * short-lived token's life.
+ */
+const TOKEN_CACHE_MARGIN_SECONDS = 60;
+
+/** Cached tokens, keyed by client and token endpoint. Process-local, like the discovery cache. */
+const tokenCache = new Map<string, CachedToken>();
+
+/**
+ * Mint an access token, reusing a cached one while it is comfortably valid.
+ *
+ * The facade calls this on every write and on every reopened link, which is a far higher rate
+ * than the one-mint-per-manifest-fetch this module was written for. Minting per call would put
+ * a network round trip to the authorisation server in front of every one of them, and would
+ * grow the audit trail without adding anything to it: these are all the same credential with
+ * the same scopes, and only the count would differ.
+ *
+ * Never used for the grant file. That token is deliberately minted fresh every time
+ * (`server/shl/manifest.ts`), because its whole purpose is to start a short window at the
+ * moment the link is opened.
+ * @param options the issuer registration and its token endpoint
+ * @returns a token response that has at least {@link TOKEN_CACHE_MARGIN_SECONDS} left
+ * @throws {Error} exactly as {@link mintAccessToken} does, when a fresh mint is needed and fails
+ * @example
+ * const token = await cachedAccessToken({ registration, tokenEndpoint });
+ */
+export async function cachedAccessToken(
+  options: MintOptions,
+): Promise<BackendTokenResponse> {
+  const key = `${options.registration.backendClient.clientId} ${options.tokenEndpoint}`;
+  const cached = tokenCache.get(key);
+  if (cached !== undefined && Date.now() < cached.staleAt) {
+    return cached.token;
+  }
+
+  const token = await mintAccessToken(options);
+  tokenCache.set(key, {
+    token,
+    staleAt:
+      Date.now() +
+      Math.max(token.expires_in - TOKEN_CACHE_MARGIN_SECONDS, 0) * 1000,
+  });
+  return token;
+}
+
+/**
+ * Drop a cached token, so the next call mints a fresh one.
+ *
+ * Called when an upstream server refuses a token this cache offered: the server is the
+ * authority on whether a token still works, and it has just said no.
+ * @param options the issuer registration and its token endpoint
+ * @example
+ * if (response.status === 401) { invalidateAccessToken(options); }
+ */
+export function invalidateAccessToken(options: MintOptions): void {
+  tokenCache.delete(
+    `${options.registration.backendClient.clientId} ${options.tokenEndpoint}`,
+  );
+}
+
+/**
+ * Empty the token cache. Used by tests, and available for an operational reload.
+ */
+export function clearBackendTokenCache(): void {
+  tokenCache.clear();
+}
+
+/**
  * Derive the public JWKS served at `/.well-known/jwks.json` from the configured private keys.
  *
  * Every private member ({@link PRIVATE_JWK_MEMBERS}) is dropped, so what is published is the

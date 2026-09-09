@@ -157,6 +157,7 @@ describe("the SHL manifest", () => {
         overrides.patientId === undefined ? "pt-1" : overrides.patientId,
       requestIdentifier: "urn:uuid:3f2504e0-4f89-11d3-9a0c-0305e82c3301",
       publishedTaskUrl: `${ISSUER}/Task/task-1`,
+      questionnaireCanonical: "http://example.org/Questionnaire/ccm",
     }).id;
   }
 
@@ -276,6 +277,7 @@ describe("the SHL manifest", () => {
         access_token: "minted-token-1",
         token_type: "Bearer",
         expires_in: 3600,
+        scope: "system/QuestionnaireResponse.c system/Task.r system/Task.u",
         aud: ISSUER,
         patient: "pt-1",
       });
@@ -439,6 +441,7 @@ describe("the SHL manifest", () => {
         patientId: null,
         requestIdentifier: "urn:uuid:3f2504e0-4f89-11d3-9a0c-0305e82c3302",
         publishedTaskUrl: "http://ehr.example.org/fhir/Task/task-2",
+        questionnaireCanonical: "http://example.org/Questionnaire/ccm",
       }).id;
       mint.mockResolvedValue({
         access_token: "would-travel-in-the-clear",

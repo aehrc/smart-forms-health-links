@@ -45,6 +45,8 @@ const WELL_FORMED = {
   access_token: "opaque-access-token",
   token_type: "Bearer",
   expires_in: 3600,
+  scope:
+    "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u",
   aud: AUD,
   patient: "pt-demo",
 };
@@ -92,11 +94,13 @@ const INVITATION_BUNDLE = {
 describe("grant consumption", () => {
   describe("tolerance rules from contracts/shl-wire.md", () => {
     // The happy path first, so every negative below is a difference from something that works.
-    it("reads a well-formed grant, keeping exactly the five members the contract defines", () => {
+    it("reads a well-formed grant, keeping exactly the six members the contract defines", () => {
       expect(parse(WELL_FORMED)).toEqual({
         access_token: "opaque-access-token",
         token_type: "Bearer",
         expires_in: 3600,
+        scope:
+          "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u",
         aud: AUD,
         patient: "pt-demo",
       });
@@ -118,7 +122,8 @@ describe("grant consumption", () => {
     it("keeps nothing beyond the contract's members", () => {
       const grant = parse({
         ...WELL_FORMED,
-        scope: "system/*.*",
+        refresh_token: "not-ours-to-hold",
+        smart_style_url: "https://ehr.example.org/style.json",
         id_token: "…",
       });
 
@@ -127,6 +132,7 @@ describe("grant consumption", () => {
         "aud",
         "expires_in",
         "patient",
+        "scope",
         "token_type",
       ]);
     });
@@ -305,6 +311,8 @@ describe("grant consumption", () => {
         access_token: "opaque-access-token",
         token_type: "Bearer",
         expires_in: 3600,
+        scope:
+          "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u",
         aud: AUD,
         patient: "pt-demo",
       });

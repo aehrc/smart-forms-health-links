@@ -37,6 +37,8 @@ const WELL_FORMED: GrantOptions = {
   accessToken: "opaque-access-token",
   tokenType: "Bearer",
   expiresIn: 3600,
+  scope:
+    "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u",
   aud: AUD,
   patientId: "pt-1",
   grantTtlSeconds: 3600,
@@ -64,16 +66,18 @@ function vector(
 describe("grant conformance vectors", () => {
   describe("vectors 24-26: well-formed grants", () => {
     /*
-     * Fixture 24: the canonical grant. Five members, no more: anything else in this object is
+     * Fixture 24: the canonical grant. Six members, no more: anything else in this object is
      * something a filler has not agreed to interpret.
      */
-    it("24: a complete grant carries exactly access_token, token_type, expires_in, aud and patient", () => {
+    it("24: a complete grant carries exactly access_token, token_type, expires_in, scope, aud and patient", () => {
       const grant = vector({});
 
       expect(grant).toEqual({
         access_token: "opaque-access-token",
         token_type: "Bearer",
         expires_in: 3600,
+        scope:
+          "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u",
         aud: AUD,
         patient: "pt-1",
       });

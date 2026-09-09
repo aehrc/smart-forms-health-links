@@ -16,6 +16,98 @@
 const RESOURCE_SCOPE = /^(user|patient|system)\/([A-Za-z*]+)\.([a-z]+)$/;
 
 /**
+ * The same shape, but tolerating the two spellings a wire contract cannot pin down.
+ *
+ * {@link RESOURCE_SCOPE} is deliberately strict because it reads scopes *this deployment*
+ * asked for, which are written in one style. A scope read off a grant file was written by
+ * somebody else, so it may be SMART v1 (`.read`, `.write`) or use `*` as the permission.
+ */
+const ANY_RESOURCE_SCOPE = /^(user|patient|system)\/([A-Za-z*]+)\.([a-z]+|\*)$/;
+
+/** SMART v1 permission words, expanded into the v2 letters they stand for. */
+const V1_PERMISSIONS: Readonly<Record<string, string>> = {
+  read: "rs",
+  write: "cud",
+};
+
+/** Every v2 permission letter, which is what `*` grants. */
+const ALL_PERMISSIONS = "cruds";
+
+/** One parsed resource scope. */
+export interface ResourceScope {
+  /** `user`, `patient` or `system`. */
+  readonly level: string;
+  /** The resource type, or `*` for all of them. */
+  readonly type: string;
+  /**
+   * Permissions as v2 letters, whatever spelling arrived.
+   *
+   * `read` becomes `rs`, `write` becomes `cud` and `*` becomes all of them, so a caller can
+   * ask "does this permit an update" without knowing which SMART version wrote it.
+   */
+  readonly permissions: string;
+}
+
+/**
+ * Read one SMART resource scope, in either SMART version's spelling.
+ *
+ * Exported so that anything comparing scopes shares this parser rather than growing its own.
+ * A second regex for the same grammar is how two places quietly come to disagree about what
+ * `system/*.*` permits.
+ * @param scope one whitespace-free scope token
+ * @returns the parsed scope, or undefined when it is not a resource scope at all
+ * @example
+ * parseResourceScope("system/Task.write"); // { level: "system", type: "Task", permissions: "cud" }
+ */
+export function parseResourceScope(scope: string): ResourceScope | undefined {
+  const match = ANY_RESOURCE_SCOPE.exec(scope.trim());
+  if (match === null) {
+    return undefined;
+  }
+
+  const [, level, type, raw] = match;
+  const permissions =
+    raw === "*" ? ALL_PERMISSIONS : (V1_PERMISSIONS[raw] ?? raw);
+
+  return { level, type, permissions };
+}
+
+/**
+ * Whether a set of granted scopes permits everything one required scope asks for.
+ *
+ * Wildcards widen on both axes: a granted `system/*.*` covers every resource type and every
+ * permission, and a granted `system/Task.cruds` covers `system/Task.u`. The level must match
+ * exactly - a `user/` grant is not a `system/` one, whatever it permits.
+ * @param granted the scopes a grant stated
+ * @param required the single scope to test for
+ * @returns true when some granted scope covers the required one
+ * @example
+ * coversScope(["system/Task.cruds"], "system/Task.u"); // true
+ */
+export function coversScope(
+  granted: readonly string[],
+  required: string,
+): boolean {
+  const want = parseResourceScope(required);
+  if (want === undefined) {
+    return false;
+  }
+
+  return granted.some((candidate) => {
+    const have = parseResourceScope(candidate);
+    if (have === undefined || have.level !== want.level) {
+      return false;
+    }
+    if (have.type !== "*" && have.type !== want.type) {
+      return false;
+    }
+    return [...want.permissions].every((permission) =>
+      have.permissions.includes(permission),
+    );
+  });
+}
+
+/**
  * Resource types pre-population reads from the record.
  *
  * Population resolves each item's `x-fhir-query` against these, so a grant that omits read or

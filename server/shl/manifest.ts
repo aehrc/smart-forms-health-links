@@ -145,6 +145,12 @@ export const manifestRoutes: FastifyPluginCallback = (
           accessToken: token.access_token,
           tokenType: token.token_type,
           expiresIn: token.expires_in,
+          /*
+           * What the authorisation server said it granted, falling back to what was asked
+           * for. The two differ when a server narrows a grant silently, and in that case the
+           * filler should be told what it actually holds rather than what we wanted.
+           */
+          scope: token.scope ?? registration.backendClient.scopes,
           aud: invitation.issuer,
           patientId: invitation.patientId,
           grantTtlSeconds: registration.grantTtlSeconds,
