@@ -129,8 +129,9 @@ export interface AppConfig {
   /**
    * Publish each request's `Task` to the launched server, so sent requests can be listed back.
    *
-   * This only records *that* a request was sent: without it, `/requests` can only ever show what
-   * the current browser created, because the reply key never leaves it.
+   * This only records *that* a request was sent - and it is the only record there is: `/requests`
+   * derives entirely from these Tasks (FR-011), so with the flag off there is nothing anywhere for
+   * it to list.
    *
    * The published copy carries no reply slot, no key and no token - see `publishRequestTask`. What
    * it does put on the record server is the fact that a form was requested, for whom, and by whom,

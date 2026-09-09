@@ -855,6 +855,7 @@ src/                     the SPA
   lib/
     config.ts            AppConfig, validation, and the fallback
     session.ts           the session query, the requester gate, the proxy fetch
+    sentRequests.ts      /requests, derived from the published request Tasks
     answerRows.ts        flattening a QuestionnaireResponse for RawAnswers
 ops/
   aidboxSetup.ts         npm run setup:aidbox - idempotent clients, policies, demo data
