@@ -106,6 +106,9 @@ smartFormsHealthLinks:
 
   persistence:
     size: "1Gi"
+    # The cluster has no default StorageClass, so an unset value leaves the claim
+    # Pending forever. gp3 is what the other namespaces on this cluster use.
+    storageClassName: "gp3"
 
   resources:
     requests:
