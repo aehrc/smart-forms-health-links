@@ -1,87 +1,113 @@
-# Author: John Grimes
+{{- $app := .Values.smartFormsHealthLinks }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-deployment
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app: {{ .Release.Name }}
 spec:
-  replicas: {{ .Values.smartFormsHealthLinks.replicas }}
+  # One replica, not configurable. The entire state is a single SQLite file on a ReadWriteOnce
+  # volume, so a second pod would either fail to schedule or corrupt the file. `Recreate` for
+  # the same reason: a rolling update overlaps old and new pods, and both would hold the file.
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/instance: {{ .Release.Name }}
-  strategy:
-    type: RollingUpdate
+      app: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
-      {{- if .Values.smartFormsHealthLinks.config }}
+        app: {{ .Release.Name }}
       annotations:
-        # Rolls the pods when the config changes, which is otherwise invisible to
-        # the Deployment: the file arrives through a mounted ConfigMap.
-        checksum/config: {{ toJson .Values.smartFormsHealthLinks.config | sha256sum }}
-      {{- end }}
+        # Roll the pod when the issuer registry changes: the server reads it once, at startup.
+        checksum/issuers: {{ toJson $app.issuers | sha256sum }}
+        # And when the browser-visible config changes, for the same reason: the pod serves
+        # whatever was mounted when it started.
+        checksum/appconfig: {{ toJson $app.appConfig | sha256sum }}
     spec:
       securityContext:
+        # The image runs as the unprivileged `node` user (uid 1000); fsGroup is what makes the
+        # mounted volume writable by it.
         runAsNonRoot: true
-        runAsUser: 101
-        runAsGroup: 101
-        seccompProfile:
-          type: RuntimeDefault
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
-        - name: {{ .Chart.Name }}
-          image: {{ .Values.smartFormsHealthLinks.image | quote }}
-          imagePullPolicy: {{ .Values.smartFormsHealthLinks.imagePullPolicy | quote }}
-          ports:
-            - name: http
-              containerPort: 8080
+        - name: smart-forms-health-links
+          image: {{ $app.image | quote }}
+          imagePullPolicy: {{ $app.imagePullPolicy | quote }}
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: APP_ORIGIN
+              value: {{ include "smartFormsHealthLinks.appOrigin" . | quote }}
+            - name: PORT
+              value: "3000"
+            - name: SQLITE_PATH
+              value: "/data/links.sqlite"
+            - name: ISSUER_REGISTRY_PATH
+              value: "/etc/smart-forms-health-links/issuers.json"
+            {{- range $configKey, $configValue := $app.config }}
+            - name: {{ $configKey }}
+              value: {{ $configValue | quote }}
+            {{- end }}
+          envFrom:
+            # SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET, BACKEND_PRIVATE_JWK, and any other
+            # variable the issuer registry names. Every key in the Secret becomes an environment
+            # variable; the chart neither reads nor templates their values.
+            - secretRef:
+                name: {{ required "smartFormsHealthLinks.existingSecret is not set. Create a Secret holding SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET and BACKEND_PRIVATE_JWK, then name it here." $app.existingSecret | quote }}
+          # /health is public and says nothing about configuration, so it is safe to probe and
+          # safe to expose. It answers as soon as the port is bound.
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
             periodSeconds: 2
-            failureThreshold: 15
+            failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
             periodSeconds: 30
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
             periodSeconds: 10
             failureThreshold: 3
-          resources: {{ toJson .Values.smartFormsHealthLinks.resources }}
           volumeMounts:
-            # nginx writes its pid and its temporary bodies here, which is what
-            # allows the root filesystem to stay read-only.
-            - name: tmp
-              mountPath: /tmp
-            {{- if .Values.smartFormsHealthLinks.config }}
-            - name: config
-              mountPath: /usr/share/nginx/html/config.json
+            - name: data
+              mountPath: /data
+            - name: issuers
+              mountPath: /etc/smart-forms-health-links
+              readOnly: true
+            {{- if $app.appConfig }}
+            # Over the top of the file the image ships, so a deployment can change what the
+            # browser is told without a rebuild. subPath, so the rest of dist/ is untouched.
+            - name: issuers
+              mountPath: /app/dist/config.json
               subPath: config.json
               readOnly: true
             {{- end }}
+          resources: {{ toJson $app.resources }}
       volumes:
-        - name: tmp
-          emptyDir: {}
-        {{- if .Values.smartFormsHealthLinks.config }}
-        - name: config
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-pvc
+        - name: issuers
           configMap:
-            name: {{ .Release.Name }}-config
-        {{- end }}
-      nodeSelector: {{ toJson .Values.smartFormsHealthLinks.nodeSelector }}
-      tolerations: {{ toJson .Values.smartFormsHealthLinks.tolerations }}
-      affinity: {{ toJson .Values.smartFormsHealthLinks.affinity }}
+            name: {{ .Release.Name }}-configmap
+      nodeSelector: {{ toJson $app.nodeSelector }}
+      tolerations: {{ toJson $app.tolerations }}
+      affinity: {{ toJson $app.affinity }}
+      terminationGracePeriodSeconds: 30

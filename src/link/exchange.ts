@@ -1,36 +1,32 @@
+import { collectionBundle, findInBundle } from "./codec";
+import {
+  buildReplyDescriptorExtension,
+  buildServerTaskUrlExtension,
+  isServerTaskUrlExtension,
+  type ReplyDescriptor,
+} from "./replyDescriptor";
+
 import type {
   Bundle,
   Extension,
   Provenance,
   Questionnaire,
   QuestionnaireResponse,
-  Task
-} from 'fhir/r4';
-import { collectionBundle, findInBundle, questionnaireCanonical } from './codec';
-import {
-  buildReplyDescriptorExtension,
-  buildServerTaskUrlExtension,
-  buildWriteDescriptorExtension,
-  type ReplyDescriptor,
-  type WriteDescriptor
-} from './replyDescriptor';
+  Task,
+} from "fhir/r4";
 
 /**
  * The two payloads that travel between a requester and a form filler.
  *
- * **Request**  `Bundle{Questionnaire, QuestionnaireResponse?, Task}` — "please fill this in"
- * **Response** `Bundle{QuestionnaireResponse, Task}` — "here are the answers"
- *
- * The optional response on the *request* leg is a **seed**: answers the requester filled in from the
- * record before sending, for the filler to confirm or correct. Both legs therefore carry a
- * QuestionnaireResponse, and `status` is what tells them apart — see {@link isRequestBundle}.
+ * **Request**  `Bundle{Questionnaire, Task}` - "please fill this in"
+ * **Response** `Bundle{QuestionnaireResponse, Task}` - "here are the answers"
  *
  * ## Why the Task, and why it points the way it does
  *
  * R4 gives QuestionnaireResponse no way to reference a Task: `basedOn` accepts only
  * `CarePlan|ServiceRequest`, `partOf` only `Observation|Procedure`, and `identifier` is `0..1`.
- * Correlation therefore has to run from the Task outward — `Task.focus` at the Questionnaire and
- * `Task.output.valueReference` at the QuestionnaireResponse — with the Task itself round-tripping
+ * Correlation therefore has to run from the Task outward (`Task.focus` at the Questionnaire and
+ * `Task.output.valueReference` at the QuestionnaireResponse) with the Task itself round-tripping
  * inside the Bundle. No extensions needed.
  *
  * Within a Bundle those references use `urn:uuid:` against sibling `fullUrl`s, which is why
@@ -42,11 +38,11 @@ import {
  */
 
 /** `Task.input`/`output` slot describing which questionnaire the task concerns. */
-const QUESTIONNAIRE_INPUT_TYPE = { text: 'questionnaire' } as const;
-const RESPONSE_OUTPUT_TYPE = { text: 'questionnaire-response' } as const;
+const QUESTIONNAIRE_INPUT_TYPE = { text: "questionnaire" } as const;
+const RESPONSE_OUTPUT_TYPE = { text: "questionnaire-response" } as const;
 
 /** RFC 3986 URI namespace, the conventional system for a UUID-based business identifier. */
-const URI_IDENTIFIER_SYSTEM = 'urn:ietf:rfc:3986';
+const URI_IDENTIFIER_SYSTEM = "urn:ietf:rfc:3986";
 
 /**
  * "This content was asserted by the patient, not by a clinician."
@@ -57,22 +53,22 @@ const URI_IDENTIFIER_SYSTEM = 'urn:ietf:rfc:3986';
  * indistinguishable in the record from answers recorded by a clinician.
  */
 export const PATIENT_ASSERTED_SECURITY = {
-  system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationValue',
-  code: 'PATAST',
-  display: 'patient asserted'
+  system: "http://terminology.hl7.org/CodeSystem/v3-ObservationValue",
+  code: "PATAST",
+  display: "patient asserted",
 } as const;
 
 export const PROVENANCE_PARTICIPANT_TYPE =
-  'http://terminology.hl7.org/CodeSystem/provenance-participant-type';
+  "http://terminology.hl7.org/CodeSystem/provenance-participant-type";
 
 export interface RequestPayload {
   questionnaire: Questionnaire;
   task: Task;
   /**
-   * Answers the requester pre-filled from the record, when they chose to.
+   * Answers filled in from the record before the request was sent, when it carried any.
    *
-   * `in-progress` by definition — nobody has answered anything yet. The filler renders on top of it
-   * and owns it from the moment they open the link.
+   * Dropped rather than rendered when it cites a different form than the request does - see
+   * {@link parseRequestBundle}.
    */
   prePopulated?: QuestionnaireResponse;
 }
@@ -85,7 +81,7 @@ export interface ResponsePayload {
    * Who asserted the answers, when the filler said.
    *
    * Present on encrypted-channel replies and absent from a plain link. It is attribution rather than
-   * clinical content, so nothing depends on it — but it must be written when it is there, because it is
+   * clinical content, so nothing depends on it - but it must be written when it is there, because it is
    * the record of the answers having come from outside.
    */
   provenance?: Provenance;
@@ -97,7 +93,7 @@ export interface BuildRequestOptions {
   /**
    * Who the form is for, in words.
    *
-   * Carried separately because a filler generally cannot resolve `subjectReference` — it references a
+   * Carried separately because a filler generally cannot resolve `subjectReference` - it references a
    * server the filler has no access to. A name is the only part of "who is this for" that survives the
    * trip, and it is what lets a filler warn that a form names someone other than the person holding
    * the device.
@@ -111,15 +107,13 @@ export interface BuildRequestOptions {
   authoredOn?: string;
   /** Channel C: where an encrypted reply may be parked, and the key to encrypt it to. */
   replyDescriptor?: ReplyDescriptor;
-  /** Channel D: a pre-allocated slot the answers may be written to, once. */
-  writeDescriptor?: WriteDescriptor;
   /** Channel B: absolute URL of this Task on the requester's own server. */
   serverTaskUrl?: string;
   /**
    * Answers filled in from the record before sending, already pruned to what the clinician kept.
    *
-   * Normalised by {@link buildRequestBundle} rather than by the caller, and stripped of anything that
-   * would outlive the trip — see {@link seedResponse}.
+   * Normalised by {@link buildRequestBundle} rather than by the caller, and stripped of anything
+   * that would outlive the trip - see `seedResponse`.
    */
   prePopulated?: QuestionnaireResponse;
 }
@@ -134,21 +128,25 @@ function newUuid(): string {
  * The Questionnaire is embedded in full rather than referenced, so the filler needs no access to the
  * forms server. That is what makes the payload large enough to require a hosted SHL rather than a
  * bare QR code.
+ * @param questionnaire
+ * @param options
  */
 export function buildRequestBundle(
   questionnaire: Questionnaire,
-  options: BuildRequestOptions = {}
+  options: BuildRequestOptions = {},
 ): { bundle: Bundle; task: Task } {
   const questionnaireUuid = `urn:uuid:${newUuid()}`;
   const requestId = options.requestId ?? newUuid();
 
   const task: Task = {
-    resourceType: 'Task',
-    status: 'requested',
-    intent: 'order',
-    identifier: [{ system: URI_IDENTIFIER_SYSTEM, value: `urn:uuid:${requestId}` }],
+    resourceType: "Task",
+    status: "requested",
+    intent: "order",
+    identifier: [
+      { system: URI_IDENTIFIER_SYSTEM, value: `urn:uuid:${requestId}` },
+    ],
     authoredOn: options.authoredOn ?? new Date().toISOString(),
-    description: `Complete "${questionnaire.title ?? questionnaire.name ?? 'questionnaire'}"`,
+    description: `Complete "${questionnaire.title ?? questionnaire.name ?? "questionnaire"}"`,
     /*
      * `focus` names the Questionnaire by **canonical**, not by the `urn:uuid` of its Bundle entry.
      *
@@ -166,18 +164,26 @@ export function buildRequestBundle(
     focus: questionnaire.url
       ? {
           reference: canonicalOf(questionnaire),
-          type: 'Questionnaire',
-          display: questionnaire.title ?? questionnaire.name
+          type: "Questionnaire",
+          display: questionnaire.title ?? questionnaire.name,
         }
-      : { reference: questionnaireUuid, display: questionnaire.title ?? questionnaire.name },
+      : {
+          reference: questionnaireUuid,
+          display: questionnaire.title ?? questionnaire.name,
+        },
     /*
      * The canonical is duplicated into `input` deliberately, and stays duplicated even now that
      * `focus` carries it: `focus` is dropped on the return leg (it would dangle once the Questionnaire
      * is gone), so `input` is what survives to record which form was answered.
      */
     input: questionnaire.url
-      ? [{ type: QUESTIONNAIRE_INPUT_TYPE, valueCanonical: canonicalOf(questionnaire) }]
-      : undefined
+      ? [
+          {
+            type: QUESTIONNAIRE_INPUT_TYPE,
+            valueCanonical: canonicalOf(questionnaire),
+          },
+        ]
+      : undefined,
   };
 
   if (options.requesterDisplay) {
@@ -186,17 +192,16 @@ export function buildRequestBundle(
 
   if (options.subjectReference || options.subjectDisplay) {
     task.for = {
-      ...(options.subjectReference ? { reference: options.subjectReference } : {}),
-      ...(options.subjectDisplay ? { display: options.subjectDisplay } : {})
+      ...(options.subjectReference
+        ? { reference: options.subjectReference }
+        : {}),
+      ...(options.subjectDisplay ? { display: options.subjectDisplay } : {}),
     };
   }
 
   const extensions: Extension[] = [];
   if (options.replyDescriptor) {
     extensions.push(buildReplyDescriptorExtension(options.replyDescriptor));
-  }
-  if (options.writeDescriptor) {
-    extensions.push(buildWriteDescriptorExtension(options.writeDescriptor));
   }
   if (options.serverTaskUrl) {
     extensions.push(buildServerTaskUrlExtension(options.serverTaskUrl));
@@ -206,135 +211,151 @@ export function buildRequestBundle(
   }
 
   /*
-   * The seed is added before the Task is sealed, because the Task declares it — see `Task.input`
-   * below. Ordering within the Bundle keeps the Questionnaire first: `buildReplyBundle` already
-   * depends on entry order on the return leg, and a reader treating the first entry as "the point of
-   * this payload" should still find the form.
+   * Ordering keeps the Questionnaire first: `buildReplyBundle` already depends on entry order on the
+   * return leg, and a reader treating the first entry as "the point of this payload" should still
+   * find the form.
    */
   const seedUuid = `urn:uuid:${newUuid()}`;
-  const seed = options.prePopulated
-    ? seedResponse(options.prePopulated, questionnaire, task)
-    : undefined;
+  const seed =
+    options.prePopulated === undefined
+      ? undefined
+      : seedResponse(options.prePopulated, questionnaire, task);
 
-  if (seed) {
+  if (seed !== undefined) {
     task.input = [
       ...(task.input ?? []),
-      { type: RESPONSE_OUTPUT_TYPE, valueReference: { reference: seedUuid } }
+      { type: RESPONSE_OUTPUT_TYPE, valueReference: { reference: seedUuid } },
     ];
   }
 
   const bundle = collectionBundle([
     { fullUrl: questionnaireUuid, resource: questionnaire },
-    ...(seed ? [{ fullUrl: seedUuid, resource: seed }] : []),
-    { fullUrl: `urn:uuid:${newUuid()}`, resource: task }
+    ...(seed === undefined ? [] : [{ fullUrl: seedUuid, resource: seed }]),
+    { fullUrl: `urn:uuid:${newUuid()}`, resource: task },
   ]);
 
   return { bundle, task };
 }
 
 /**
- * Normalise a pre-filled response into something safe to hand a stranger.
+ * Normalise answers filled in from the record into something safe to send.
  *
- * Everything removed here would otherwise outlive the trip and mean the wrong thing on the far side:
+ * Everything stripped here is something that would otherwise outlive the trip and mean the wrong
+ * thing at the other end. `id` names a resource on the requester's server; `author` and `authored`
+ * would credit the clinician with answers the *patient* is about to be asked to confirm; and
+ * `meta.security` would carry the record's own labels onto a document that is not the record.
  *
- *  - **`id`** — identity on a server the filler cannot see, for the same reason `buildReplyBundle`
- *    drops one.
- *  - **`author` and `authored`** — the crux. An `author` naming the practitioner survives the round
- *    trip and lands on the answers the *patient* returns, so the record would hold a response
- *    authored by a clinician and stamped patient-asserted at once. The attribution here is already
- *    imperfect (see `docs/pre-population.md`); making it self-contradictory on the wire is a
- *    different and worse thing.
- *  - **`meta.security`** — a seed is not an assertion by anybody yet. `PATAST` gets applied on the
- *    return leg, by the filler, to answers a patient has actually seen.
- *  - **`status`** — forced to `in-progress`, which is what {@link isRequestBundle} reads to tell a
- *    request from an answer.
- *
- * `subject` mirrors `Task.for` so the seed says who it is about even once the Bundle is taken apart.
+ * The status is forced to `in-progress`, which is load bearing rather than tidy: it is what
+ * {@link isRequestBundle} reads to tell a seeded invitation from somebody's finished answers.
+ * @param response the populated response, already pruned to what the clinician kept
+ * @param questionnaire the form being requested
+ * @param task the request Task, for the subject
+ * @returns the response as it should travel inside the invitation
  */
 function seedResponse(
   response: QuestionnaireResponse,
   questionnaire: Questionnaire,
-  task: Task
+  task: Task,
 ): QuestionnaireResponse {
-  const { id, author, authored, meta, ...rest } = response;
-  void id;
-  void author;
-  void authored;
-
-  const { security, ...restOfMeta } = meta ?? {};
-  void security;
+  const {
+    id: _id,
+    author: _author,
+    authored: _authored,
+    meta,
+    ...rest
+  } = response;
+  const { security: _security, ...restOfMeta } = meta ?? {};
 
   return {
     ...rest,
-    ...(Object.keys(restOfMeta).length > 0 ? { meta: restOfMeta } : {}),
-    resourceType: 'QuestionnaireResponse',
-    status: 'in-progress',
-    questionnaire: questionnaireCanonicalOf(questionnaire) ?? response.questionnaire,
-    ...(task.for ? { subject: task.for } : {})
+    ...(Object.keys(restOfMeta).length > 0 && { meta: restOfMeta }),
+    resourceType: "QuestionnaireResponse",
+    status: "in-progress",
+    questionnaire:
+      questionnaireCanonicalOf(questionnaire) ?? response.questionnaire,
+    ...(task.for && { subject: task.for }),
   };
 }
 
+/**
+ *
+ * @param bundle
+ */
 export function parseRequestBundle(bundle: Bundle): RequestPayload {
-  const questionnaire = findInBundle<Questionnaire>(bundle, 'Questionnaire');
+  const questionnaire = findInBundle<Questionnaire>(bundle, "Questionnaire");
   if (!questionnaire) {
     throw new Error(
-      'This link does not contain a Questionnaire, so there is no form to fill in. ' +
-        'It may be a completed response rather than a request.'
+      "This link does not contain a Questionnaire, so there is no form to fill in. " +
+        "It may be a completed response rather than a request.",
     );
   }
 
-  const task = findInBundle<Task>(bundle, 'Task');
+  const task = findInBundle<Task>(bundle, "Task");
   if (!task) {
-    throw new Error('This request is missing its Task, so the answers could not be matched back.');
+    throw new Error(
+      "This request is missing its Task, so the answers could not be matched back.",
+    );
   }
 
-  const prePopulated = findInBundle<QuestionnaireResponse>(bundle, 'QuestionnaireResponse');
+  const prePopulated = findInBundle<QuestionnaireResponse>(
+    bundle,
+    "QuestionnaireResponse",
+  );
 
   /*
    * A seed citing a different form than the request does is dropped rather than rendered. Seeding a
-   * form with another form's answers puts values against `linkId`s that happen to collide, which is a
-   * worse outcome than sending it blank and a far worse one than saying so — and this is reachable
-   * from a payload somebody else wrote, not only from a bug here.
+   * form with another form's answers puts values against `linkId`s that happen to collide, which is
+   * a worse outcome than sending it blank and a far worse one than saying so - and this is
+   * reachable from a payload somebody else wrote, not only from a bug here.
+   *
+   * Not `canonicalFromRequest`, which throws for a Questionnaire with no `url`. That is legal FHIR
+   * and it already parses today, so raising here would fail a link over a seed rather than dropping
+   * the seed. Where neither side names a canonical there is nothing to disagree about.
    */
-  const seedCanonical = prePopulated?.questionnaire?.split('|')[0];
-  /*
-   * Not `canonicalFromRequest`, which throws for a Questionnaire with no `url`. That is legal FHIR and
-   * it already parses today, so raising here would fail a link over a seed rather than dropping the
-   * seed. Where neither side names a canonical there is nothing to disagree about, and the seed stays.
-   */
+  const seedCanonical = prePopulated?.questionnaire?.split("|", 1)[0];
   const requestCanonical = (
     task.input?.find((input) => input.valueCanonical)?.valueCanonical ??
     questionnaireCanonicalOf(questionnaire)
-  )?.split('|')[0];
+  )?.split("|", 1)[0];
   const seedMatches =
-    seedCanonical === undefined || requestCanonical === undefined || seedCanonical === requestCanonical;
+    seedCanonical === undefined ||
+    requestCanonical === undefined ||
+    seedCanonical === requestCanonical;
 
   return {
     questionnaire,
     task,
-    ...(prePopulated && seedMatches ? { prePopulated } : {})
+    ...(prePopulated && seedMatches && { prePopulated }),
   };
 }
 
 /**
  * Build the "here are the answers" payload.
  *
- * The Questionnaire is intentionally *not* included — the requester already has it, and re-sending
+ * The Questionnaire is intentionally *not* included - the requester already has it, and re-sending
  * hundreds of kilobytes would push the payload past what a QR code can carry on the return leg.
+ * @param response
+ * @param requestTask
  */
 export function buildResponseBundle(
   response: QuestionnaireResponse,
-  requestTask?: Task
+  requestTask?: Task,
 ): { bundle: Bundle; task?: Task } {
   const responseUuid = `urn:uuid:${newUuid()}`;
 
   if (!requestTask) {
-    return { bundle: collectionBundle([{ fullUrl: responseUuid, resource: response }]) };
+    return {
+      bundle: collectionBundle([{ fullUrl: responseUuid, resource: response }]),
+    };
   }
+
+  const serverTaskAddress = (requestTask.extension ?? []).filter((candidate) =>
+    isServerTaskUrlExtension(candidate),
+  );
 
   const task: Task = {
     ...requestTask,
-    status: 'completed',
+    status: "completed",
     lastModified: new Date().toISOString(),
     /*
      * `focus` named the Questionnaire in the request Bundle. That entry is gone here, so the canonical
@@ -343,20 +364,35 @@ export function buildResponseBundle(
      */
     focus: undefined,
     /*
-     * The request's extensions are the *requester's* return-channel instructions — a reply slot URL,
-     * and possibly a token authorising a write to it. Echoing them back serves no purpose and would
-     * copy a capability into whatever transport the answers travel on, including an unencrypted QR.
+     * The request's extensions are sorted rather than dropped wholesale, because the two kinds
+     * are not alike.
+     *
+     * A reply descriptor is a *capability*: a slot URL and possibly a token authorising a write
+     * to it. Echoing that back serves no purpose and would copy a capability into whatever
+     * transport the answers travel on, including an unencrypted QR.
+     *
+     * `invitation-server-task-url` is an *address* - the request's own Task on the requester's
+     * server, which the requester published and already knows. It comes back because it is how
+     * the requester finds the Task to complete when the answers return as a link rather than
+     * through a direct send (FR-011). Without it the request stays "awaiting answers" forever
+     * on a list that derives entirely from those Tasks. Nothing is disclosed by returning it:
+     * reaching that URL takes the requester's own session, which whoever is reviewing has.
      */
-    extension: undefined,
-    output: [{ type: RESPONSE_OUTPUT_TYPE, valueReference: { reference: responseUuid } }]
+    extension: serverTaskAddress.length > 0 ? serverTaskAddress : undefined,
+    output: [
+      {
+        type: RESPONSE_OUTPUT_TYPE,
+        valueReference: { reference: responseUuid },
+      },
+    ],
   };
 
   return {
     bundle: collectionBundle([
       { fullUrl: responseUuid, resource: response },
-      { fullUrl: `urn:uuid:${newUuid()}`, resource: task }
+      { fullUrl: `urn:uuid:${newUuid()}`, resource: task },
     ]),
-    task
+    task,
   };
 }
 
@@ -368,28 +404,37 @@ export function buildResponseBundle(
  * sent the invitation. Refusing to render answers we are holding, over a field we can supply
  * ourselves, would be unhelpful.
  *
- * Returns `undefined` when neither knows — the caller decides whether that is fatal, because it is
+ * Returns `undefined` when neither knows - the caller decides whether that is fatal, because it is
  * not always: answers can still be reviewed as a raw table without their form definition.
+ * @param response
+ * @param fallback
  */
 export function responseCanonical(
   response: QuestionnaireResponse,
-  fallback?: string
+  fallback?: string,
 ): string | undefined {
   return response.questionnaire ?? fallback;
 }
 
+/**
+ *
+ * @param bundle
+ */
 export function parseResponseBundle(bundle: Bundle): ResponsePayload {
-  const response = findInBundle<QuestionnaireResponse>(bundle, 'QuestionnaireResponse');
+  const response = findInBundle<QuestionnaireResponse>(
+    bundle,
+    "QuestionnaireResponse",
+  );
   if (!response) {
     throw new Error(
-      'This link does not contain a QuestionnaireResponse, so there are no answers to review.'
+      "This link does not contain a QuestionnaireResponse, so there are no answers to review.",
     );
   }
 
   return {
     response,
-    task: findInBundle<Task>(bundle, 'Task'),
-    provenance: findInBundle<Provenance>(bundle, 'Provenance')
+    task: findInBundle<Task>(bundle, "Task"),
+    provenance: findInBundle<Provenance>(bundle, "Provenance"),
   };
 }
 
@@ -420,29 +465,37 @@ export interface BuildReplyOptions {
  * The local `id` is dropped: it is identity assigned by the filler's own store and means nothing on the
  * requester's server. Wire shapes follow Platypus's `lib/shl-reply.ts` so both apps' replies read
  * identically to a receiver.
+ * @param response
+ * @param options
  */
 export function buildReplyBundle(
   response: QuestionnaireResponse,
-  options: BuildReplyOptions = {}
+  options: BuildReplyOptions = {},
 ): { bundle: Bundle; provenance?: Provenance } {
-  const { id: _id, ...withoutLocalId } = response;
+  const withoutLocalId = { ...response };
+  delete withoutLocalId.id;
 
   const attributed: QuestionnaireResponse = {
     ...withoutLocalId,
-    status: 'completed',
+    status: "completed",
     meta: {
       ...response.meta,
-      security: [...(response.meta?.security ?? []), { ...PATIENT_ASSERTED_SECURITY }]
-    }
+      security: [
+        ...(response.meta?.security ?? []),
+        { ...PATIENT_ASSERTED_SECURITY },
+      ],
+    },
   };
 
   const { bundle } = buildResponseBundle(attributed, options.requestTask);
   // `buildResponseBundle` always puts the response first, and its `fullUrl` is what a Provenance has
-  // to target — the response has no server id yet.
+  // to target - the response has no server id yet.
   const responseUuid = bundle.entry?.[0]?.fullUrl;
 
   const patientReference =
-    options.patientReference ?? response.author?.reference ?? response.subject?.reference;
+    options.patientReference ??
+    response.author?.reference ??
+    response.subject?.reference;
 
   if (!patientReference || !responseUuid) {
     // `Provenance.agent.who` is 1..1, so there is no valid Provenance to write without someone to
@@ -451,153 +504,222 @@ export function buildReplyBundle(
   }
 
   const provenance: Provenance = {
-    resourceType: 'Provenance',
+    resourceType: "Provenance",
     target: [{ reference: responseUuid }],
     recorded: options.recorded ?? new Date().toISOString(),
     agent: [
       {
         type: {
-          coding: [{ system: PROVENANCE_PARTICIPANT_TYPE, code: 'author', display: 'Author' }]
+          coding: [
+            {
+              system: PROVENANCE_PARTICIPANT_TYPE,
+              code: "author",
+              display: "Author",
+            },
+          ],
         },
-        who: { reference: patientReference }
-      }
-    ]
+        who: { reference: patientReference },
+      },
+    ],
   };
 
   return {
     bundle: collectionBundle([
       ...(bundle.entry ?? []).map((entry) => ({
         fullUrl: entry.fullUrl,
-        resource: entry.resource!
+        resource: entry.resource!,
       })),
-      { fullUrl: `urn:uuid:${newUuid()}`, resource: provenance }
+      { fullUrl: `urn:uuid:${newUuid()}`, resource: provenance },
     ]),
-    provenance
+    provenance,
   };
 }
-
-/**
- * Build the resource written into a one-shot write slot (channel D).
- *
- * A bare `QuestionnaireResponse`, not a Bundle: the capability addresses exactly one resource, so
- * there is nowhere to put a second one. Three consequences follow, and each is a deliberate trade
- * rather than an oversight:
- *
- *  - **No `Provenance`.** `meta.security` = `PATAST` is therefore carrying the whole attribution
- *    story, which is why it is stamped here and must survive the requester's write
- *    (`asNewResource` keeps it).
- *  - **No `Task` echo, so correlation moves onto `identifier`.** R4 allows `QuestionnaireResponse`
- *    only one, which is exactly enough for the request's `urn:uuid`. In practice the requester also
- *    knows *which slot* answered, so this is belt and braces for a reader holding only the resource.
- *  - **`subject` carries a display and no reference.** A filler names the patient in its own terms —
- *    Platypus uses a local vault key — and that reference resolves nowhere. On the record server that
- *    is a reconciliation for a human (`referenceResolves` exists for it); on the *slot* server it is
- *    a hard `HAPI-1094` that would fail the write outright and strand the answers. The name is what
- *    survives, and the requester reconciles it against the patient it addressed the request to.
- *
- * The local `id` is dropped here; {@link putResponseToSlot} sets the slot's own id, because a FHIR
- * update requires the body's id to match the URL.
- */
-export function buildWriteResponse(
-  response: QuestionnaireResponse,
-  options: { requestTask?: Task } = {}
-): QuestionnaireResponse {
-  const { id: _id, subject: _subject, author: _author, ...rest } = response;
-
-  const subjectDisplay = options.requestTask?.for?.display ?? response.subject?.display;
-  const requestIdentifier = options.requestTask?.identifier?.[0];
-
-  return {
-    ...rest,
-    status: 'completed',
-    ...(subjectDisplay ? { subject: { display: subjectDisplay } } : {}),
-    ...(requestIdentifier ? { identifier: requestIdentifier } : {}),
-    meta: {
-      ...response.meta,
-      security: [...(response.meta?.security ?? []), { ...PATIENT_ASSERTED_SECURITY }]
-    }
-  };
-}
-
-/** Statuses a QuestionnaireResponse carries when nobody has finished answering it. */
-const UNANSWERED_STATUSES = new Set<QuestionnaireResponse['status']>(['in-progress']);
 
 /**
  * Whether a decoded payload is a request to fill rather than a completed response.
- *
- * This used to read "a Questionnaire is present and a QuestionnaireResponse is **not**", and the
- * second half stopped being true when requests gained the option to carry pre-filled answers. Absence
- * was never much of a test anyway — it gave a cautious reader nothing to check, only something to not
- * find.
- *
- * The replacement keeps the Questionnaire as a necessary condition and reads the *status* of any
- * response present. `QuestionnaireResponse.status` is `1..1` in R4, so there is always something to
- * read, and `completed`, `amended` and `entered-in-error` are exactly the statuses that mean somebody
- * answered. A payload carrying a form and an unfinished response is an invitation with a head start; a
- * payload carrying a finished one is answers, whether or not the form came along with them.
- *
- * Every case the old rule got right, this one still gets right. A bare foreign response fails on the
- * missing Questionnaire, and a filler that echoes the form back alongside `completed` answers fails on
- * the status — which the old rule caught by absence and this one catches by inspection.
- *
- * Rejected alternatives, both of which look simpler and lose something:
- *
- *  - **`Task.status === 'requested'`.** Works for payloads this app mints, and breaks the ones
- *    `docs/response-links.md` is proudest of reading. A filler may legally drop the Task altogether,
- *    and a bare `QuestionnaireResponse` is a legal SHL payload; a rule that needs a Task misroutes
- *    exactly those.
- *  - **"a Questionnaire is present", full stop.** Loses the echoed-form protection above for nothing.
+ * @param bundle
  */
 export function isRequestBundle(bundle: Bundle): boolean {
-  if (findInBundle<Questionnaire>(bundle, 'Questionnaire') === undefined) {
+  if (findInBundle<Questionnaire>(bundle, "Questionnaire") === undefined) {
     return false;
   }
 
+  /*
+   * A request may now legitimately *carry* a QuestionnaireResponse, so the old test - a
+   * Questionnaire present and a response absent - would classify a pre-populated invitation as
+   * somebody's answers and refuse to open it. What separates the two is the status: a seeded
+   * response is `in-progress` and is the starting point for filling the form in, while anything
+   * further along is a reply to be reviewed.
+   */
   return (bundle.entry ?? [])
     .map((entry) => entry.resource)
     .filter(
       (resource): resource is QuestionnaireResponse =>
-        resource?.resourceType === 'QuestionnaireResponse'
+        resource?.resourceType === "QuestionnaireResponse",
     )
     .every((response) => UNANSWERED_STATUSES.has(response.status));
 }
 
-/** The Task's business identifier — the key a requester matches a returned response against. */
+/** Statuses a QuestionnaireResponse carries when nobody has finished answering it. */
+const UNANSWERED_STATUSES = new Set<QuestionnaireResponse["status"]>([
+  "in-progress",
+]);
+
+/**
+ * The Task's business identifier - the key a requester matches a returned response against.
+ * @param task
+ */
 export function taskCorrelationId(task: Task | undefined): string | undefined {
   return task?.identifier?.find((identifier) => identifier.value)?.value;
 }
 
 /**
+ * Which form a Task was asking for, as a canonical URL.
+ *
+ * `input[].valueCanonical` first, because that is the copy built to survive: {@link
+ * buildResponseBundle} drops `focus` on the return leg - it would dangle once the Questionnaire is
+ * gone from the Bundle - so a returned Task carries the canonical in `input` and nowhere else. The
+ * `focus` fallback is for a Task on the outbound leg, or one another producer built. A producer
+ * that put a Bundle-relative `urn:uuid` there yields exactly that, which resolves against no
+ * server - the honest outcome, and reported as one rather than guessed at.
+ * @param task the Task, in either direction, or undefined
+ * @returns the canonical, or undefined when the Task names no form
+ * @example
+ * taskQuestionnaireCanonical(returned); // "http://example.org/Questionnaire/q-715|1.0.0"
+ */
+export function taskQuestionnaireCanonical(
+  task: Task | undefined,
+): string | undefined {
+  return (
+    task?.input?.find((input) => input.valueCanonical)?.valueCanonical ??
+    task?.focus?.reference
+  );
+}
+
+/**
+ * The form a Task was asking for, as something to show a person.
+ *
+ * {@link buildRequestBundle} writes `Complete "<title>"` into `description`, so the title is
+ * recovered from it rather than showing the instruction as though it were a form name. Failing
+ * that, the canonical's last path segment is a worse name but still a name.
+ *
+ * `undefined` rather than a placeholder when the Task says nothing, because what to show instead
+ * differs by surface: a list row needs a label, and a review screen already has the questionnaire's
+ * own title to fall back on.
+ * @param task the request Task, in either direction
+ * @returns the best label the Task itself supports, or undefined when it supports none
+ * @example
+ * taskFormLabel({ description: 'Complete "Adult sepsis screening"' }); // "Adult sepsis screening"
+ */
+export function taskFormLabel(task: Task | undefined): string | undefined {
+  const description = task?.description;
+  if (description) {
+    return /"([^"]+)"/.exec(description)?.[1] ?? description;
+  }
+
+  const canonical = taskQuestionnaireCanonical(task);
+  if (canonical === undefined) {
+    return undefined;
+  }
+
+  return canonical.split("|", 1)[0].split("/").findLast(Boolean) ?? canonical;
+}
+
+/**
  * Canonical URL with version suffix, matching how QuestionnaireResponse.questionnaire is written.
  *
- * `undefined` for a Questionnaire with no `url` — legal FHIR, and not something callers can fix, so
+ * `undefined` for a Questionnaire with no `url` - legal FHIR, and not something callers can fix, so
  * they get to decide whether it matters. {@link canonicalOf} is the variant for callers that cannot
  * proceed without one.
+ * @param questionnaire
  */
-export function questionnaireCanonicalOf(questionnaire: Questionnaire): string | undefined {
+export function questionnaireCanonicalOf(
+  questionnaire: Questionnaire,
+): string | undefined {
   if (!questionnaire.url) {
     return undefined;
   }
 
-  return questionnaire.version ? `${questionnaire.url}|${questionnaire.version}` : questionnaire.url;
+  return questionnaire.version
+    ? `${questionnaire.url}|${questionnaire.version}`
+    : questionnaire.url;
 }
 
 function canonicalOf(questionnaire: Questionnaire): string {
   const canonical = questionnaireCanonicalOf(questionnaire);
   if (!canonical) {
-    throw new Error('Questionnaire has no canonical url.');
+    throw new Error("Questionnaire has no canonical url.");
   }
 
   return canonical;
 }
 
+export { questionnaireCanonical } from "./codec";
+
 /**
- * The canonical the filler should record on the response, preferring what the Task carried so the
- * request and the response agree even if the filler resolved the form some other way.
+ * The questionnaire a request is *about*, preferring what the Task says over what the form says.
+ *
+ * The Task's `input` is the request's own statement of which form it is asking for, and it survives
+ * a Questionnaire that arrived without a `url` - which happens, because a form assembled from
+ * modules need not carry one. Falling back to the Questionnaire keeps an older invitation, minted
+ * before the input was written, readable.
+ * @param payload the parsed request
+ * @returns the questionnaire canonical
+ * @example
+ * const canonical = canonicalFromRequest(parseRequestBundle(bundle));
  */
 export function canonicalFromRequest(payload: RequestPayload): string {
-  const fromInput = payload.task.input?.find((input) => input.valueCanonical)?.valueCanonical;
+  const fromInput = payload.task.input?.find(
+    (input) => input.valueCanonical,
+  )?.valueCanonical;
   return fromInput ?? canonicalOf(payload.questionnaire);
 }
 
-export { questionnaireCanonical };
+/**
+ * The answers as they should be written into a channel D slot.
+ *
+ * Three things are stripped and three are added, and each pairing is the same idea: what the filler
+ * knows about itself must not travel, and what the *record* will need must.
+ *
+ * `id` goes because the slot's own id is the address being written to, and
+ * `putResponseToSlot` puts it back; `subject` and `author` go because a reference minted on the
+ * filler's device names nothing on the requester's server and would be a dangling pointer at best.
+ * The subject's *display* is kept when the request named one, because a human collecting the
+ * answers needs to know whose they are.
+ *
+ * The request's identifier is copied on so that the collected answers can be matched back to the
+ * request they answer rather than to whichever browser happened to fetch them, and
+ * {@link PATIENT_ASSERTED_SECURITY} is added because a record has to be able to tell an assertion
+ * from a link-holder apart from a clinician's entry. Neither is something the reviewer should have
+ * to add by hand.
+ * @param response the completed answers
+ * @param options the request Task, when one is known
+ * @param options.requestTask the invitation's Task, for the subject display and identifier
+ * @returns the resource to `PUT` into the slot
+ * @example
+ * const body = buildWriteResponse(answers, { requestTask: payload.task });
+ */
+export function buildWriteResponse(
+  response: QuestionnaireResponse,
+  options: { requestTask?: Task } = {},
+): QuestionnaireResponse {
+  const { id: _id, subject: _subject, author: _author, ...rest } = response;
+
+  const subjectDisplay =
+    options.requestTask?.for?.display ?? response.subject?.display;
+  const requestIdentifier = options.requestTask?.identifier?.[0];
+
+  return {
+    ...rest,
+    status: "completed",
+    ...(subjectDisplay && { subject: { display: subjectDisplay } }),
+    ...(requestIdentifier && { identifier: requestIdentifier }),
+    meta: {
+      ...response.meta,
+      security: [
+        ...(response.meta?.security ?? []),
+        { ...PATIENT_ASSERTED_SECURITY },
+      ],
+    },
+  };
+}

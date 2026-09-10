@@ -1,343 +1,405 @@
 # Smart Forms Health Links
 
-Ask someone to fill out a FHIR questionnaire by handing them a scannable
+Ask someone to fill in a FHIR questionnaire by handing them a scannable
 [SMART Health Link](https://docs.smarthealthit.org/smart-health-links/), let them complete it on
-another device with no access to your servers, then review the answers and write them to your own
-FHIR server.
+another device with no account and no login, and have the answers land straight back in your own
+clinical system.
+
+The requester side is a **confidential SMART app**, launched from a SMART-enabled FHIR server by
+either an EHR launch or a standalone launch against a server the operator has registered. That one
+launched server is everything: the questionnaire catalogue, the patient list, the destination for
+responses and the store for request tasks. The only other service it names is a terminology server.
+
+Every secret lives in a server-side component. The confidential client's secret, the SMART Backend
+Services signing key, launch tokens and minted access tokens exist only there; the browser holds an
+opaque session cookie and nothing else.
 
 Built on [`@aehrc/smart-forms-renderer`](https://www.npmjs.com/package/@aehrc/smart-forms-renderer)
-from npm — the app has no build-time coupling to the
+from npm - the app has no build-time coupling to the
 [smart-forms](https://github.com/aehrc/smart-forms) monorepo. (One dev-only check script imports test
 fixtures from a sibling checkout; see [Checks](#checks).)
 
 ```bash
 npm install
-npm run dev          # http://localhost:5273
+cp .env.example .env                        # then read it; every secret is an op:// reference
+op run --env-file .env -- overmind start    # http://localhost:3000
 ```
 
-It works against public sandbox servers with no configuration, so a clone completes the whole round
-trip out of the box. **This is a demonstrator, not a product** — see
-[Known limitations](#known-limitations) before showing it to anybody, because the links it mints
-cannot currently be opened by third-party SHL wallets.
+**This is a demonstrator, not a product** - see [Known limitations](#known-limitations) before
+showing it to anybody, because a minted token is not bound to the invitation it travelled in.
 
 ## Contents
 
-- [Smart Forms Health Links](#smart-forms-health-links)
-  - [Contents](#contents)
-  - [What this demonstrates](#what-this-demonstrates)
-  - [Quick start](#quick-start)
-    - [Prerequisites](#prerequisites)
-    - [Walk the round trip](#walk-the-round-trip)
-      - [One machine, two windows (nothing to configure)](#one-machine-two-windows-nothing-to-configure)
-      - [Two devices, with the camera](#two-devices-with-the-camera)
-    - [What the demo writes, and where](#what-the-demo-writes-and-where)
-  - [What it does](#what-it-does)
-  - [The round trip](#the-round-trip)
-  - [Four ways to return answers](#four-ways-to-return-answers)
-    - [Reading a link this app did not write](#reading-a-link-this-app-did-not-write)
-    - [Why the reply is encrypted to a public key](#why-the-reply-is-encrypted-to-a-public-key)
-    - [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel)
-  - [Answers become resources](#answers-become-resources)
-  - [Pre-filling a form before you send it](#pre-filling-a-form-before-you-send-it)
-  - [Amendments are new resources](#amendments-are-new-resources)
-  - [Creating a patient at review time](#creating-a-patient-at-review-time)
-    - [The caching proxy, which is not a footnote](#the-caching-proxy-which-is-not-a-footnote)
-  - [How links work](#how-links-work)
-    - [Two consequences of using the fragment](#two-consequences-of-using-the-fragment)
-  - [Two transports, one interface](#two-transports-one-interface)
-    - [`sfhl:/` is legacy and decode-only](#sfhl-is-legacy-and-decode-only)
-  - [Three servers, three jobs](#three-servers-three-jobs)
-    - [Sent requests come from two places at once](#sent-requests-come-from-two-places-at-once)
-  - [Configuration](#configuration)
-    - [Pointing it at your own servers](#pointing-it-at-your-own-servers)
-    - [What happens when config is missing](#what-happens-when-config-is-missing)
-    - [Read and write are separate servers, with no fallback](#read-and-write-are-separate-servers-with-no-fallback)
-  - [SMART App Launch](#smart-app-launch)
-    - [What it buys](#what-it-buys)
-    - [A launch is required to write](#a-launch-is-required-to-write)
-    - [Setting it up](#setting-it-up)
-    - [Both launch patterns, one route](#both-launch-patterns-one-route)
-    - [The boundary, in one rule](#the-boundary-in-one-rule)
-  - [Deploying](#deploying)
-    - [Container and Kubernetes](#container-and-kubernetes)
-  - [Repo layout](#repo-layout)
-  - [Known limitations](#known-limitations)
-    - [⚠️ The links we mint cannot be opened by other SHL apps](#️-the-links-we-mint-cannot-be-opened-by-other-shl-apps)
-    - [Other limitations, by design or otherwise](#other-limitations-by-design-or-otherwise)
-  - [Checks](#checks)
-    - [`check:roundtrip` needs a sibling smart-forms checkout](#checkroundtrip-needs-a-sibling-smart-forms-checkout)
-  - [Notes](#notes)
-  - [Provenance](#provenance)
-  - [Licence](#licence)
+- [What this demonstrates](#what-this-demonstrates)
+- [Quick start](#quick-start) - install, configure, then walk the round trip end to end
+- [What it does](#what-it-does) - the browser routes and the server routes
+- [The round trip](#the-round-trip) - nine steps, with measured sizes
+- [Two ways to return answers](#two-ways-to-return-answers) - and why the direct send is primary
+- [How links work](#how-links-work)
+- [One server, one authority](#one-server-one-authority)
+- [Configuration](#configuration)
+- [Deploying](#deploying)
+- [Repo layout](#repo-layout)
+- [Known limitations](#known-limitations)
+- [Checks](#checks)
+- [Notes](#notes) - the gotchas worth knowing before changing anything
+- [Provenance](#provenance)
+- [Licence](#licence)
 
 ## What this demonstrates
 
 The repo exists to make six claims concrete, each of which is either non-obvious or contradicted by
 how SHL is usually described:
 
-1. **A whole FHIR Questionnaire fits in a QR code** — by reference, not by value. The GP Chronic
-   Condition Management Plan is 111 KB of JSON; the link that carries it is **271 bytes**, because
-   the form is encrypted, hosted, and named by a URL plus a key.
-2. **The filler needs no access to the requester's servers.** Everything required to render and
-   complete the form travels inside the encrypted payload. No login, no launch context, no network
-   path back to the EHR.
-3. **Answers can come back over SHL without going off-spec.** SHL is strictly one-directional and
-   defines no upload channel — so the return leg is *another SHL*, minted by the filler and scanned
-   by the requester, who performs the write themselves. See
-   [Four ways to return answers](#four-ways-to-return-answers).
-4. **A human reviews before anything is stored.** Answers arrive, get rendered read-only, and are
-   written only on accept. The one channel that skips review is off by default and labelled as such.
+1. **A whole FHIR Questionnaire fits in a QR code** - by reference, not by value. The GP Chronic
+   Condition Management Plan in `fixtures/` is 111,071 bytes of JSON; the link that carries it is
+   about **250 bytes**, because the form is encrypted, hosted and named by a URL plus a key.
+2. **The filler needs no account, no login and no configuration.** Everything required to render the
+   form, and everything required to send the answers, travels inside the encrypted manifest.
+3. **Answers can come back without waiting to be scanned, and without going off-spec.** SHL defines
+   no upload channel, so nothing is uploaded _to_ the link. A manifest fetch returns a second
+   encrypted file - `application/smart-api-access` - carrying a short-lived access token, and the
+   filler writes the answers into the clinic's own server with it. That is ordinary FHIR REST
+   authorised by an ordinary OAuth token; the novelty is only in how the token got there.
+4. **The send window starts when the patient opens the link, not when the clinic minted it.** The
+   token is minted fresh on every manifest fetch through a SMART Backend Services client, so a link
+   can live for thirty days while the credential inside it lives for an hour.
 5. **Reading a link somebody else wrote is the hard part**, and it is where a strict implementation
-   quietly loses data — bare resources instead of Bundles, multi-file manifests, passcode prompts,
+   quietly loses data - bare resources instead of Bundles, multi-file manifests, passcode prompts,
    unresolvable questionnaire canonicals. Each of those is legal SHL and each is handled. See
    [Reading a link this app did not write](#reading-a-link-this-app-did-not-write).
-6. **No new infrastructure is required.** An untrusted FHIR `Binary` endpoint is enough to host an
-   SHL payload, because the payload is a JWE and the key travels only in the link. There is no S3
-   bucket, no lambda, no manifest service. This is the claim with the outstanding hole in it: a HAPI
-   `Binary` rejects the `recipient` parameter the spec requires on a `U`-flag fetch, which is why
-   third-party wallets cannot open these links yet. See [Known limitations](#known-limitations).
-7. **A form can be pre-filled for a filler who cannot reach the record.** SDC populates at *fill*
-   time, inside a launched app — impossible here, because the filler holds no credential. Moving
-   `$populate` to *request* time is what makes pre-population and an offline filler possible at once,
-   and it applies to **112 of the 138** forms on the default catalogue. See
-   [Pre-filling a form before you send it](#pre-filling-a-form-before-you-send-it).
+6. **No third-party infrastructure is required.** The component that mints is the component that
+   hosts: the same server process that publishes the request task also serves the manifest. There is
+   no blob host, no relay, no manifest service to stand up and nobody else holding the ciphertext.
 
 It also serves as a worked example of interoperating with
-[Platypus](https://github.com/aehrc/platypus): its detection contract and its reply crypto are both
-reimplemented here and checked against transcriptions of its own code.
+[Platypus](https://github.com/aehrc/platypus): the manifest shape, the grant file and the submission
+transaction are the contract that app's direct-send feature implements, and its detection contract
+and reply crypto are both reimplemented here and checked against transcriptions of its own code.
 
 ## Quick start
 
 ### Prerequisites
 
-| | |
-| --- | --- |
-| Node | **22 or newer** (Vite 6 and the check scripts target `node22`) |
-| npm | ships with Node |
-| A browser | any current one; the scanner needs camera access and a secure context |
-| A FHIR server | **not required** — the defaults point at public sandboxes, including one that can complete a launch |
-| A sibling `../smart-forms` checkout | only for `npm run check:roundtrip`, which imports fixtures from it. Not needed to run the app |
+|                                                    |                                                                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Node                                               | **22 or newer** (Vite 6, the server bundle and the check scripts all target `node22`)              |
+| npm                                                | ships with Node                                                                                    |
+| [`overmind`](https://github.com/DarthSim/overmind) | runs the `Procfile` - the SPA and the server are two processes in dev                              |
+| [`op`](https://developer.1password.com/docs/cli/)  | resolves the `op://` references in `.env`; no secret is ever written to disk                       |
+| A registered FHIR server                           | **required.** There is no anonymous mode any more; see [the issuer registry](#the-issuer-registry) |
+| A browser                                          | any current one; the scanner needs camera access and a secure context                              |
+| A sibling `../smart-forms` checkout                | only for `npm run check:roundtrip`, which imports fixtures from it. Not needed to run the app      |
+
+### Configure
+
+Three things have to exist before the app will start.
 
 ```bash
-git clone https://github.com/aehrc/smart-forms-health-links.git
-cd smart-forms-health-links
-npm install
-npm run dev
+cp .env.example .env                       # process configuration and secret references
+cp config/issuers.example.json config/issuers.json
 ```
 
-Open <http://localhost:5273>. You should see a searchable list of Questionnaires read live from
-`smartforms.csiro.au`. If that list is empty the forms server is unreachable, and nothing else will
-work either — check it directly:
+`.env.example` is the authoritative list of environment variables and says what each one is for.
+`config/issuers.example.json` is the authoritative shape of the issuer registry. Neither example
+holds a secret value: the registry's secret-bearing fields hold `env:VARIABLE_NAME` references, and
+`.env` holds `op://` references that `op run` resolves into the process environment.
+
+Then register the app with the server, which for the demonstration instance is one idempotent
+command:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://smartforms.csiro.au/api/fhir/metadata
+op run --env-file .env -- npm run setup:aidbox
 ```
+
+That writes both client registrations - the confidential launch client and the Backend Services
+client - along with their access policies and some demonstration data. It is safe to re-run: the
+second application changes nothing. The full walkthrough against the validation instance, including
+what to check on the server afterwards, is in
+[`docs/aidbox-validation.md`](docs/aidbox-validation.md).
+
+### Run it
+
+```bash
+op run --env-file .env -- overmind start
+```
+
+Open <http://localhost:3000>. The `Procfile` starts two processes and they share that one origin:
+`web` is `npm run build -- --watch`, rebuilding `dist/` on save, and `server` is the Fastify BFF
+under `tsx watch`, serving `dist/` alongside the API.
+
+So you get rebuild-on-save rather than hot module replacement, and that is a deliberate trade rather
+than an oversight. The session is a cookie, `/launch` builds its `redirect_uri` from `APP_ORIGIN`, and
+the authorisation server is registered against that exact callback - so the browser comes back to the
+BFF's origin and the cookie is set there. A Vite dev server proxying the API would load the SPA on a
+second origin and then sign you in on the first one. One origin is the whole point of the BFF, and it
+costs HMR.
+
+You should land on a page asking you to connect. Pick a registered server, complete its
+authorisation, and you are signed in: the questionnaire list is the questionnaires that server holds.
+An empty list means that server holds no `Questionnaire` resources, not that anything is broken.
 
 ### Walk the round trip
 
 The whole point of the app is a loop between two devices, so it is worth walking it once. Do the
-**one-machine variant first** — it needs no setup at all — then the two-device one if you want to
-demo the QR codes.
+one-machine variant first, then the two-device one if you want to demo the QR codes.
 
-#### One machine, two windows (nothing to configure)
+#### One machine, two windows
 
-1. **Sign in.** Click **Launch** in the strip under the nav. The shipped config points at a
-   [smart-launcher-v2](https://github.com/aehrc/smart-launcher-v2) issuer with the practitioner and
-   patient pinned and both interactive screens skipped, so this completes without a single prompt and
-   the strip fills in with who you are and whose chart you are in.
-
-   You can skip it and keep browsing — `/patients`, `/responses` and `/requests` all read
-   anonymously — but you cannot get past step 3, because
-   [writing requires a launch](#a-launch-is-required-to-write).
-2. **Pick a form.** On `/`, search for something small to start with — `sepsis` or
-   `medications` — and click **Request** on a result. (`Fill` is the shortcut that skips the
-   request leg and just fills the form yourself.)
-3. **Say who it is for.** Already filled in from the chart you launched from. Searching the EHR and
-   clicking a different patient overrides it, which also makes step 9 succeed without reconciliation.
-   The two fields underneath still take a reference typed by hand, for a server the app cannot search.
-4. **Create request link.** The app encrypts the entire Questionnaire plus a `Task` into a JWE,
-   `POST`s it as a FHIR `Binary`, and shows you a QR code and a copyable `shlink:/…` URL. It also
-   publishes the `Task`, so the request now appears under **Sent requests**.
-5. **Copy the link** and open it in a second browser window — ideally a different profile or a
-   private window, to make the point that no shared state is involved.
-6. **Fill it in.** The second window resolves nothing from your servers; it decrypts the payload and
-   renders the form. Note the header: it names who asked and who it is addressed to.
-7. **Return as Health Link.** The filler encrypts the answers into *its own* SHL, hosts them, and
-   shows its own QR and link. Copy that.
-8. **Paste it into `/scan`** back in the first window. Reading it needs no infrastructure at all.
-9. **Review and accept.** The answers render read-only. The subject is probed against the EHR
-   first, so a patient the destination does not hold — or answers that name no patient at all —
-   surfaces as a question rather than a failed write or a silently unfiled record. Search the
-   destination for the right patient there and then — and if they are genuinely not there, create
-   them, which is offered once a search has come back empty. The answers only exist in the browser at
-   that point, so the picker is inline rather than a page you navigate to. On accept the app `POST`s the
-   `QuestionnaireResponse` and the `Task`.
-10. **Amend, if you have to.** The form stays read-only — see
-   [Amendments are new resources](#amendments-are-new-resources). *Amend these answers* opens an
-   editable copy and writes your changes as a **second** response authored by you, joined to the
-   first by a `Provenance`. Both versions survive, and the record says who wrote each.
-11. **Confirm it landed.** `/responses` lists the stored response, and the row on **Sent requests**
-   flips to **Accepted** — the scanned answers are matched back to the request on `Task.identifier`,
-   which is the one key that survives both copies.
+1. **Sign in.** Open the app origin, choose your server, complete the authorisation. If you arrived
+   by EHR launch instead, you are already signed in and any patient the launch named is remembered.
+2. **Pick a form.** On `/`, search the launched server's questionnaires and click **Request** on a
+   result. (`Fill` is the shortcut that skips the request leg and just fills the form yourself.)
+3. **Say who it is for.** Optional, but worth doing: search the launched server for the patient and
+   click them. An EHR launch that supplied a patient pre-fills this. The subject is what the grant
+   will name, so a request that names nobody produces answers filed against nobody.
+4. **Create request link.** The server publishes the request `Task` with your session's authority,
+   encrypts the invitation payload under a fresh link key, stores it, and hands back a QR code and a
+   copyable `shlink:/…` URL. The request now appears under **Sent requests**, because that list is
+   the published tasks.
+5. **Copy the link** and open it in a second browser window - ideally a private window, to make the
+   point that no shared state and no session are involved.
+6. **Fill it in.** The second window fetches the manifest, decrypts both files and renders the form.
+   The header names who asked, who it is addressed to, and - this is the new part - that the answers
+   will be sent directly to the destination, naming the host.
+7. **Send answers to `<host>`.** One confirmation, one transaction. The response is conditionally
+   created on the request identifier and labelled patient-asserted, a `Provenance` names the patient
+   as author, and the request task is completed with the response as its output.
+8. **Confirm it landed.** Back in the first window, `/responses` lists the stored response and the
+   row on **Sent requests** flips to completed. Nothing was scanned back and nothing was relayed.
+9. **Send again, from the still-open filler window.** The terminal state refuses: there is nothing
+   further to send. Replay the transaction by hand and the server still holds exactly one response,
+   because the conditional create is keyed on the request identifier.
 
 #### Two devices, with the camera
 
-Same steps, with the phone doing 6–7 and the laptop doing 8. Two things bite here:
+Same steps, with the phone doing 6 and 7. Two things bite here:
 
-- **The link points at `window.location.origin`**, which on the laptop is `http://localhost:5273` —
-  a URL the phone cannot open. Set `linkBaseUrl` in `public/config.json` to something the phone can
-  reach (your LAN IP, or a tunnel) before minting the link.
-- **The camera needs a secure context.** `localhost` qualifies; the same dev server opened by LAN IP
-  does not, so the phone will refuse to scan even though it can load the page. Use HTTPS or a tunnel
-  (`cloudflared tunnel --url http://localhost:5273`, `ngrok http 5273`) and set `linkBaseUrl` to the
-  tunnel URL. `/scan` has a paste box as the fallback on both sides.
-
-### What the demo writes, and where
-
-Out of the box, reads and writes go to the **CSIRO EHR sandbox** at `proxy.smartforms.io/fhir`, so
-the loop works with no setup and against the same data smart-forms itself uses. Reads go there straight
-from `responseServerUrl`; writes go there because that is the server the shipped launch launches
-*against*, behind its `v/r4/sim/…` facade. Two consequences:
-
-- Everything written there is **world-readable, shared with other CSIRO tooling, and wiped when the
-  AWS instance restarts** (roughly every 60–90 days). It is for demos. Do not put anything real in
-  it.
-- The **forms server stays read-only**, which is the whole point of keeping the two apart.
-
-Point `responseServerUrl` at your own server for anything beyond a demo. See
-[Configuration](#configuration).
+- **The link points at `window.location.origin`**, which on the laptop is `http://localhost:3000` -
+  a URL the phone cannot open, and an origin the manifest fetch would fail against. Set `linkBaseUrl`
+  in `public/config.json` to something the phone can reach (your LAN IP, or a tunnel) before minting.
+  `APP_ORIGIN` in `.env` has to agree with it, because the authorisation redirect goes there.
+- **The camera needs a secure context.** `localhost` qualifies; the same server opened by LAN IP does
+  not, so the phone will refuse to scan even though it can load the page. Use HTTPS or a tunnel
+  (`cloudflared tunnel --url http://localhost:3000`, `ngrok http 3000`) and point both `linkBaseUrl`
+  and `APP_ORIGIN` at the tunnel URL. `/scan` has a paste box as the fallback on both sides.
 
 ## What it does
 
-| Route              | Purpose                                                                     |
-| ------------------ | --------------------------------------------------------------------------- |
-| `/`                | Search and list Questionnaires on the forms server                          |
-| `/request/:id`     | Create an encrypted SMART Health Link containing a whole form               |
-| `/requests`        | Sent requests, and their status                                             |
-| `/responses`       | QuestionnaireResponses already stored on the EHR, read-only                  |
-| `/patients`        | Patients on the EHR — pick a request's subject, or filter responses          |
-| `/fill/:id`        | Fill a form directly and emit a Health Link from the answers                |
-| `/view#<link>`     | Open any link — **dispatches on payload**: fill a request, or review a response |
-| `/scan`            | Read a QR with the camera, or paste a link — **how answers come back**       |
-| `/launch/setup`    | What to register with an authorisation server, generated from this build     |
+### The browser routes
+
+| Route          | Session? | Purpose                                                                         |
+| -------------- | -------- | ------------------------------------------------------------------------------- |
+| `/`            | yes      | Search and list Questionnaires on the launched server                           |
+| `/request/:id` | yes      | Mint an invitation: publish the request `Task`, get back a link and a QR        |
+| `/requests`    | yes      | Sent requests, and their status, read from the published tasks                  |
+| `/responses`   | yes      | QuestionnaireResponses already stored on the launched server, read-only         |
+| `/patients`    | yes      | Patients on the launched server - pick a request's subject, or filter responses |
+| `/fill/:id`    | yes      | Fill a form directly, without the request leg                                   |
+| `/view#<link>` | no       | Open any link - **dispatches on payload**: fill a request, or review a response |
+| `/scan`        | no       | Read a QR with the camera, or paste a link - the fallback return path           |
+
+A session-gated route with no session renders a connect prompt rather than an error or an empty page,
+and says which of the two reasons it is: never launched, or the session has expired.
 
 `/view` deliberately decides what to show from the payload rather than the route, because a scanner
 cannot know whether it just scanned a request or a completed response. A link fragment arriving at
 the site root is forwarded to `/view` too, since `https://viewer.example.org#shlink:/…` is the
-conventional shape.
+conventional shape, and that forward happens ahead of the session gate: somebody arriving with a link
+is a filler and must never be asked to sign in.
+
+### The server routes
+
+One Fastify process serves all of this from one origin.
+
+| Route                        | Session? | Purpose                                                                                          |
+| ---------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `GET /launch`                | no       | EHR launch (`iss` + `launch`) or standalone (`iss` alone). Refuses an unregistered `iss` by name |
+| `GET /auth/callback`         | no       | Validates `state`, exchanges the code, sets the session cookie                                   |
+| `GET /api/session`           | yes      | Who is signed in, against which issuer, and until when                                           |
+| `POST /api/logout`           | yes      | Deletes the session row and clears the cookie                                                    |
+| `GET /api/issuers`           | no       | Registered servers for the standalone picker. Labels and issuer URLs only                        |
+| `ALL /api/fhir/*`            | yes      | Proxy to the session's FHIR base, with the access token attached server-side                     |
+| `POST /api/invitations`      | yes      | Mint an invitation: publish the task, encrypt and store the payload                              |
+| `POST /shl/:id`              | no       | The SHL manifest. Mints a fresh grant per fetch                                                  |
+| `GET /.well-known/jwks.json` | no       | The Backend Services client's public JWKS, registered as its `jwks_uri`                          |
+| `GET /health`                | no       | Liveness and readiness. Says nothing about configuration                                         |
+| `GET /*`                     | no       | The built SPA, with a rewrite to `index.html` for client-side routes                             |
+
+The proxy is the whole reason the browser needs no credential. The SPA issues
+`GET /api/fhir/Questionnaire?…` and the server appends the path to the session's FHIR base, attaches
+`Authorization: Bearer …` and passes the response back verbatim. Every requester read and write goes
+through it, including the write performed when somebody accepts a scanned response.
+
+`/api` paths that match no route answer as JSON, never as the SPA shell. A fetch client that gets an
+HTML page where it expected an API error fails somewhere much less informative than the request.
 
 ## The round trip
 
 ```
-REQUEST   requester hosts, real shlink:/
+MINT      requester's session authority, hosted by the requester's own server
   1. pick a Questionnaire, mint Task{status:requested, focus:Q, for:Patient}
-  1a. optionally $populate from the EHR, tick what to keep  -> QR{in-progress}
-  2. Bundle{Questionnaire, QR?, Task} -> JWE (alg:dir, enc:A256GCM)
-  3. POST /Binary                -> https://…/api/fhir/Binary/{id}
-  4. shlink:/{url, key, flag:"U"}   ~271 bytes, fits a QR
+  2. POST the Task to the launched server        -> .../Task/{id}
+  3. Bundle{Questionnaire, Task+taskUrl} -> JWE (alg:dir, enc:A256GCM), stored
+  4. shlink:/{url, key, exp, label}   ~250 bytes, fits a QR, no flag
 
-FILL      any device, no access to the requester's servers
-  5. GET the blob -> decrypt -> render (on top of the seed, if any) -> fill
-  6. Bundle{QuestionnaireResponse, Task{status:completed, output -> response}}
+OPEN      any device, no account, no login, no configuration
+  5. POST {url} {recipient}  -> manifest, two embedded files:
+       application/fhir+json          the invitation, sealed at mint time
+       application/smart-api-access   a token minted just now, expires_in 3600
+  6. decrypt both -> render -> fill
 
-RETURN    the filler mints its own shlink:/ and the requester scans it back
-  7. Bundle -> JWE -> the filler's own storage -> shlink:/ -> QR
-  8. requester scans or pastes it; reading needs no infrastructure
-  9. HUMAN REVIEWS the answers, read-only
- 10. on accept: POST /QuestionnaireResponse + POST /Task
+SEND      the filler writes to the clinic's server itself
+  7. POST {aud} Bearer <token>, one transaction:
+       QuestionnaireResponse  ifNoneExist=identifier=<request>   PATAST
+       Provenance             agent.who = the patient
+       Task/{id}              status:completed, output -> response   (PUT, ifMatch)
+  8. terminal state: accepted by <host>
+
+FALLBACK  when the window has closed, or the send was refused
+  9. the filler mints an inline sfhl:/ carrying the answers in the fragment;
+     the requester scans or pastes it into /scan, reviews the answers
+     read-only, and accepts under their own session
 ```
 
-Measured on the live server for the GP Chronic Condition Management Plan:
+Measured for the GP Chronic Condition Management Plan fixture, built through `buildInvitationBundle`
+and sealed with the app's own `encryptJwe`:
 
-| | bytes |
-| --- | --- |
-| Questionnaire | 111,319 |
-| Encrypted blob (hosted) | 149,521 |
-| **The link itself** | **271** |
-| Return payload (no Questionnaire) | 1,119 |
+|                                          | bytes   |
+| ---------------------------------------- | ------- |
+| Questionnaire                            | 111,071 |
+| Invitation Bundle (Questionnaire + Task) | 111,960 |
+| Encrypted invitation file                | 149,361 |
+| **The link itself**                      | **246** |
 
-## Four ways to return answers
+The link is small for the same reason it was before: it names the payload rather than carrying it.
+What changed is who holds the payload. `check:roundtrip` asserts a minted `shlink:` stays under 400
+bytes, which is the property that matters - past roughly 2 KB a QR code stops being scannable from
+across a desk.
+
+## Three ways to return answers
 
 **SMART Health Links are strictly one-directional.** Neither the
 [SHL spec](https://docs.smarthealthit.org/smart-health-links/spec/) nor the
 [HL7 links-specification](https://build.fhir.org/ig/HL7/smart-health-cards-and-links/links-specification.html)
 defines any submission, upload or writeback channel, and neither mentions questionnaires or requests
-for data at all. Using an SHL as a *return* transport is off-spec.
+for data at all. Nothing here changes that: nothing is ever uploaded to a link.
 
-The answer is that nothing off-spec is needed, because **the requester's own app performs the write**:
-a filler publishes a link, this app pulls it, shows a human, and only then writes to its own server.
-Answers travel the same way the request did — as a SMART Health Link, in the direction SHL already
-supports — and the return leg is just another scan.
+What the link carries instead is a **credential**, and the filler uses it to perform an entirely
+ordinary FHIR write against the clinic's own server. The return leg is therefore not an SHL feature
+at all - it is SMART Backend Services and a FHIR transaction, delivered through an SHL manifest
+because that is already an encrypted channel from the requester to whoever holds the link.
 
-| | A · return a link | B · write to our server | C · encrypted reply | D · write once to a slot |
-|---|---|---|---|---|
-| Who it suits | anything that can mint a link and show a QR | a filler that can reach our server | a filler that cannot get a QR back to us | a filler that cannot do C's crypto |
-| Needs from us | nothing | a writable FHIR endpoint | somewhere to `PUT` a file | a FHIR server we can create on |
-| Needs from them | mint a link, show a QR | `POST` | ECDH-ES + A256GCM | `PUT` |
-| Reviewed before it lands? | yes | **no** | yes | yes |
-| Host sees answers? | no, ciphertext only | yes — it is the record | no, ciphertext only | yes — but it is transport |
-| Answerable more than once? | yes | yes | yes, last wins | **no** |
-| Default | **on** | off (superseded by D) | off | off |
+|                           | Direct send                                       | One-shot write slot (channel D)                   | Scan-back                                     |
+| ------------------------- | ------------------------------------------------- | ------------------------------------------------- | --------------------------------------------- |
+| Who it suits              | anyone holding the link, on any device            | a destination with no Backend Services            | a filler whose send window has closed         |
+| Needs from the filler     | nothing                                           | nothing; a `PUT` and no crypto                    | nothing; the answers travel inside the link   |
+| Needs from the requester  | nothing beyond the registration                   | nothing; the BFF hosts the slot                   | somebody able to scan or paste                |
+| Reviewed before it lands? | no - the patient's own answers, labelled as such  | **yes** - the slot is staged off the record       | yes                                           |
+| Who performs the write    | the filler, with a scoped short-lived token       | the filler, into a pre-allocated resource         | the requester, with their session authority   |
+| Answers protected?        | encrypted in the manifest, TLS to the destination | TLS to the slot; the slot holds plaintext         | **no** - deflated into the URL, not encrypted |
+| Guaranteed once?          | no - idempotent by conditional create             | **yes** - `If-Match`, refused on the second write | n/a                                           |
+| Default                   | **primary**                                       | offered alongside                                 | fallback                                      |
 
-**A is the primary channel**, and it is the one [Platypus](https://github.com/aehrc/platypus) uses:
-the form is filled there, Platypus mints its own `shlink:/` carrying the QuestionnaireResponse, and
-the requester scans it back into `/scan`. Nothing has to be arranged in advance, so a request that
-offers it carries no extra fields at all — the invitation is just the form. What this app has to be
-good at is *reading* a link it did not write; see below.
+**The direct send is primary**, and it is the channel [Platypus](https://github.com/aehrc/platypus)
+implements. The scan-back path is the one that used to be primary, and it stays because it is the
+only path that works when the credential has expired or been refused. All three leave the answers on
+the filler's device until something has actually accepted them. The fallback is the weakest of the
+three on confidentiality - see
+[the fallback link is not encrypted](#the-fallback-link-is-not-encrypted).
 
-The honest cost is that A needs the requester physically able to scan something back. That is exactly
-what C exists for, and why C is deferred rather than deleted.
+**Channel D is the middle option, and it exists because the direct send has a precondition the world
+does not always meet.** A direct send needs the destination to be SMART-enabled _with Backend
+Services_ and registered in this deployment's issuer registry. Where it is not, there is no grant to
+put in the link at all. The slot needs none of that: the requester's own BFF pre-allocates an empty
+`QuestionnaireResponse`, the invitation names its URL, an `If-Match` ETag and a write token, and a
+filler holding the link may `PUT` the completed answers there exactly **once**. The second attempt
+collides with the first version and is refused, which makes "once" a property of the exchange rather
+than of anyone's good behaviour.
 
-**C is implemented, tested, and off by default** (`enableEncryptedReply`). A reply slot is minted
-alongside the request and the answers come back encrypted to a key that never leaves this browser.
-Turn it on when a filler may have no way to show you a QR code. Note the asymmetry: the flag governs
-only what this app *mints*. A request from a third party that offers a reply descriptor is still
-answerable here regardless, because refusing to honour someone else's return channel would strand
-their answers rather than protect anyone.
+It also keeps the one posture the direct send gives up. Answers written into a slot are **staged, not
+filed**: the requester collects them, a human reads them, and only then are they written to the
+record. That review gate is the difference between this channel and the refused channel B, and it is
+why the slot must not live on the record server. The cost is that the slot holds plaintext, so its
+host - this app - can read the answers. Channel C exists precisely so that cannot happen, and is
+still the right choice where the host is not trusted with the content.
 
-**D is C's answer for a filler that cannot do crypto**, and is on in the shipped config
-(`enableOneShotWrite`). The request pre-allocates an empty `QuestionnaireResponse` on the blob server
-and carries its address, the version it is at, and a token. The filler `PUT`s the answers there with
-`If-Match`; the requester polls the slot, reviews, and only then writes to the record. Turn it on
-alongside or instead of C when the fillers you expect can manage a `PUT` and not much more.
+The slot used to be minted on a third-party blob host. It is now served by the BFF at
+`/shl/slot/:id`, which is what let the blob host go, and which upgraded the write token from advisory
+to enforced: a plain FHIR server ignores a bearer token it does not understand, and this one does
+not.
 
-Two things about D that are easy to get wrong, and both are load-bearing:
+### The grant, and why it is minted per fetch
 
-- **"Once" comes from `If-Match`, not from the token.** The second write collides with the version the
-  first one created and the server refuses it — verified live against public HAPI, which answers
-  `HAPI-0989: Trying to update QuestionnaireResponse/… but this is not the current version`. A plain
-  FHIR server has no notion of bearer tokens and ignores ours entirely; it is carried because it is
-  the field a gating host would check, and it is **advisory** anywhere else. Nothing in this app
-  implies otherwise.
-- **The slot is not on the record server.** It is minted on `blobServerUrl` — transport, the same
-  trust class as the host already holding the encrypted payload — so answers are collected and
-  reviewed before anything reaches a record. Point it at the record server and you have rebuilt B.
+The second manifest file is `application/smart-api-access`, and its plaintext is small:
 
-The cost, stated plainly: **the slot host sees the answers.** They are ordinary FHIR, not ciphertext.
-That is the trade for a channel a filler can implement in an afternoon, and it is why C is not
-retired.
+```json
+{
+  "access_token": "<opaque>",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "aud": "https://sczsqtqcgi.aidbox.app/fhir",
+  "patient": "pt-1"
+}
+```
 
-**B is superseded by D and should not be turned on for anything new.** It declares
-`sdc-questionnaire-endpoint` on the form and publishes the request's `Task`, so a filler holding
-nothing but the link can `POST` a response straight into the configured server. That is ordinary SDC
-and needs no infrastructure, but it names a record server, carries no capability, cannot be made
-single-use, and the answers arrive unreviewed. Off unless `enableServerReturn` is set.
+`patient` is present exactly when the request named a destination patient. `aud` is the launched
+server's FHIR base and is the only origin the token is ever presented to.
 
-The wire format for B, C and D is specified in [`docs/shl-form-reply-channel.md`](docs/shl-form-reply-channel.md);
-what this app accepts as an inbound response link is in [`docs/response-links.md`](docs/response-links.md).
-Both are written so a third party can implement against them without reading this source.
+**The token is minted when the manifest is fetched, not when the link was minted.** That single
+decision is what makes the arithmetic work. A link has to live long enough to be posted, printed or
+forwarded - the default is thirty days - and a token that lived that long would be a thirty-day
+write credential sitting in a QR code. Minting per fetch decouples the two: the link lives for a
+month, the credential lives for an hour, and the hour starts when the patient opens the form rather
+than when the clinic sent it. Two fetches produce two different tokens, which is a property the
+tests assert rather than an accident.
+
+The cost is that the server has to keep the link key, because the grant has to be encrypted under it
+long after minting. So the host can decrypt its own invitations. That is a real departure from the
+usual SHL posture of a blind host, and it was accepted deliberately: the alternative was multi-day
+tokens.
+
+**A mint failure degrades rather than fails.** If the authorisation server is down or has
+deregistered the Backend Services client, the manifest still serves the invitation file on its own.
+The form still opens, the filler falls back to the scan-back return, and the failure is counted
+server-side for the operator rather than shown to the patient - who can do nothing about it.
+
+### What the write looks like
+
+One transaction, and every rule about its shape is decided in one function
+(`buildSubmissionTransaction` in `src/fill/directSend.ts`) so that a rule can be read off rather than
+reconstructed from a request pipeline:
+
+- The **response** is a conditional create - `ifNoneExist=identifier=…` on the request's durable
+  identifier - carrying the `PATAST` patient-asserted security label and no filler-local
+  identifiers. Sending twice therefore leaves one response.
+- The **provenance** names the patient as author and targets the response by its `fullUrl`.
+- The **task** is completed with the response as its output, and only under three conditions: its
+  published address is on the grant's own origin, a pre-send read found it still actionable, and
+  that read returned a version to `ifMatch` against. Anything else means no task entry and the
+  answers go anyway. Losing the status flip costs the requester a tidy list; losing the answers costs
+  a patient the time they spent typing them.
+
+The credential goes to exactly one origin. Both requests use `redirect: "manual"`, because a
+destination that answers with a redirect has told the browser to present the request somewhere else,
+and following that would hand a write credential for a clinical record to whoever controls the
+target - while reporting the answers as delivered. A published task URL that is not on the grant's
+origin is not fetched at all, not even to see whether it would have worked.
+
+The exact wire shapes are fixed by the interoperability contract, not by this implementation, because
+a Platypus build has to produce and consume the same thing.
 
 ### Reading a link this app did not write
 
-Since the return leg is now somebody else's link, decoding is deliberately tolerant in four ways.
-Each of these describes a link that is entirely legal and that a stricter reader rejects or silently
-truncates:
+A link from a third-party filler is a SMART Health Link this app did not write, and the answers in it
+are worth having. Decoding is therefore deliberately tolerant in four ways. Each of these describes a
+link that is entirely legal and that a stricter reader rejects or silently truncates:
 
-- **A bare resource, not just a Bundle.** An SHL manifest file is `application/fhir+json` — any FHIR
+- **A bare resource, not just a Bundle.** An SHL manifest file is `application/fhir+json` - any FHIR
   resource. A filler that parks a bare `QuestionnaireResponse` has done nothing wrong, so it is
   normalised into a Bundle rather than refused.
-- **Every FHIR file in a manifest, merged.** A payload split across files — the answers in one, the
-  `Provenance` attributing them in another — is one payload, not a choice between them. Taking only
+- **Every FHIR file in a manifest, merged.** A payload split across files - the answers in one, the
+  `Provenance` attributing them in another - is one payload, not a choice between them. Taking only
   the first would drop the `PATAST` attribution that makes a reply safe to store. Content types are
   matched after stripping any `;charset=…`.
 - **A passcode prompt, not a dead end.** A `P`-flagged link asks before it knocks: the prompt appears
@@ -345,956 +407,625 @@ truncates:
   failed attempt and lock the link permanently. `remainingAttempts` is surfaced when the server sends
   it.
 - **A raw-answers table when the form cannot be resolved.** A response cites whatever canonical the
-  app that wrote it used, and on a shared server that is frequently a form this deployment's
-  catalogue does not hold. That is the *expected* case, not an exceptional one. The answers are the
-  clinical content and the definition is presentation, so the review still works and saving is still
-  enabled.
+  app that wrote it used, and that is frequently a form the launched server does not hold. That is
+  the _expected_ case, not an exceptional one. The answers are the clinical content and the
+  definition is presentation, so the review still works and saving is still enabled.
 
 A file that will not decrypt costs its own content, not the whole link. Anything skipped is reported
-on screen rather than to the console — the only person who can judge whether a dropped file mattered
+on screen rather than to the console - the only person who can judge whether a dropped file mattered
 is the one reading the answers.
 
-### Why the reply is encrypted to a public key
+### What went, and what is merely tolerated
 
-An invitation is usually a QR code, so anyone who photographs it holds everything inside it. A
-symmetric reply key carried in the invitation would therefore let a bystander read the answers sent
-back. Channel C encrypts to a **public** key (ECDH-ES + A256GCM, P-256) whose private half never leaves
-the requester, so a leaked invitation can at worst destroy a reply, never read one. This follows
-Platypus's design, which got this right.
+Two return channels this app used to offer are **no longer minted**:
 
-The honest limit: with a reply slot hosted as a plain FHIR `Binary`, **anyone who can reach that server
-can overwrite a pending reply** — and where resource ids are sequential, without even having seen the
-link. They cannot read it. The descriptor reserves a `replyToken` field for hosts that can gate writes,
-which needs no change to the wire format.
+- **The anonymous server write.** An invitation declared `sdc-questionnaire-endpoint` on the form and
+  a filler holding nothing but the link could `POST` a response into the named server. The grant
+  replaces it and is strictly better: a token that expires and is scoped to four operations, rather
+  than an endpoint that has to accept anonymous writes from anyone.
+- **The encrypted reply slot.** A slot was minted alongside the request and the answers came back
+  encrypted to a public key whose private half never left one browser. Its requester half is gone -
+  no slot to create, no key to hold, no polling, and nothing to export between browsers.
+
+Both are **still honoured on inbound links**. A request from another producer that declares a reply
+descriptor is still answerable here, because refusing to honour someone else's return channel would
+strand their answers rather than protect anyone. The design record for both channels, and which of
+them this app now mints, is in
+[`docs/shl-form-reply-channel.md`](docs/shl-form-reply-channel.md); what counts as an inbound
+response link, and the token channel's own wire summary, is in
+[`docs/response-links.md`](docs/response-links.md). Both are written so a third party can implement
+against them without reading this source.
 
 ### And why the write itself is not novel
 
-The write itself is not novel: `POST /QuestionnaireResponse` is core FHIR REST and exactly SDC's Form
-Receiver model. SDC even specifies the destination, via
-`http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint` — which this app honours
-(including its "send to all listed endpoints" rule) and which smart-forms lists as unsupported.
+`POST /QuestionnaireResponse` is core FHIR REST and exactly SDC's Form Receiver model. SDC even
+specifies the destination, via
+`http://hl7.org/fhir/StructureDefinition/sdc-questionnaire-endpoint` - which this app honours on the
+scan-back accept path (including its "send to all listed endpoints" rule) and which smart-forms
+lists as unsupported.
 
 **Correlation runs from the Task outward**, because R4 gives QuestionnaireResponse no way to point at
 a Task: `basedOn` accepts only `CarePlan|ServiceRequest`, `partOf` only `Observation|Procedure`, and
 `identifier` is `0..1`. So `Task.focus` names the Questionnaire, `Task.output.valueReference` names
-the response, and the Task round-trips inside the Bundle. Its `identifier` is the durable key — the
-`urn:uuid` references do not survive the trip, but that does.
+the response, and the Task round-trips inside the Bundle. Its `identifier` is the durable key - the
+`urn:uuid` references do not survive the trip, but that does, and it is also the conditional-create
+key that makes a replayed send idempotent.
 
-**`Task.focus` names the Questionnaire by canonical, and this is load-bearing.** A `urn:uuid` pointing
-at the Bundle entry is arguably better FHIR, and is what this shipped before — but it stops meaning
-anything once the Bundle is taken apart, so a filler holding only the Task cannot say which form it
-has. `focus.type` is `Questionnaire`, and the two **must change together**: readers exist that
-short-circuit on `focus.type === 'Questionnaire'` and stop consulting `Task.input`, so a `type`
-alongside a `urn:uuid` reference is worse than neither — it silently costs a third-party filler its
+**`Task.focus` names the Questionnaire by canonical, and this is load-bearing.** A `urn:uuid`
+pointing at the Bundle entry is arguably better FHIR, and is what this shipped before - but it stops
+meaning anything once the Bundle is taken apart, so a filler holding only the Task cannot say which
+form it has. `focus.type` is `Questionnaire`, and the two **must change together**: readers exist
+that short-circuit on `focus.type === 'Questionnaire'` and stop consulting `Task.input`, so a `type`
+alongside a `urn:uuid` reference is worse than neither - it silently costs a third-party filler its
 Task, its addressing and every return channel, while the form still opens. `check:roundtrip` asserts
-that half-change is *not* detectable, so anyone who reintroduces it finds out here rather than at a
+that half-change is _not_ detectable, so anyone who reintroduces it finds out here rather than at a
 connectathon.
 
-**Hosting the encrypted blob on a public server is the design, not a shortcut.** SHL assumes an
-untrusted host: the file is a JWE and the key travels only in the link, so the host never sees
-plaintext. That is why a FHIR `Binary` on an open server is a legitimate file host and no
-S3/lambda tier is required. It is also, for a different reason, currently the thing that stops
-third-party wallets opening these links — see [Known limitations](#known-limitations).
-
-## Answers become resources
-
-A stored form is a document, and the next clinician will not read it to find out whether their patient
-has asthma — they will look at the problem list. So on the review screen, under **Accept and save**,
-the app shows what these answers *mean* as FHIR resources and lets the reviewer tick which of them
-belong in the record.
-
-```
-☑ Chronic kidney disease stage 3B (disorder)   new    Condition
-☑ Acute coronary syndrome                      new    Condition
-☐ Urinary tract infection                      new    Condition
-☑ Type 2 diabetes mellitus                     new    Condition
-
-[Select all] [Clear]        7 of 8 selected
-                            [Accept, save and write back 7]
-```
-
-This is [SDC form data extraction](https://build.fhir.org/ig/HL7/sdc/extraction.html), and both
-mechanisms the app supports run **entirely in the browser**: template-based via
-`@aehrc/sdc-template-extract`, observation-based via functions the renderer already exports. No
-`$extract` endpoint, no StructureMap transform server, nothing added to the deployment. That last part
-matters, because the sixth claim above says this app needs no new infrastructure and this feature had
-to keep it true.
-
-On the default forms server that covers **31 of 138 forms** — 26 template-based, 5 observation-based.
-For the other 107 the panel does not appear at all, which is deliberate: an empty write-back box reads
-as *"this form found nothing clinically relevant"*, a much stronger claim than *"this form has no
-templates"*.
-
-Three things here are decisions rather than mechanics.
-
-- **Extraction runs on the *reconciled* answers, never on the answers as they arrived.** This is the
-  one part with no counterpart in smart-forms, which extracts from a response it populated itself and
-  so always has the right patient. Here the answers come from a stranger's phone naming the patient in
-  *that* app's terms, and a `Condition` filed against a local vault key is either rejected outright or,
-  worse, filed against nobody. Repointing the patient re-runs the extraction; it does not patch up the
-  old one. `retargetSubject` is a second, narrower net for templates that reach past
-  `%resource.subject`.
-- **The response is written first, and a failed write-back is a warning.** The answers are the clinical
-  content and the thing the reviewer accepted; the extracted resources derive from them. Losing the
-  second half leaves a record that is merely less convenient. Losing the first would leave Conditions
-  on a chart with no document saying where they came from.
-- **The selected entries go as one `transaction`, POSTed to the server base.** All or nothing, which is
-  the honest shape for a set of resources a human ticked as a group. When a transaction is refused
-  *nothing* was written, including entries whose own status looks successful — and the panel says so
-  rather than listing them as saved.
-
-A FHIRPatch entry — six forms on the default server emit them — is one row saying how many changes it
-carries, not a sub-list. Asking a clinician to choose between JSON Patch operations against a resource
-the screen cannot show them is asking a question they have no way to answer well.
-
-This is the only reason the app asks for `u` on any scope. It still never deletes anything, and the
-resources it *authors* stay create-only — which is what the next section is about.
-
-Turn it off with `enableWriteBack`. Full detail in [`docs/write-back.md`](docs/write-back.md).
-
-## Pre-filling a form before you send it
-
-A patient asked to complete a chronic disease management plan already exists in the record that asked
-them. Their name is on file, so is their date of birth, so is the problem list the plan is about.
-Asking them to type it again is asking them to re-key data the requester is holding.
-
-SDC solves this with `$populate`, and puts it in a place this app cannot use. Population normally runs
-at **fill** time inside a launched app, resolving each item's `x-fhir-query` against the EHR just
-before the form is drawn. The filler here has no credential and no route to those servers — claim 2,
-and the reason the whole thing works across an air gap.
-
-So population moves to the **requesting** side, which is the only side that has a launch context, a
-token and a path to the record. The answers are sealed into the encrypted payload as a seed
-`QuestionnaireResponse`, and nothing about the filler's position changes: they still hold only a link,
-and they still own every answer on the form the moment they open it.
-
-**The clinician sees it before it goes.** Populating produces a proposal, not a decision — every
-answer found is listed, grouped by section with repeating instances numbered, and anything the patient
-should answer themselves or the record has wrong is unticked. Only what is still ticked is sealed.
-Untick everything and the form goes out blank. The posture is the write-back panel's, at the other end
-of the round trip: everything ticked on arrival, because removing what does not belong is a smaller
-question than assembling the set from nothing.
-
-| | |
-| --- | --- |
-| Forms declaring population machinery | **112 of 138** |
-| Forms declaring template-based extraction, for comparison | 25 |
-| GP Chronic Condition Management Plan | 12 answers, 15 reads, ~250 ms |
-| Payload growth | +2.2% — 2.4 KB of seed on 109 KB of form |
-| Link size | unchanged |
-
-Two things this costs, neither of them solved:
-
-- **The payload stops being harmless.** A request used to carry a public Questionnaire and a name; a
-  pre-filled one carries an extract from a chart. The cryptography is unchanged, but what a leaked
-  link costs is not — and SHL's model is that the link *is* the credential.
-- **`PATAST` becomes less true.** Answers return stamped patient-asserted, including ones the patient
-  scrolled past. This is the mirror image of what [amendments](#amendments-are-new-resources) exist to
-  prevent. The request records that it went out pre-filled and both `/requests` and the review screen
-  say so, which is not the same as knowing which answers were touched.
-
-`enablePrePopulate` is off in the fallback config for the first reason. It is on in the shipped one
-because that points at a sandbox of synthetic patients, and even then two deliberate acts are needed:
-a SMART launch, and ticking the box on the request.
-
-Two mechanisms were compared, and the choice turned on a measurement. Baking answers into
-`Questionnaire.item.initial` needs no wire change and any conformant SDC renderer would honour it for
-free — but `initial` sits on the item *definition*, so N instances of a repeating group collapse to
-one. Across the AU Core / 715 / GP plan family, 40–46% of populated items sit under repeating groups.
-A medications table showing 1 of 8 rows looks complete. The seed carries all of it.
-
-Full detail, including the scope trap that makes a refused read look like an empty record, is in
-[docs/pre-population.md](docs/pre-population.md).
-
-## Amendments are new resources
-
-The review screen renders the incoming form **read-only**, and that is a design decision rather than a
-missing feature. It is the first thing people try to change, so it is worth setting out why.
-
-Answers arriving over the encrypted channel carry two claims about who said them: `meta.security` =
-`PATAST`, and a `Provenance` naming the patient as author. `submit.ts` deliberately preserves both on
-save. Editing the answers in place and writing them under those would file words the reviewer typed as
-words the patient asserted, and nothing downstream could separate the two.
-
-So the original is stored exactly as it arrived, and an amendment is a **second**
-`QuestionnaireResponse`:
-
-| | original | amendment |
-| --- | --- | --- |
-| `author` | absent, or the filler's | the reviewer, by name — required before the button enables |
-| `source` | the patient | **still the patient** — they did answer the questions |
-| `meta.security` | `PATAST` | `PATAST` removed; every other label, tag and profile kept |
-| `item` | as given | as edited |
-
-The two are joined by a `Provenance` with `activity` = v3 `UPDATE` and `entity.role` = `revision`
-pointing at the original. It has to be a Provenance because R4 offers nothing better:
-`QuestionnaireResponse.partOf` takes only `Procedure|Observation` and `basedOn` only
-`CarePlan|ServiceRequest`, so neither can name the response being revised. This is the same shape as
-the correlation problem in [And why the write itself is not novel](#and-why-the-write-itself-is-not-novel),
-and it has the same cause.
-
-Three details that are easy to get wrong:
-
-- **`author` and `source` are not the same field.** `author` is who *recorded* the answers, `source` is
-  who *answered* them. The amender becomes the author of their version; `source` rides through
-  untouched, because overwriting it would erase that a patient answered at all.
-- **`PATAST` is dropped from the amended copy, not from the original.** An amended document is no
-  longer wholly the patient's words, so carrying the label across would assert something false about
-  the parts that changed. Removing it understates the other direction — most of the content usually
-  *is* patient-asserted — but that error is recoverable through the Provenance, and the other is not.
-- **The `Provenance` failing is not a footnote here.** On the inbound path a lost Provenance costs
-  attribution accompanying the clinical content, so it is warned about and shrugged off. On this path
-  it is the *only* thing joining two otherwise unrelated responses, so a failure is reported as an
-  error telling the reviewer they have an orphan to fix by hand.
-
-Amending twice chains: the second revises the first, not the original. And the original's `versionId`
-is never bumped, which `check:amend` asserts by re-reading it — a server-side fact that no amount of
-reading the code will prove.
-
-## Creating a patient at review time
-
-Answers come back for somebody the destination server has never heard of more often than the design
-admits — a walk-in, a new referral, anyone not yet registered. Until there was a way to create them,
-the only remaining option was *save without a subject*, which files the answers against nobody,
-permanently.
-
-So the picker offers a fourth way out, and the ordering is the whole safety story. There is no master
-patient index here and no fuzzy matching, and **a duplicate patient record is a worse outcome than a
-slow reconciliation** — a person's history split across two records, with nothing to notice it. What
-the design has instead is sequence: searching happens first, creating is the way out of an empty
-result, and before the write the form re-searches the family name alone, because the reviewer probably
-searched a full name and the server may spell the rest differently. A hit there is shown as a warning
-with the matching records offered as one-click alternatives, never as a block — two people really can
-share a surname.
-
-**Every field is typed by a human, and that is forced by the wire format rather than chosen.** No
-channel carries demographics: `parseResponseBundle` extracts only the QuestionnaireResponse, its Task
-and its Provenance, and a `Patient` entry in a bundle is dropped. The most that can travel is a
-free-text name in `subject.display` — which this app previously discarded and now reads, purely to
-seed a field a human checks. It is still never carried onto a reference: `reconciledResponse` replaces
-the display rather than merging it, and a created patient is labelled with the name *the destination
-server now holds*.
-
-What the created record carries, and does not:
-
-| | |
-| --- | --- |
-| `name.family` | **required** — `searchPatients` sorts and searches by it, so a record without one is invisible to the very picker that would have to find it next time |
-| `name.given` | optional, split from the seed name — the split is a guess, shown in two editable fields rather than applied silently |
-| `birthDate`, `gender` | optional, and omitted entirely when blank. A cleared `<input type="date">` yields `''`, which is not a FHIR `date` |
-| `identifier` | **never**. The one field where a typo makes a false claim that silently mis-matches records elsewhere. There is no HI Service lookup here and no authenticated user |
-| `name.text` | **never**. `patientDisplay` falls back to the joined parts, so omitting it costs nothing and removes the trap of `text` and the parts disagreeing |
-| `name.use`, `active` | **never**. Both are claims nothing here can support |
-
-Created on the *destination* server — `destinations[0]`, the same one the subject probe uses — because
-a reference is only worth anything on the server the answers will be stored on, and a questionnaire
-declaring its own `sdc-questionnaire-endpoint` sends the write elsewhere. With several destinations the
-others stay best-effort, and the panel says so.
-
-The `Patient` is `POST`ed on click rather than bundled into the save. That leaves an orphan if the
-reviewer then abandons the review, which is the honest cost of the alternative being worse: a
-`transaction` Bundle would make a Task the server dislikes lose the clinical content, demands
-transaction support from an arbitrary `sdc-questionnaire-endpoint`, and would never let the reviewer
-see the reference before committing to it. A patient with nothing filed against them is the least
-harmful orphan available; the one worth preventing is a duplicate, and only the search-first ordering
-prevents that.
-
-### The caching proxy, which is not a footnote
-
-`searchPatients` sends `Cache-Control: no-cache`, and the reason is worth knowing before anyone
-removes it. The default response server sits behind a caching proxy that stores search responses
-**including empty ones**. Search for a patient who does not exist, create them, repeat the same
-search, and the proxy replays the negative result — `x-cache: HIT` — so the patient just created
-appears not to exist. That is precisely the state that produces a second record. `check:patient`
-repeats the *identical* search that came back empty rather than varying it to dodge the cache, since
-a variation would test something nobody experiences.
-
-Belt and braces, the picker also pins what it created into its own list, so the UI stays truthful
-against a server with a genuine indexing lag rather than a cache.
+**The invitation Task carries one extension the filler needs**, naming the published task's absolute
+address on the launched server. Without it there is nothing to complete; with it pointing anywhere
+other than the grant's origin, a correct filler skips the task leg rather than presenting a
+credential off-origin.
 
 ## How links work
 
-A link carries **answers by value and the form by reference**:
+Two link shapes exist, and which one is used is no longer a setting. An invitation is always a
+hosted SMART Health Link, minted by the server; a filler's return is always an inline link, minted
+in the page. Reading tries every registered codec, so either opens.
+
+### The invitation link
+
+Minted links are ordinary manifest-mode SMART Health Links. The payload names a manifest URL on this
+app's own origin and carries the key that decrypts what comes back:
 
 ```
-https://host/view#sfhl:/<base64url(deflate-raw(json))>
+shlink:/<base64url({"url":"https://links.example.org/shl/<id>","key":"<43 chars>","exp":…,"label":"…"})>
 ```
 
-The Questionnaire is never embedded — the Aboriginal and Torres Strait Islander Health Check
-questionnaire alone is ~821 KB, far past what any QR code can hold. Instead the payload holds a
-FHIR `collection` Bundle containing the QuestionnaireResponse, whose `questionnaire` canonical is
-resolved against the forms server when the link is opened.
+There is **no flag**. `U` would mean a single file fetched with a plain `GET`, which cannot carry a
+grant minted per fetch and cannot carry two files; omitting it means a manifest fetched by `POST`.
+That also matches the fixtures the Platypus contract is pinned against.
 
-Measured against real QuestionnaireResponse fixtures (`npm run check:roundtrip`):
+Two consequences worth stating, because the previous design had the opposite trade:
 
-| Fixture                         | Raw JSON | Link   | QR level |
-| ------------------------------- | -------- | ------ | -------- |
-| QRSepsisRisk                    | 1,793 B  | 1,016 B | M       |
-| QRRegularMedications            | 3,513 B  | 987 B   | M       |
-| QRMedicalHistoryCurrentProblems | 6,993 B  | 1,495 B | M       |
+- **The links can be revoked and varied**, at least in principle - the host is ours, the id is a
+  database row, and an expired invitation is refused. An unknown id and an expired id give the same
+  404, so the route is not an oracle for which links have ever been minted.
+- **A passcode is now structurally possible**, since `P` is only excluded by `U`. Nothing implements
+  one yet; reading a passcode-protected manifest already works.
 
-A version-40 QR holds 2,331 bytes at error-correction level M and 2,953 at level L, so the
-practical ceiling is roughly **14 KB of raw response JSON**. Past that the QR is refused but the
-link still works — the UI falls back to copying it.
-
-Compression is the browser's native `CompressionStream('deflate-raw')`; there is no pako/fflate
-dependency.
-
-### Two consequences of using the fragment
-
-1. **Privacy:** the fragment is never sent in an HTTP request, so answers never leave the device.
-2. **Routing:** the fragment is unavailable for routing, so the app uses `BrowserRouter`. Static
-   hosting therefore needs an SPA rewrite (all paths → `index.html`), or `/view` will 404. See
-   [Deploying](#deploying).
-
-## Two transports, one interface
+### Two transports, one interface
 
 Both implement `LinkCodec` (`src/link/codec.ts`); `decodingCodec()` sniffs the prefix across every
-registered codec, so links of either kind stay readable no matter which one is currently being
-issued.
+registered codec, so links of either kind stay readable regardless of which end produced them.
 
-| | `shlink:/` (`shlCodec.ts`) | `sfhl:/` (`bespokeCodec.ts`) |
-| --- | --- | --- |
-| Payload | encrypted, hosted | compressed, inside the URL |
-| Encryption | A256GCM | **none** |
-| Hosting | required | none |
-| Size limit | none | ~14 KB raw JSON |
-| Third-party wallets | yes | no |
-| Status | **the only codec that mints** | **decode-only** |
+|                     | `shlink:/` (`shlCodec.ts`) | `sfhl:/` (`bespokeCodec.ts`)      |
+| ------------------- | -------------------------- | --------------------------------- |
+| Payload             | encrypted, hosted          | deflated, inside the URL fragment |
+| Encryption          | A256GCM                    | **none**                          |
+| Hosting             | required                   | none                              |
+| Size limit          | none                       | the QR's, ~14 KB raw JSON         |
+| Third-party wallets | yes                        | no                                |
+| Who mints it        | the BFF, for invitations   | the page, for a filler's return   |
 
-The SHL codec always sets the **`U` flag** — a single encrypted file fetched with a plain `GET` — so
-it needs only a file host rather than a manifest service. Two honest costs: `U` cannot be combined
-with `P`, so **the links this app mints have no passcode**, and they can be neither revoked nor
-varied per recipient. It *reads* both hosting modes, including passcode-protected manifests, so a
-filler that publishes behind a real manifest endpoint works too.
+The SHL codec reads both hosting modes - a `U`-flag single file and a manifest, including a
+passcode-protected one - so a filler that publishes either way works. It mints only the manifest
+form.
 
-### `sfhl:/` is legacy and decode-only
+### Why the filler's return is an inline link
 
-Answers were compressed, not protected: anyone who photographed the QR or read the URL recovered
-them. Nothing mints these any more — `encodingCodec()` refuses the codec, and setting
-`"linkCodec": "bespoke"` is an error rather than a choice.
+The bespoke codec deflates the whole response Bundle into the URL fragment and hosts nothing. It was
+built as "the only return path open to an app with no server of its own", and that is exactly what an
+anonymous filler is: no account, no storage, and nothing on this app's public surface it is allowed
+to write to.
 
-It is kept registered for decoding because links already in the wild have to keep opening, which is
-the whole point of retiring a transport rather than deleting it. It existed as the only return path
-open to an app with no server of its own; the SHL codec now fills that role properly.
+That last part is the constraint. The only routes reachable without a session are the manifest,
+launch, the callback, the issuer list, the JWKS and static assets. Adding an anonymous
+payload-hosting route would put an open write endpoint on a server that holds every secret, to
+support a fallback. An inline link needs no endpoint at all, and works with no network.
 
-## Three servers, three jobs
+The honest cost is that the answers are compressed, not protected: whoever photographs the QR or
+reads the URL can recover them. The previous design encrypted this payload - and parked the
+ciphertext on a shared public sandbox, which is the thing this feature removed. See
+[the fallback link is not encrypted](#the-fallback-link-is-not-encrypted).
 
-Keeping these apart is most of what the configuration is for, and conflating any two of them is the
-mistake this app is shaped to avoid.
+The other cost is a ceiling. A version-40 QR code - the largest there is - holds 2,331 bytes in byte
+mode at error-correction level M and 2,953 at level L, and `chooseErrorCorrectionLevel` takes the
+more robust of the two that fits (`src/link/qrCapacity.ts`). Measured against the real
+QuestionnaireResponse fixtures, deflate plus base64url lands the link at roughly a fifth to a half
+of the raw JSON, improving as responses get larger, so the practical limit is about 14 KB of raw
+answers. Past that the QR is refused and the link still works: the surface falls back to copying it.
 
-| | | |
-| --- | --- | --- |
-| **Forms server** | `smartforms.csiro.au/api/fhir` | Questionnaire **definitions**. Read only, never written to |
-| **EHR** | `proxy.smartforms.io/fhir` | Patients and QuestionnaireResponses. Read anonymously; written only through a launch |
-| **Blob host** | anywhere | Encrypted payloads and reply slots. Need not be trusted |
+Compression is the browser's native `CompressionStream('deflate-raw')`, so there is no pako or
+fflate dependency. It needs Chrome 80, Safari 16.4 or Firefox 113 - a browser too old for it cannot
+build the fallback link, and says so rather than producing a broken one.
 
-The EHR is what smart-forms calls the *patient data FHIR API* and what `sdc-populate` takes as its
-`sourceServerUrl`. Its sibling `proxy.smartforms.io/v/r4/fhir` is the same data behind a
-[smart-launcher-v2](https://github.com/aehrc/smart-launcher-v2) facade, and that is the base
-`smartIssuerUrl` wants — the plain one answers `.well-known/smart-configuration` with
-`HAPI-0302: Unknown resource type '.well-known'`. The plain base is also the one that reports usable
-`Location` headers.
+Two properties of the fragment are worth remembering, because they still shape the app:
 
-**A launch adds a fourth possibility for the EHR, not a fourth server.** When a session exists, the
-launched server replaces `responseServerUrl` as the EHR — it is the one backed by a token, and the only
-one this app writes to, because [writing requires a launch](#a-launch-is-required-to-write). The forms
-server and the blob host do not move, and must not: the blob host is fetched by a filler holding no
-credentials, and pointing it at an authenticated server would mint links only their author can open.
-See [SMART App Launch](#smart-app-launch).
+1. **Privacy:** a fragment is never sent in an HTTP request, so a link pasted into `/view` never
+   reaches any server, including ours.
+2. **Routing:** the fragment is unavailable for routing, so the app uses `BrowserRouter` and the
+   server needs an SPA rewrite, or `/view` 404s on refresh. See [Deploying](#deploying).
 
-Three routes read the EHR, and all three work with no session at all:
+## One server, one authority
 
-| Route | Purpose |
-| --- | --- |
-| `/responses` | QuestionnaireResponses already stored, with a patient filter. Read-only |
-| `/patients` | Pick the subject of a request, or jump to a patient's responses |
-| `/requests` | Sent requests — published Tasks joined with locally-held reply keys |
+This is the section that used to be called "Three servers, three jobs", and the change is the point
+of the whole feature. There were three servers because the app had no launch context and had to be
+told where everything was: a forms catalogue to read definitions from, an EHR to read patients and
+write responses to, and a blob host to park ciphertext on. Keeping them apart was most of what the
+configuration did.
 
-### Sent requests come from two places at once
+There is now one, and it is not configured:
 
-Neither source is sufficient alone, and the reason is structural. The EHR knows **every** request,
-because each one publishes a `Task` (`publishRequestTasks`, on by default) tagged so it can be searched
-back out. This browser knows the **keys**, because a reply key is generated at mint time and stored
-nowhere else. So `/requests` merges them on `Task.identifier` — the one correlation key that survives
-both copies — and a request sent from another machine shows up as visible-but-not-collectable rather
-than being hidden or offered a button that could never work.
+|                          |                                                                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| **The launched server**  | Questionnaires, patients, responses and request tasks. Read and written, with the authority the launch granted |
+| **The BFF**              | Hosts its own SHL manifests, mints grants, holds every secret. Same process that serves the SPA                |
+| **A terminology server** | ValueSet expansion, passed straight through to the renderer. The only remaining URL in `config.json`           |
 
-Publishing a `Task` and offering channel B are **separate settings**, and worth not conflating:
-publishing only records that a request was sent; channel B additionally tells a filler to write answers
-straight to that server, unreviewed.
+The forms server is gone because a shared public catalogue was never the right answer for a signed-in
+user: the forms you should see are the forms your own organisation publishes. The blob host is gone
+because the component that mints is now the component that hosts, which removes a third party from
+the trust story and, incidentally, the defect that made minted links unopenable in conformant wallets
+(see [`docs/u-flag-hosting.md`](docs/u-flag-hosting.md)).
 
-Two things the published copy deliberately drops:
+What replaces the configuration is the **issuer registry**: the list of servers this deployment is
+registered with, held server-side. Adding a server is a configuration change; it is not something a
+browser can be pointed at.
 
-- **The reply descriptor**, so a slot URL and any write token never reach a server whose purpose is to
-  be read.
-- **`Task.focus`.** The invitation names the Questionnaire by canonical, because that is the only form
-  of the reference a filler can still use once the Bundle is taken apart — but `focus` is a `Reference`,
-  and a FHIR server will not store a canonical in one:
+### Sent requests come from one place now
 
-  ```
-  HAPI-0506: Invalid resource reference found at path[Task.focus]
-   - Resource type is unknown or not supported on this server
-   - http://example.org/Questionnaire/detection|1.2
-  ```
+`/requests` is one query: the request tasks published on the launched server, searched back out by
+tag.
 
-  So the server copy relies on `input[].valueCanonical`, which is a `canonical` rather than a
-  `Reference` and stores fine — the same split the return leg already makes. `check:roundtrip` asserts
-  it, because reinstating `focus` makes every request creation fail with a 400.
+It used to be a union of those tasks and a browser-local store, and the reason is worth recording
+because it is exactly the complexity that went. The server knew every request; the browser knew the
+reply keys, because a key was generated at mint time and stored nowhere else. So a request sent from
+a colleague's machine was visible but not collectable, and the list had to explain that.
+
+Nothing needs explaining now. Answers land directly on the launched server, so a request's state
+_is_ the state of its Task, and everybody signed in to that server sees the same thing. There is no
+local key to hold, nothing to export between browsers and nothing to poll.
+
+One thing the published task still deliberately drops: **`Task.focus`**. The invitation names the
+Questionnaire by canonical, because that is the only form of the reference a filler can still use
+once the Bundle is taken apart - but `focus` is a `Reference`, and a FHIR server will not store a
+canonical in one:
+
+```
+Invalid resource reference found at path[Task.focus]
+ - Resource type is unknown or not supported on this server
+ - http://example.org/Questionnaire/detection|1.2
+```
+
+So the server copy relies on `input[].valueCanonical`, which is a `canonical` rather than a
+`Reference` and stores fine. `check:roundtrip` asserts it, because reinstating `focus` makes every
+request creation fail.
 
 ## Configuration
 
-Runtime config is fetched from `/config.json` at boot — the same pattern as
-`apps/smart-forms-app` in the smart-forms monorepo — so **one build can be deployed against
-different servers without rebuilding**. The file lives at `public/config.json` in the repo and lands
-at `dist/config.json` in a build, where it can be edited in place.
+Configuration is split by who is allowed to see it. The browser gets a small file with nothing
+sensitive in it; the server gets an environment and a registry.
 
-This is what ships, and it is a working demo as-is:
+### The browser's runtime config
+
+Fetched from `/config.json` at boot - the same pattern as `apps/smart-forms-app` in the smart-forms
+monorepo - so **one build can be deployed against different environments without rebuilding**. The
+file lives at `public/config.json` in the repo and lands at `dist/config.json` in a build, where it
+can be edited in place.
+
+This is what ships, in full:
 
 ```json
 {
-  "formsServerUrl": "https://smartforms.csiro.au/api/fhir",
   "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
+  "linkCodec": "shl",
   "linkBaseUrl": null,
-  "linkCodec": "shl",
-  "responseServerUrl": "https://proxy.smartforms.io/fhir",
-  "blobServerUrl": "https://proxy.smartforms.io/fhir",
-  "blobStore": "fhir-binary",
-  "shlManifestUrl": null,
   "senderName": null,
-  "enableServerReturn": false,
-  "enableEncryptedReply": false,
-  "enableOneShotWrite": true,
-  "writeSlotServerUrl": null,
   "linkLifetimeDays": 30,
-  "publishRequestTasks": true,
-  "enableSmartLaunch": true,
-  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/fhir",
-  "smartClientId": "smart-forms-health-links",
-  "smartScopes": null
+  "enableOneShotWrite": true,
+  "enableWriteBack": true,
+  "enablePrePopulate": true,
+  "publishRequestTasks": true
 }
 ```
 
-`check:roundtrip` asserts both that this validates and that it names write targets, because the
-out-of-the-box round trip is a feature and a config edit that quietly removes it should fail a check
-rather than a demo.
+|                        |                                                                                                                                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `terminologyServerUrl` | ValueSet expansion, passed straight through to the renderer. The one service that is still separately configured                                                                                                                                       |
+| `linkBaseUrl: null`    | use `window.location.origin`. Set it when the device opening the link cannot resolve that origin - a phone scanning a laptop's QR, or a reverse proxy on a different host                                                                              |
+| `senderName`           | fallback for `Task.requester.display`. A launched session normally knows who is signed in and uses that; this covers a launch that disclosed no user, which is legal. An invitation that cannot say who sent it is one a patient has reason to decline |
+| `linkLifetimeDays`     | sets the link's `exp`. `null` for no expiry. Independent of the grant lifetime, which is much shorter                                                                                                                                                  |
+| `linkCodec`            | which codec mints. `shl` is the only one that still does; `bespoke` is decode-only, so old `sfhl:/` links keep opening either way                                                                                                                      |
+| `enableOneShotWrite`   | offer the channel D slot on requests this app mints. On in what ships, off in the fallback                                                                                                                                                             |
+| `enableWriteBack`      | offer to write the resources these answers imply into the record. SDC extraction, run in the browser, reviewed and ticked by a human before anything is written                                                                                        |
+| `enablePrePopulate`    | offer to fill a requested form from the record before the link is minted. **Weigh this one differently** - it is a _disclosure_ capability, not a write one. See below                                                                                 |
+| `publishRequestTasks`  | publish each request's `Task` to the launched server, so `/requests` can list what was sent from any device rather than only from the browser that sent it                                                                                             |
 
-| | |
-| --- | --- |
-| `formsServerUrl` | **read only.** Questionnaire search and resolve-by-canonical. Never written to |
-| `terminologyServerUrl` | ValueSet expansion, passed straight through to the renderer |
-| `responseServerUrl` | the **EHR** to read: patients and responses come from it. **Required for `/responses` and `/patients` to show anything.** Reviewed responses are written to the *launched* server, since writing needs a launch and a launch supplies its own base |
-| `blobServerUrl` | where SHL payloads and reply slots are hosted as `Binary`. **Required to create Health Links** |
-| `blobStore` | how payloads are stored. `fhir-binary` is the only implementation |
-| `linkBaseUrl: null` | use `window.location.origin`. Set it when the device opening the link cannot resolve that origin — a phone scanning a laptop's QR, or a reverse proxy on a different host |
-| `linkCodec` | which codec *creates* links; reading always accepts both. `shl` is the only one that mints — `"bespoke"` still validates, so an old config is not rejected wholesale, but it fails at mint time |
-| `shlManifestUrl` | base URL of an external manifest server, if one is ever stood up. Unused while `blobStore` is `fhir-binary` — *reading* manifest links needs no config |
-| `senderName` | `Task.requester.display`. An invitation that cannot say who sent it is one a patient has reason to decline |
-| `enableServerReturn` | offer channel B. **Off by default** — it accepts answers without review |
-| `enableEncryptedReply` | offer channel C, the encrypted reply slot. **Off by default** — answers come back as a link the filler mints. Turn it on when a filler may have no way to show you a QR code. Requires `blobServerUrl` |
-| `enableOneShotWrite` | offer channel D, a slot the filler may write to once. **On in the shipped config**, off in the fallback. For fillers that cannot do C's crypto. The slot host sees the answers in plaintext; the write is single-use via `If-Match` |
-| `enableWriteBack` | offer to write the resources these answers imply — Conditions, Observations — into the record. **On in the shipped config**, off in the fallback. SDC form data extraction, run in the browser; no server involved. Inert for a form that declares no extraction, which is most of them. See [Answers become resources](#answers-become-resources) |
-| `writeSlotServerUrl` | where channel D's slots are pre-allocated. `null` falls back to `blobServerUrl`. Deliberately **not** `responseServerUrl` — a slot is transport, and staging it off the record is what keeps review-before-write true |
-| `linkLifetimeDays` | sets the link's `exp` and the reply slot's `expiresAt`. `null` for no expiry |
-| `publishRequestTasks` | record sent requests on the EHR so `/requests` can list them from any browser. Publishes what was requested, for whom and by whom — turn it off if that should not be on a shared server |
-| `enableSmartLaunch` | offer SMART App Launch. **On in the shipped config**, off in the fallback. The app gains `/launch` and `/callback`, EHR calls carry a bearer token, and `fhirUser` supplies a real identity. A launch is **required to write** and optional to read. See [SMART App Launch](#smart-app-launch) |
-| `smartIssuerUrl` | the SMART-enabled FHIR base to launch against, **and** the allowlist for the `iss` a launch arrives with. Not the same base as `responseServerUrl` — see below |
-| `smartClientId` | OAuth client id. A **public** client: a static site holds no secret, so PKCE does the binding |
-| `smartScopes` | space-separated scope override. `null` takes the default. Worth setting only to narrow |
+Note what is **not** here: no FHIR server, no write target and no blob host. There is nothing left to
+configure about which server holds the data, because the answer is always "the one you launched
+from". What does remain is **capability flags**, and they survived the move to a launched server
+because they answer a question the launch does not: not _where_ the data lives, but which optional
+things this deployment is willing to do with it. Every one of them defaults to off in
+`FALLBACK_CONFIG`, so a config that failed to load hands out no capability it was not explicitly
+asked for.
 
-Fields added after the first release are optional in `config.json`: a config written before they existed
-takes their defaults rather than being rejected wholesale, which would discard the servers it *does*
-name and quietly point a deployment somewhere else.
+**`enablePrePopulate` deserves a second look before it goes on.** Its neighbours are write
+capabilities, gated because they put data on somebody's server. This one copies record content _into
+a payload that leaves the building_, readable by anyone holding the link. A request stops being "a
+public questionnaire plus a name" and becomes an extract from a chart, with its key in a QR code
+somebody can photograph. Two deliberate acts are still needed with the flag on - a launched session,
+and ticking the box on the request itself - and the clinician ticks each answer they are willing to
+disclose. But turning it on is a decision about what a leaked link would cost, and the answer differs
+by deployment.
 
-### Pointing it at your own servers
+### The server's environment
 
-Minimum viable change for a real deployment — the forms and terminology servers can stay as they are:
+`.env.example` is authoritative and annotated; read it rather than this table, which exists to say
+what the groups are for.
+
+|                         |                                                                                                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_ORIGIN`, `PORT`    | where the app is served from, and where it listens. `APP_ORIGIN` is what the OAuth redirect URI is built on, so it has to be the origin the browser actually used |
+| `SQLITE_PATH`           | one file, holding sessions and invitations                                                                                                                        |
+| `ISSUER_REGISTRY_PATH`  | the JSON registry described below                                                                                                                                 |
+| `SESSION_COOKIE_SECRET` | signs the `shl_session` cookie. At least 32 characters                                                                                                            |
+| `LAUNCH_CLIENT_SECRET`  | the confidential launch client's secret, referenced by name from the registry                                                                                     |
+| `BACKEND_PRIVATE_JWK`   | the Backend Services RS384 signing key, one line of JWK JSON, referenced by name from the registry                                                                |
+| `AIDBOX_*`              | used only by `ops/aidboxSetup.ts` and the acceptance suite. The running app never reads them                                                                      |
+
+The two credential variables are referenced from the registry rather than read directly, which is
+what lets a deployment register several servers with different credentials without the variable names
+being baked into code.
+
+### The issuer registry
+
+A JSON array of the servers this deployment is registered with. `config/issuers.example.json` is the
+template and the authoritative shape:
 
 ```json
-{
-  "formsServerUrl": "https://smartforms.csiro.au/api/fhir",
-  "terminologyServerUrl": "https://r4.ontoserver.csiro.au/fhir",
-  "linkBaseUrl": "https://links.example.org",
-  "linkCodec": "shl",
-  "responseServerUrl": "https://fhir.example.org/r4",
-  "blobServerUrl": "https://fhir.example.org/r4",
-  "blobStore": "fhir-binary",
-  "shlManifestUrl": null,
-  "senderName": "Parkview Medical Centre"
-}
+[
+  {
+    "issuer": "https://sczsqtqcgi.aidbox.app/fhir",
+    "label": "Aidbox demo",
+    "launchClient": {
+      "clientId": "smart-forms-health-links",
+      "clientSecret": "env:LAUNCH_CLIENT_SECRET",
+      "scopes": "openid fhirUser launch launch/patient online_access user/*.cruds"
+    },
+    "backendClient": {
+      "clientId": "smart-forms-health-links-backend",
+      "privateKeyJwk": "env:BACKEND_PRIVATE_JWK",
+      "scopes": "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u"
+    },
+    "grantTtlSeconds": 3600
+  }
+]
 ```
 
-`responseServerUrl` needs `Patient` and `QuestionnaireResponse` read. The *launched* server is what
-needs `QuestionnaireResponse`, `Task` and `Provenance` create — in the common case where both point at
-the same EHR behind different facades, it needs all of it. `blobServerUrl` needs only `Binary` create
-and read, and **need not be a server you control** — the payload is a JWE and the key travels only
-inside the link.
+Two clients per server, and they are not interchangeable:
+
+- **`launchClient`** is the confidential client the requester's browser is launched through. Its
+  authority is the signed-in user's, and it is what every requester read and write uses.
+- **`backendClient`** is the SMART Backend Services client the manifest route mints grants with. Its
+  authority is the system's, which is why its scope is the narrowest the writeback can work with -
+  create a response, create a provenance, read and update a task, nothing else - and why the token
+  it produces is short-lived.
+
+**Secret-bearing fields hold `env:VARIABLE_NAME`, never a value.** The registry is a configuration
+file that can be committed, mounted from a ConfigMap or checked into a deployment repo; the values it
+names come from the environment. A registry that inlined a secret would put one wherever the registry
+went.
+
+`grantTtlSeconds` is the stated lifetime of a minted token, per issuer, defaulting to one hour. It is
+independent of `linkLifetimeDays` on purpose - see [the grant](#the-grant-and-why-it-is-minted-per-fetch).
+
+An `issuer` that is not in this registry is refused at launch, by name, with nothing stored and no
+credential sent anywhere. That refusal is the whole security boundary of the launch leg: `iss` is a
+URL an attacker controls, and treating it as a discovery target would have the app send its client
+secret to whoever asked.
 
 ### What happens when config is missing
 
-A missing or malformed `config.json` is not fatal: the app falls back to the public CSIRO **forms and
-terminology** servers, with **both write targets `null`** and `enableSmartLaunch` off. In that state it
-reads and renders forms but refuses to mint links or save responses, and says so on the surfaces that
-would need them — twice over now, since a fallback config can neither name a destination nor start a
-launch.
+The two halves fail differently, and deliberately so.
 
-That asymmetry is deliberate. Guessing a write target because config failed to load is worse than
-refusing — it would put patient data on whatever server happened to be named for reading. A check
-asserts the fallback names no write target, and another asserts the *shipped* config does.
+**The browser's `config.json`** is not load-bearing any more. A missing or malformed file falls back
+to the shipped defaults - the public CSIRO terminology server, no link base override, a thirty-day
+link lifetime. Nothing about where data goes depends on it, so there is nothing to guess wrongly.
 
-### Read and write are separate servers, with no fallback
-
-`formsServerUrl` is a **catalogue**. smart-forms only ever issues `GET Questionnaire` and `$assemble`
-against it and writes responses to its SMART launch server instead — see `saveQr.ts:133`, which posts
-to `smartClient.state.serverUrl`.
-
-This app has a launch context too, and when there is one the launched server is exactly where responses
-go. What it does not have is a *fallback*: with no launch and no `responseServerUrl`, the write targets
-**deliberately do not fall back to `formsServerUrl`**. Setting them to the forms server is asserted
-against, because quietly putting patient data and encrypted blobs into a shared reference library is the
-specific mistake worth preventing rather than documenting.
-
-The blob host is the half of this that survives a launch unchanged. Responses follow the session;
-payloads and write slots must not, because a filler holding no credentials has to be able to fetch them.
-
-## SMART App Launch
-
-**On in the shipped config.** A clinician can launch this app from an EHR — or sign in to it
-directly — and the requester's half of the app gains a session. The filler's half is untouched.
-
-A launch is **required to write** and optional to read: with no session the requester's half is
-read-only. See [A launch is required to write](#a-launch-is-required-to-write) just below.
-
-It is off in `FALLBACK_CONFIG`, which is what a deployment gets when `config.json` fails to load. That
-split runs through every capability here and is deliberate — what ships is a chosen sandbox, whereas a
-config that failed to load must assume nothing.
-
-Full detail, including the trust boundary and the scope rationale, is in
-[`docs/smart-app-launch.md`](docs/smart-app-launch.md).
-
-### What it buys
-
-| | Without a launch | With a launch |
-| --- | --- | --- |
-| Writing anything to the EHR | **refused** | permitted |
-| Reading the EHR | anonymous, and still works | `Authorization: Bearer …` |
-| EHR base URL | `responseServerUrl` from config | the launched server |
-| Who amended a response | — | `Practitioner/…`, vouched for by the authorisation server |
-| Who a request is from | — | the launched user |
-| Patient on a new request | — | already filled in, from the chart |
-
-The fourth row is why the first one reads as it does. `Provenance.agent.who` used to carry only a
-`display` string somebody typed — a claim rather than an attribution. A session adds `who.reference`,
-and rather than offering both and letting a deployment discover the difference, the claim-only version
-is now refused.
-
-### A launch is required to write
-
-Gated: minting a request, accepting answers, amending them, creating a patient, writing back extracted
-resources, and pre-populating a form from the record.
-
-Not gated: everything else. `/patients`, `/responses` and `/requests` list anonymously exactly as
-before, and **the filler's half is untouched** — somebody holding nothing but a link has no account to
-log into, which is the constraint the whole app is shaped around. That is also why the check sits at the
-requester's own call sites rather than in `src/fhir/submit.ts`, whose `resolveDestinations` also serves
-the filler; `docs/smart-app-launch.md` has the full reasoning.
-
-A gated screen says so in place and offers a launch, rather than redirecting: a silent bounce to a login
-hides why it happened, and against a misconfigured issuer it loops. The screen you started from is
-remembered, so a launch comes back to it.
-
-### Setting it up
-
-```json
-{
-  "enableSmartLaunch": true,
-  "smartIssuerUrl": "https://proxy.smartforms.io/v/r4/sim/WzIsImV4YW1wbGUtaHlwZXJ0ZW5zaW9uIiwi…/fhir",
-  "smartClientId": "smart-forms-health-links"
-}
-```
-
-That is the shipped issuer, and the `v/r4/sim/…` segment is not decoration: a *standalone* launch
-against smart-launcher-v2 needs its options in the issuer path, and the CSIRO deployment serves no
-launcher screens, so the demo pins a practitioner and a patient and skips both. It is what makes step 1
-of the quick start a single click. An **EHR** launch works against the plain `v/r4/fhir` base as well.
-Both quirks are in [`docs/smart-app-launch.md`](docs/smart-app-launch.md#standalone-launch-against-smart-launcher-v2-needs-a-sim-issuer).
-
-Then open **Launch setup** in the context strip under the nav — `/launch/setup`, reachable from every
-screen because the person who needs it is the one whose launch does not work yet. It lists everything the authorisation
-server needs — launch URL, redirect URI, client id, issuer and the full scope list — generated from
-that deployment's own config, so it is correct for that build and that host in a way this file cannot
-be. It is also the page to send to whoever administers the OAuth client, which is often not you.
-
-Two things it will tell you that are easy to get wrong:
-
-- **Register `launch` *and* `launch/patient`.** No single request names both — `buildScopes` swaps one
-  for the other — so a registration copied from an observed EHR launch half-works, and fails only when
-  somebody opens `/launch` directly.
-- **Write-back needs `u`.** Seven `user/*.cu` scopes exist solely for
-  [form data extraction](#answers-become-resources). Omitting them from the registration fails the
-  whole launch with `invalid_scope`; set `enableWriteBack: false` or narrow `smartScopes` if you do
-  not want the feature.
-
-Then check the issuer before trying a real launch:
-
-```bash
-npm run check:smart
-```
-
-If a launch fails anyway, the error screen shows the same registration panel inline — the failure and
-the fix on one page.
-
-**`smartIssuerUrl` is not `responseServerUrl`.** It has to be a base that actually serves
-`.well-known/smart-configuration`, and a plain FHIR server does not — it parses `.well-known` as a
-resource type and returns a 200-shaped `OperationOutcome` that reads like success. `check:smart` calls
-that case out by name, because it is the failure everyone hits first.
-
-**Demonstrating a launch needs `launch.smarthealthit.org`.** The CSIRO sandbox serves the discovery
-document and the auth endpoints but not the launcher's login pages, and a *standalone* launch against
-smart-launcher-v2 needs a `/v/r4/sim/{options}/fhir` issuer rather than a plain one — an EHR launch
-works against either. Both quirks, and why, are in
-[`docs/smart-app-launch.md`](docs/smart-app-launch.md#standalone-launch-against-smart-launcher-v2-needs-a-sim-issuer).
-
-### Both launch patterns, one route
-
-`/launch?iss=…&launch=…` is an EHR launch; `/launch` with no parameters is a standalone one, and the
-configured issuer stands in for the missing `iss`. `iss` is checked against `smartIssuerUrl` rather
-than followed — it arrives in a query string a stranger can write. PKCE is `required` rather than the
-library default of `ifSupported`, since a public client has no secret and PKCE is the only thing
-binding the authorisation code to this app. Tokens live in `sessionStorage`, per-tab, and never in
-`localStorage`, which holds reply keys with the opposite lifetime.
-
-### The boundary, in one rule
-
-A token is attached only when the request's **origin** matches the session's own server. Not "is
-there a session" — `resolveDestinations` reads write targets from a downloaded Questionnaire's
-`sdc-questionnaire-endpoint`, and those outrank config, so a form fetched from a public catalogue can
-name any host on the internet as where its answers go. `src/fhir/authedFetch.ts` is the only place a
-token leaves the browser, and `src/fhir/formsServer.ts`, `src/fhir/blobStore.ts` and
-`src/link/writeSlot.ts` never call it.
+**The server's configuration is load-bearing and fails loudly.** A missing environment variable, a
+registry that does not parse, an `env:` reference to a variable that is not set, a private JWK that
+is not an RS384 key, a session secret that is too short: each stops the process at startup with a
+message naming the field and the entry. There is no partial mode. A server that started without a
+registry would have no way to refuse an unregistered issuer.
 
 ## Deploying
 
-```bash
-npm run build        # tsc -b && vite build  ->  dist/
-npm run preview      # serve dist/ locally to check it
-```
-
-`dist/` is a static site. Two requirements:
-
-**1. SPA rewrite.** Every path must serve `index.html`, or `/view`, `/scan` and the rest 404 on
-refresh or on a scanned link. The fragment cannot be used for routing here — it is carrying the
-payload — so hash routing is not an option.
-
-<table>
-<tr><td>Netlify</td><td><code>_redirects</code>: <code>/* /index.html 200</code></td></tr>
-<tr><td>Vercel</td><td><code>vercel.json</code>: <code>{"rewrites":[{"source":"/(.*)","destination":"/index.html"}]}</code></td></tr>
-<tr><td>nginx</td><td><code>try_files $uri $uri/ /index.html;</code></td></tr>
-<tr><td>Apache</td><td><code>FallbackResource /index.html</code></td></tr>
-<tr><td>S3 + CloudFront</td><td>error document <code>index.html</code>, or a 403/404 → <code>/index.html</code> response mapping</td></tr>
-<tr><td>GitHub Pages</td><td>copy <code>index.html</code> to <code>404.html</code>; also needs <code>vite build --base=/repo-name/</code> if not served from the domain root</td></tr>
-</table>
-
-**2. HTTPS.** The camera on `/scan` needs a secure context, and so does the Web Crypto used for
-every link. Neither works over plain HTTP off `localhost`.
-
-Then edit `dist/config.json` for the environment — no rebuild needed, which is the whole reason
-config is fetched at runtime. Serve it with a short cache lifetime, or a stale copy will outlive a
-server change.
-
-### Container and Kubernetes
-
-`Dockerfile` builds the site and serves it from nginx with both requirements
-already met: unknown paths fall through to `index.html`, and `config.json` is
-served `no-store` while the hashed assets beside it are immutable for a year.
-The container listens on 8080, runs as an unprivileged user, and answers
-`/healthz` independently of the app bundle so a probe does not depend on the
-shell being readable.
+The app is a single Node process serving the built SPA and the API from one origin. It is no longer a
+static site: the API, the manifest hosting and the session all need a server.
 
 ```bash
-docker build -t smart-forms-health-links:local .
-docker run --rm -p 8080:8080 --read-only --tmpfs /tmp smart-forms-health-links:local
+npm run build          # tsc -b && vite build  ->  dist/        (the SPA)
+npm run build:server   # esbuild               ->  dist-server/index.mjs
+node dist-server/index.mjs
 ```
 
-The Helm chart under `deploy/helm/smart-forms-health-links` runs that image and
-supplies `config.json` from a ConfigMap, so one image serves any environment.
-Its own README documents the values. The chart holds no ingress: how the app is
-exposed differs per cluster, so the ingress is applied beside the release.
+`build:server` bundles with `--packages=external`, so `node_modules` has to be present at runtime.
+That is not incidental: `better-sqlite3` is a native module and cannot be bundled.
+
+### Docker
+
+A multi-stage `Dockerfile` builds both halves on `node:22` and runs them on `node:22-slim` as a
+non-root user, exposing port 3000 with a `HEALTHCHECK` on `GET /health`.
+
+One detail in it is load-bearing and easy to undo: the entrypoint is `tini`, not `node`. Node
+installs no `SIGTERM` handler of its own, and a process running as PID 1 ignores signals whose
+disposition is the default - so without an init the container never shuts down on request. It waits
+out the full grace period and is then killed, which measured as 33 seconds per rollout against 3
+with `tini` in place.
+
+### Helm
+
+`helm/smart-forms-health-links/` deploys it:
 
 ```bash
-helm upgrade --install smart-forms-health-links deploy/helm/smart-forms-health-links \
-  --namespace formlinks \
-  --values deploy/demo/values.yaml \
-  --set smartFormsHealthLinks.image=my-registry/smart-forms-health-links:abc1234
+helm upgrade --install shl helm/smart-forms-health-links \
+  --set smartFormsHealthLinks.ingress.host=shl.example.org
 ```
 
-`deploy/demo` is the deployment at
-[formlinks.fhirapp.net](https://formlinks.fhirapp.net): its values and its ALB
-ingress. Pushing to `main` runs `.github/workflows/deploy.yml`, which builds a
-multi-architecture image tagged with the commit, pushes it to ECR and rolls the
-release onto it. The workflow authenticates by assuming an IAM role through
-GitHub's OIDC provider, so there are no stored credentials.
+Five things about the chart are worth knowing before changing it:
+
+- **One replica, `Recreate` strategy.** The state is a single SQLite file on a `ReadWriteOnce` PVC
+  mounted at `/data`. Two replicas would be two databases behind one Service, so sessions and
+  invitations would resolve or not depending on which pod answered.
+- **The registry is a ConfigMap**, rendered from the `smartFormsHealthLinks.issuers` values key and
+  projected read-only into the pod. It is safe there because its secret-bearing fields are `env:`
+  references.
+- **Secrets are never templated.** Create a Kubernetes Secret yourself and name it in
+  `smartFormsHealthLinks.existingSecret`; the pod picks it up with `envFrom`, so its keys have to be
+  exactly the variable names - `SESSION_COOKIE_SECRET`, `LAUNCH_CLIENT_SECRET`,
+  `BACKEND_PRIVATE_JWK`, and anything else the registry references.
+- **`APP_ORIGIN` is derived from the ingress host** and its TLS setting, and can be overridden with
+  `smartFormsHealthLinks.appOrigin`. Rendering fails if neither is set, because a wrong `APP_ORIGIN`
+  produces a redirect URI the authorisation server will reject and no earlier signal than a failed
+  launch.
+- **All three probes are `GET /health`** on container port 3000 - startup, liveness and readiness.
+  That route deliberately says nothing about configuration, so it cannot be used to discover whether
+  a registry loaded.
+
+`helm/smart-forms-health-links/README.md` documents the values.
+
+### HTTPS is not optional
+
+The session cookie is `Secure`, the camera on `/scan` needs a secure context, and so does the Web
+Crypto used for every link. None of it works over plain HTTP off `localhost`. The authorisation
+server will also refuse a plain-HTTP redirect URI.
 
 ## Repo layout
 
 ```
-src/
-  App.tsx              routes, and the root-fragment → /view forward
-  routes/              one file per route: FormList, RequestForm, Requests,
-                       ResponseList, PatientList, FillForm, ViewLink, Scan,
-                       Launch, LaunchSetup, Callback
-  auth/
-    smartSession.ts    the OAuth flow — the only module that imports fhirclient
-    SmartContext.tsx   the session as React context, and the EHR base resolver
-    useLaunchContext.ts  the patient and user a launch put in context, resolved once and shared
-    returnTo.ts        the screen a gate sent you from, so a launch comes back to it
-    routes.ts          /launch, /callback and /launch/setup, shared so redirect_uri cannot drift
-    scopes.ts          scope policy, kept away from fhirclient so checks can reach it
+server/                  the BFF: Fastify, one origin, every secret
+  index.ts               routes, the SPA fallback, log redaction
+  config.ts              environment plus the issuer registry, validated at startup
+  db.ts                  the SQLite schema; sessions and invitations
+  sessions.ts sessionCookie.ts
+  smart/
+    launch.ts            GET /launch and GET /auth/callback
+    confidentialClient.ts  code exchange and refresh, client_secret_basic
+    backendServices.ts   signed-assertion token minting, and the public JWKS
+    discovery.ts         .well-known/smart-configuration
+    sessionAuthority.ts  the token a proxied request is made with
+    requesterDisplay.ts  who an invitation says it is from
+  api/
+    session.ts           GET /api/session, POST /api/logout, GET /api/issuers
+    fhirProxy.ts         ALL /api/fhir/*
+    invitations.ts       POST /api/invitations
+  shl/
+    invitationStore.ts   the hosted payload behind a shlink: URL
+    manifest.ts          POST /shl/:id, and the per-fetch grant
+src/                     the SPA
+  App.tsx                routes, the session gate, the root-fragment forward
+  routes/                Connect, FormList, RequestForm, Requests, ResponseList,
+                         PatientList, FillForm, ViewLink, Scan
   components/
-    FormRenderer.tsx   the smart-forms-renderer composition
-    FillFromRequest.tsx  the filler's side: render, then return answers
+    FormRenderer.tsx     the smart-forms-renderer composition
+    FillFromRequest.tsx  the filler's fallback: render, then return a link
     ReviewResponse.tsx   the requester's side: read-only review, then write
-    PatientPicker.tsx  inline patient search, at both ends of the round trip
-    CreatePatientForm.tsx  registering somebody the destination server does not hold
-    RawAnswers.tsx     the fallback table when a Questionnaire cannot be resolved
-    WriteBackPanel.tsx what extraction produced, as a list to tick
-    LaunchContextBar.tsx  who is signed in, whose chart, and which server — the strip under the nav
-    LaunchRequired.tsx    what a launch is needed for, and the two ways out of not having one
-    SmartRegistration.tsx  what a deployer must register, derived from live config
-    ScopeWarning.tsx   says so when the server granted less than was asked for
-    ShareLinkPanel.tsx QR + copyable link
+    PatientPicker.tsx    inline patient search
+    RawAnswers.tsx       the fallback table when a Questionnaire cannot be resolved
+    ShareLinkPanel.tsx   QR + copyable link
+  fill/
+    directSend.ts        the submission transaction, and sending it
+    DirectSendPanel.tsx  what the filler sees: disclose, confirm, terminal state
   link/
-    codec.ts           the LinkCodec interface and codec selection
-    shlCodec.ts        shlink:/  — the only codec that mints
-    bespokeCodec.ts    sfhl:/    — decode-only, legacy
-    createLink.ts      builds the request Bundle and the invitation
-    exchange.ts        resolves a link into something renderable
-    jwe.ts             alg:dir + A256GCM
-    replyCrypto.ts     ECDH-ES + A256GCM, P-256 — channel C
-    writeSlot.ts       pre-allocate, write once, poll — channel D
-    replySlot.ts       minting and reading the reply slot
-    replyDescriptor.ts the wire format for channels B and C
-    collectReply.ts    pulling and decrypting a reply
+    codec.ts             the LinkCodec interface, and decoding across codecs
+    shlCodec.ts          shlink:/  - hosted and encrypted; invitations
+    bespokeCodec.ts      sfhl:/    - inline and unencrypted; the filler's return
+    apiAccess.ts         the grant file: building, parsing, expiry
+    createLink.ts        asks the BFF to mint; builds the filler's return link
+    invitationBundle.ts  the invitation and response Bundles
+    exchange.ts          resolves a link into something renderable
+    jwe.ts               alg:dir + A256GCM
+    replyCrypto.ts       ECDH-ES + A256GCM, P-256 - inbound reply channels only
+    replyDescriptor.ts   parsing another producer's declared return channel
     qr.ts qrCapacity.ts binary.ts registry.ts
   fhir/
-    formsServer.ts     Questionnaire search and resolve-by-canonical
-    ehrServer.ts       patients, responses, published request Tasks
-    blobStore.ts       Binary create/read, and the Location-header workaround
-    authedFetch.ts     the only place a SMART token leaves the browser
-    submit.ts          the write: endpoint resolution, meta handling, Provenance
-    amend.ts           amendments as a new resource joined by a revision Provenance
-    newPatient.ts      building a Patient from what a reviewer typed
-    extract.ts         which extraction mechanism a form declares, and running it
-    populate.ts        $populate at request time, kept free of the renderer so Node can bundle it
-    templateExtract.ts the template half, kept free of the renderer so Node can bundle it
-    writeBundle.ts     POSTing an extracted transaction to the server base
+    formsServer.ts       Questionnaire search and resolve-by-canonical, via the proxy
+    ehrServer.ts         patients, responses, published request Tasks, via the proxy
+    submit.ts            the scan-back write: endpoint resolution, meta, Provenance
   lib/
-    config.ts          AppConfig, validation, and the fallback
-    requestStore.ts    reply keys in localStorage
-    sentRequests.ts    the local half of /requests
-    answerRows.ts      flattening a QuestionnaireResponse — for RawAnswers, and for picking
-                       which pre-filled answers to send
-    extractedEntries.ts describing an extracted Bundle so a clinician can judge it
+    config.ts            AppConfig, validation, and the fallback
+    session.ts           the session query, the requester gate, the proxy fetch
+    sentRequests.ts      /requests, derived from the published request Tasks
+    answerRows.ts        flattening a QuestionnaireResponse for RawAnswers
+ops/
+  aidboxSetup.ts         npm run setup:aidbox - idempotent clients, policies, demo data
+tests/                   vitest: tests/server, tests/src, tests/ops
+e2e/                     playwright: the two-window acceptance suite
 scripts/
-  roundtrip.ts         npm run check:roundtrip — no network
-  e2eShl.ts            npm run check:e2e-shl   — live, writes and cleans up
-  e2eWrite.ts          npm run check:e2e-write — live, writes and cleans up
-  e2eLink.ts           npm run check:e2e       — the legacy decode path
-  e2eAmend.ts          npm run check:amend     — live, writes and cleans up
-  e2eWriteBack.ts      npm run check:writeback — live, writes and cleans up
-  e2ePopulate.ts       npm run check:populate  — live, reads the EHR, hosts one payload
-  mintReviewLink.ts    a review link for a fixture, so the screen is reachable in dev
-  e2ePatient.ts        npm run check:patient   — live, writes and cleans up
-  checkSmartConfig.ts  npm run check:smart     — live, read-only discovery probe
+  roundtrip.ts           npm run check:roundtrip - no network
+  e2eShl.ts e2eLink.ts   live checks against a FHIR server
+config/issuers.example.json  the issuer registry template
+public/config.json       the browser's runtime config
+Procfile                 dev: vite + server watch, under overmind
+Dockerfile
+helm/smart-forms-health-links/
 docs/
-  shl-form-reply-channel.md   wire format for channels B, C and D
-  response-links.md           what counts as an inbound response link
-  pre-population.md           filling a form from the record before sending it
-  u-flag-hosting.md           the third-party blocker, in full
-  smart-app-launch.md         the launch flow, and the boundary it must not cross
-  write-back.md               form data extraction, and the order it happens in
-deploy/
-  nginx.conf                  SPA rewrite, and the cache policy that goes with it
-  helm/smart-forms-health-links/  the chart, and its own README
-  demo/                       values and ingress for formlinks.fhirapp.net
-public/config.json     runtime config
+  aidbox-validation.md        the two-window walkthrough on the validation instance
+  shl-form-reply-channel.md   the reply channels: design record, and what is still minted
+  response-links.md           what counts as an inbound response link, plus the token channel
+  u-flag-hosting.md           the U-flag hosting defect, and what closed it
 ```
 
 ## Known limitations
 
-### ⚠️ The links we mint cannot be opened by other SHL apps
+### A minted token is not bound to its invitation
 
-"Only a file host" is true but underspecifies it: a FHIR `Binary` looks like a file host and is not
-one for this purpose. The spec makes a `recipient` query parameter **required** on the `U`-flag
-`GET`, and the HAPI server we park payloads on answers an unrecognised parameter with a `400`:
+This is the accepted risk of the whole design, and it is worth stating first because it is the one
+that would matter in a real deployment.
 
-```
-GET .../Binary/137286897                          -> 200 application/jose
-GET .../Binary/137286897?recipient=Platypus…      -> 400 not-supported
-```
+The grant carries a SMART Backend Services token whose authority is the _system's_, narrowed by
+scope. Within that scope and that lifetime it could create a response for some other invitation, or
+update some other task, on the same destination. Nothing in the token says which invitation it
+travelled in.
 
-So every link this app mints fails in any conformant wallet. Our own viewer works only because it
-omits the parameter, which is the same defect facing the other way.
+Four things bound it, none of which eliminates it:
 
-**This is unfixed, and it blocks every third-party demo.** The cause, the full list of what has to
-change, and when to come back to it are in [`docs/u-flag-hosting.md`](docs/u-flag-hosting.md).
+- **The scope is the minimum the writeback needs** - create a response, create a provenance, read and
+  update a task. It cannot read patients, cannot read other responses and cannot touch anything else.
+- **The lifetime is short and configurable**, defaulting to one hour.
+- **Minting is per fetch**, so the window starts when the link is opened rather than when it was
+  minted, and a link that is never opened never produces a token at all.
+- **Every mint is at the authorisation server**, so there is an audit trail of exactly which
+  credentials were issued and when.
 
-Note the gap is one-directional. It blocks the *outbound* leg only: whatever anyone else does about
-`?recipient=`, this app already reads links Platypus mints, including manifest-hosted ones and
-payloads that are a bare resource rather than a Bundle. **The return leg is not waiting on anybody.**
+Invitation-bound tokens - a token the destination will only accept for one request identifier - are
+out of scope here. They need something on the server side that this app cannot assume.
+
+### Anyone who photographs a link can mint tokens from it
+
+An invitation is usually a QR code, so a bystander who photographs it holds the key and the manifest
+URL, and can fetch that manifest and obtain a token, repeatedly, until the link expires. They can
+also read the questionnaire and the patient's name.
+
+That is the same exposure any `U`-flag SHL has for its payload, extended to the credential. It is the
+reason the token lifetime is short and independent of the link lifetime, and the reason a deployment
+that cannot accept it should set `grantTtlSeconds` low and `linkLifetimeDays` lower.
+
+### A replayed send leaves two provenances
+
+Send the same answers twice and the destination ends up with one response and one completed task -
+both are keyed - but **two `Provenance` resources**.
+
+The response is a conditional create on the request identifier and the task is a versioned `PUT`, so
+both are idempotent. The provenance is a plain `POST`, because the wire contract defines no
+conditional-create key for it, and inventing one here would produce a transaction the Platypus
+direct-send implementation does not expect. Interoperability won: two provenances describing the same
+assertion are untidy, and a contract that only one implementation follows is worse.
+
+### Single replica only
+
+The state is one SQLite file: sessions and invitations. Two replicas would be two databases behind
+one Service, so a browser's session or a filler's manifest fetch would resolve or not depending on
+which pod answered. The Helm chart pins `replicas: 1` with a `Recreate` strategy for that reason,
+which also means a rollout has a gap in it.
+
+### The fallback link is not encrypted
+
+The scan-back return deflates the answers into the URL fragment. That is compression, not
+protection: anyone who photographs the QR code or reads the URL can decompress it.
+
+Two things narrow it. A fragment is never sent in an HTTP request, so the answers never travel to
+any server, including this one - the requester's browser decodes them locally. And the surface says
+so, at the point where the link is produced, rather than implying a confidentiality it does not have.
+
+It is still weaker than what it replaced. The old fallback encrypted the payload under a fresh key
+carried in the link, and parked the ciphertext on a public sandbox FHIR server - which is precisely
+the third-party dependency this feature removed. Restoring encryption without restoring that
+dependency means giving the filler somewhere to put a file, and the only candidate is an anonymous
+write endpoint on the server that holds every secret. That trade was declined.
 
 ### Other limitations, by design or otherwise
 
-- **Links this app mints carry no passcode and cannot be revoked.** `U` cannot be combined with `P`,
-  and a hosted `Binary` has no per-recipient variation. Reading a passcode-protected manifest link
-  works fine; minting one does not.
-- **SMART App Launch is a public client.** A static site holds no secret, so this is a
-  public client with PKCE rather than a confidential one; there is no backend to keep a secret in. A
-  launch is required to *write* but never to read, and the filler's half needs none at all — it has no
-  credentials by construction, and removing that would remove the point of the design. A confidential
-  variant with a Fastify backend-for-frontend was prototyped in
-  [PR #5](https://github.com/aehrc/smart-forms-health-links/pull/5) and closed unmerged. See
-  [SMART App Launch](#smart-app-launch).
-- **A pre-filled request weakens what `PATAST` means.** Answers return stamped patient-asserted,
-  including any the patient scrolled past without reading. The claim is not baseless — the values did
-  pass in front of them and could have been changed or cleared — but on a 700-item form it is thinner
-  than it sounds, and it is the mirror image of the confusion
-  [amendments](#amendments-are-new-resources) exist to prevent. The request records that it went out
-  pre-filled and the review screen says so; which particular answers were touched is not recoverable.
-  Keeping the seed and diffing on return would recover it, and is not built. See
-  [`docs/pre-population.md`](docs/pre-population.md).
-- **Nothing deletes a hosted payload.** `linkLifetimeDays` sets the SHL `exp`, which *readers*
-  enforce; the `Binary` stays. Harmless for a blank form, less so now that a request may carry an
-  extract from a chart.
-- **Reply keys live in `localStorage`** (channel C only). Clearing site data destroys pending
-  replies, permanently. See [Notes](#notes).
-- **A reply slot hosted as a plain `Binary` can be overwritten by anyone who can reach the server.**
-  They cannot read it. `replyToken` is reserved in the descriptor for hosts that can gate writes.
-- **The default servers are shared public sandboxes** and are wiped periodically. The response server
-  also sits behind a caching proxy that caches empty search results — see
-  [the caching proxy](#the-caching-proxy-which-is-not-a-footnote).
-- **A patient created at review time is not identity-verified and is not matched against anything.**
-  The demographics are typed by a reviewer from an unverified scan, no identifier is minted, and
-  duplicate detection goes no further than re-searching the family name. There is no master patient
-  index and no fuzzy matching.
-- **No automated browser tests.** The checks cover the codecs, crypto, wire formats and the live
-  FHIR round trip; the UI is verified by hand. `npm run mint:review` shortens that loop for the review
-  screen, which is otherwise only reachable by walking the whole two-device round trip.
+- **Minted links carry no passcode.** Manifest mode makes one structurally possible, unlike the `U`
+  flag it replaced, but nothing implements it. Reading a passcode-protected manifest works.
+- **A `U`-flag `GET` of somebody else's link omits the `recipient` parameter the spec requires**, so
+  a host that insists on it will refuse. That is the inbound half of the defect in
+  [`docs/u-flag-hosting.md`](docs/u-flag-hosting.md); the outbound half closed when hosting moved
+  in-process.
+- **The BFF can decrypt its own invitations**, because it keeps the link key to encrypt grant files
+  with. An SHL host is conventionally blind; this one is not, and the trade was made knowingly
+  against multi-day tokens.
+- **No token revocation.** Deleting an invitation stops further mints, but a token already minted
+  lives out its stated lifetime unless the authorisation server can revoke it.
+- **Answers arriving by direct send are not reviewed by a human** before they are stored. They are
+  the patient's own answers and are labelled `PATAST` with a `Provenance` saying so, which is the
+  honest representation, but it is a different posture from the scan-back path.
+- **The fallback link has a size ceiling of roughly 14 KB of raw answers**, because it has to fit a
+  version-40 QR code. Past that the link still works but cannot be scanned, only copied - which on a
+  phone means the patient has to get a URL to the clinic some other way.
+- **The demonstration instance is a shared sandbox.** Do not put anything real in it.
 
 ## Checks
 
 ```bash
 npm run typecheck        # tsc project references
+npm run lint             # eslint
+npm run test             # vitest: tests/server, tests/src, tests/ops
 npm run build            # tsc + vite build
-npm run check:roundtrip  # 333 checks: codecs, JWE, reply crypto, foreign links, passcodes,
-                         # the SMART token boundary, its scopes and what a launch gates,
-                         # form data extraction, pre-population and the request/response
-                         # discriminator — no network
-npm run check:e2e        # the retained bespoke decode path, against the live forms server
-
-# 72 checks: both round trips, request tracking, foreign response links, the deferred channel.
-# Reads the forms server, writes only to SHL_WRITE_SERVER
-SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-shl
-
-# 23 checks: the one-shot write channel, including that a SECOND write is actually refused
-SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:e2e-write
-
-# 21 checks: amending answers somebody else gave, without editing what they said
-SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:amend
-
-# 30 checks: creating a patient the destination server does not hold, and filing answers against them
-SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:patient
-
-# 9 checks: extraction against the live catalogue, then a transaction written and read back to
-# confirm whose record it landed in
-SHL_WRITE_SERVER=https://proxy.smartforms.io/fhir npm run check:writeback
-
-# 13 checks: $populate against a live record, choosing what to send, and the seed surviving a
-# real mint-and-decode. Reads the EHR; the only write is the encrypted payload
-SHL_EHR_SERVER=https://proxy.smartforms.io/fhir npm run check:populate
-
-# 9 checks: that the configured SMART issuer can serve the launch this app performs.
-# Read-only, writes nothing. Reads the issuer from public/config.json, or SMART_ISSUER=…
-npm run check:smart
+npm run build:server     # esbuild bundle of the BFF
+npm run check:roundtrip  # codecs, JWE, reply crypto, foreign links, passcodes - no network
+npm run check:e2e-shl    # the manifest and grant contract over real HTTP
+npm run check:e2e        # the inline codec against a live questionnaire catalogue
 ```
 
-`check:roundtrip` needs neither network nor hosting, so it is the one to run on every change. It
-covers the crypto properties that matter — a wrong key, a tampered ciphertext and a tampered `epk`
-must all fail, and an `alg: dir` header must be refused where `ECDH-ES` is required — plus the SHL
-codec against an in-memory blob store. Five sections are worth knowing about:
+`npm run test` is the one to run on every change. It covers the server end to end through Fastify's
+`inject` - launch, callback, session, proxy, mint, manifest - without binding a port, and the
+browser-side contracts as units: the grant's tolerance rules, the submission transaction's shape, the
+send state machine, the invitation Bundle, and the disclosure the filler view has to make before a
+send.
+
+`check:roundtrip` needs neither network nor hosting. It covers the crypto properties that matter - a
+wrong key, a tampered ciphertext and a tampered `epk` must all fail, and an `alg: dir` header must be
+refused where `ECDH-ES` is required - plus the SHL codec against an in-memory store. Four sections
+are worth knowing about:
 
 - **Cross-implementation crypto vectors.** The reply crypto is checked against an independent
-  `node:crypto` implementation *in both directions*, transcribed from Platypus's own
+  `node:crypto` implementation _in both directions_, transcribed from Platypus's own
   `scripts/shl-invite.mjs`. A self-consistent implementation of the wrong Concat-KDF passes its own
   round trip perfectly and cannot talk to anyone; only a second implementation catches that.
 - **The Platypus detection contract.** `questionnaireRefFromTask` and `taskTargetsQuestionnaire` are
   ported verbatim and run against a freshly built request, so a change to how the Task names its
   Questionnaire cannot silently stop a third party recognising our invitations. The negative case is
-  asserted too — the `focus.type`-without-canonical half-change must *not* be detectable — because the
-  positive checks alone would prove nothing.
-- **Attribution on write.** That `meta.security` survives, that `versionId`/`lastUpdated`/`id` do not,
-  and that a `Provenance` is retargeted to the real response id.
-- **The published request Task and the sent-request join.** That `focus` is dropped and the canonical
-  kept in `input`, that no reply slot or key reaches the server copy, and that a listed Task pairs with a
-  local record on `identifier` alone.
-- **The request/response discriminator.** `isRequestBundle` decides which of two entirely different
-  screens a scanned link opens, and pre-population changed the rule it decides by. The truth table is
-  asserted in both directions — a pre-filled request must route to the form filler, a returned response
-  must never — along with the cases the previous rule caught by accident, such as a filler that echoes
-  the form back alongside its answers.
+  asserted too - the `focus.type`-without-canonical half-change must _not_ be detectable - because
+  the positive checks alone would prove nothing.
+- **Attribution on write.** That `meta.security` survives, that `versionId`/`lastUpdated`/`id` do
+  not, and that a `Provenance` is retargeted to the real response id.
+- **The shipped config names no data server.** A regression that reintroduced a configured write
+  target would reintroduce anonymous mode, so it fails a check rather than a review.
 
-`check:e2e-shl` walks both return paths live: build a request with a reply slot, encrypt it, host it as a
-`Binary`, decode it as the filler would, answer it, return the answers **as a link** and **through the
-encrypted slot**, then collect, decrypt, review and submit. It asserts that the hosted blob leaks no
-plaintext, that the blob is **not** on the forms server, that the reply slot and public key appear
-nowhere in the `shlink:` string, that the slot holds ciphertext only, that a stranger's key cannot
-decrypt it, that `PATAST` and the `Provenance` survive all the way into storage, and that the stored
-Task points at the response's *real* id rather than a `urn:uuid`. It also asserts the
-unresolvable-subject failure mode above.
+The two `check:e2e*` scripts are command-line processes with no SMART launch, so neither can obtain
+a session and neither writes to any FHIR server. What they add over the unit tests is realism on the
+parts a unit test cannot fake. `check:e2e-shl` serves a manifest over real HTTP from a throwaway
+localhost server and makes the filler's own `POST`, so real compression, real AES-GCM, real `cty`
+dispatch and real JSON all have to line up for a link this app mints to open in somebody else's
+reader. `check:e2e` exercises the inline codec against a live questionnaire catalogue, which is the
+path the fallback return depends on.
 
-`check:e2e-write` exists for one assertion, and the rest of it is scaffolding to reach that assertion:
-**the second write is refused.** Everything about channel D that could be checked offline already is;
-what cannot be is whether a real FHIR server actually honours `If-Match`, and therefore whether
-"once" is a fact or a hope. It mints a slot, seals a request around it, decodes it as the filler
-would, writes the answers, writes them *again*, and requires the second attempt to come back
-`taken` — against public HAPI that is `409 HAPI-0989`. It also asserts the token and the slot id
-appear nowhere in the `shlink:` string, that `PATAST` survives the round trip, that the filler's own
-patient reference deliberately does not, and that what lands in the record is a new resource rather
-than the transport slot.
+### The acceptance suite
 
-`check:populate` is the only check that reads a *record* rather than a catalogue, and it exists for the
-failure that is invisible: a form's `x-fhir-query` searches being refused produces an empty answer,
-which looks exactly like a record holding nothing. It populates the GP plan against a patient with a
-real history — chosen by name, because unlike most of the catalogue that form fills a *repeating
-group*, which is the shape that decided the design — unticks a row, and requires the pruned seed to
-survive a genuine mint and decode with exactly the answers that were kept. It also reports the
-catalogue count, so the day forms stop declaring population, something says so.
+```bash
+op run --env-file .env -- npm run test:e2e
+```
 
-`check:amend` covers the amendment path, and it is written mostly as a set of things that must **not**
-happen: the original is never updated in place, its `PATAST` label never rides along onto content the
-reviewer wrote, and the patient never ends up named as the author of words they did not say. Each is a
-one-line mistake to make and invisible afterwards, so the original is re-read and compared — version
-included — rather than assumed untouched. It also asserts the `Provenance` actually joins the two, since
-without it the server holds two unrelated responses.
+That is the whole command: `test:e2e` builds the SPA first, and the Playwright config's `webServer`
+starts the BFF - reusing one already listening on `APP_ORIGIN`, which is the usual case when
+`overmind start` is running. Reuse means the server process is whatever was already started, so
+restart it before trusting a pass on a change under `server/`.
 
-`check:patient` ends at the assertion the feature exists for: a `QuestionnaireResponse` naming the
-newly created patient is accepted by a server that enforces referential integrity. That claim is only
-worth anything beside its **control** — the same write with the filler's original unresolvable subject
-must still be rejected. Without it, the success could equally mean the server had stopped enforcing
-integrity, and creating the patient achieved nothing. It also asserts the builder fabricates no
-identifier and no full-text name, that a blank date of birth is *absent* rather than an empty string,
-that a nameless create is refused before any network call, and that the repeated search really does
-find the new patient rather than a cached "nobody by that name".
-
-It also publishes a request `Task` and searches it back out by tag, because that is a **server-side**
-constraint a unit check cannot prove — a canonical in `Task.focus` is rejected outright, and nothing
-short of a real server says so.
-
-It skips without `SHL_WRITE_SERVER` rather than defaulting to one, because it writes; and it refuses to
-run if that is set to the forms server. Everything it creates — four `Binary`s, a `Patient`, three
-`QuestionnaireResponse`s, three `Task`s and a `Provenance` — is deleted afterwards in reverse
-dependency order, and a failed delete is reported rather than swallowed. That matters more now the
-default write target is a shared CSIRO sandbox rather than a throwaway one.
+Two browser contexts, against the configured server: launch both ways, mint, manifest fetch, direct
+send, and the server-side end state asserted with operator credentials. It also covers the
+unregistered-issuer refusal and the idempotent re-send. What it proves, and how to run the same thing
+by hand, is in [`docs/aidbox-validation.md`](docs/aidbox-validation.md).
 
 ### `check:roundtrip` needs a sibling smart-forms checkout
 
@@ -1306,73 +1037,71 @@ git clone https://github.com/aehrc/smart-forms.git ../smart-forms   # no install
 ```
 
 The imports are static and resolved by esbuild at bundle time, so a missing checkout is a build error
-rather than a skipped section — the script does not currently degrade. Nothing else in the repo has
-any coupling to the monorepo: the app itself depends only on `@aehrc/smart-forms-renderer` from npm,
-and `npm run dev`, `npm run build` and `check:e2e-shl` all work without it.
+rather than a skipped section. Nothing else in the repo has any coupling to the monorepo: the app
+depends only on `@aehrc/smart-forms-renderer` from npm.
 
 Not covered by any of these:
 
-- **A third-party wallet opening a link this app mints**, blocked on the `?recipient=` defect above.
-- **Manifest mode and the passcode path, live.** A FHIR `Binary` cannot answer a manifest `POST` and
-  there is no manifest server to point `check:e2e-shl` at, so both are covered offline instead —
-  against a shimmed manifest in `check:roundtrip`, including the assertion that a `P`-flagged link
-  costs no attempt before prompting.
-- **The UI itself.** No browser automation.
-
-Everything else is verified end to end. The inbound direction is additionally exercised against
-foreign-shaped payloads this app would never itself produce.
+- **A third-party wallet opening a link this app mints.** The contract is pinned against Platypus's
+  conformance vectors as fixtures, which is not the same as two running systems.
+- **The UI's appearance.** The acceptance suite drives it; nothing asserts how it looks.
 
 ## Notes
 
-- **Reply keys live in `localStorage`, and clearing site data destroys pending replies.** Applies only
-  when `enableEncryptedReply` is on; by default no key is generated because no slot is minted. The private
-  key for a request exists nowhere else — not in the link, not on the blob server, not with the filler
-  — so a reply that arrives after it is gone is unreadable by anyone, permanently. `/requests` exports
-  to JSON to move requests between browsers; **that file decrypts every reply it covers**, which the UI
-  says at the point of export. A deployment handling requests it cannot afford to lose should hold the
-  keys somewhere designed for keys.
-- **Referential integrity will reject foreign subjects — and for answers from another app this is the
-  normal case, not an edge case.** A third-party filler names the patient in *its* terms (Platypus sends its
-  own local vault key), so a response naming a patient the destination does not hold fails with
-  `HAPI-1094: Resource Patient/x not found, specified in path: QuestionnaireResponse.subject`.
-  `ReviewResponse` probes the subject against the destination *before* enabling Accept and offers
-  reconciliation — including a search of that destination, since a reference is only worth anything on
-  the server it will be stored on, and a questionnaire declaring its own `sdc-questionnaire-endpoint`
-  makes that a different server from the configured one. The subject is still never silently stripped
-  to force the write through — that would lose who the answers are about, and clearing it is an
-  explicit, labelled choice. Picking a patient replaces the foreign `display` rather than merging it,
-  because a name the filler's system chose does not describe the record the reviewer just pointed at.
-- **Answers naming *no* patient are the quieter half of the same problem.** An unresolvable subject at
-  least fails loudly. A response with no `subject` is accepted by every server and files the answers
-  against nobody, permanently, so it is asked about just as loudly as a subject that does not resolve.
-- **Nothing is written without review — on channels A and C.** `ReviewResponse` renders read-only on
-  purpose: editing another party's answers before committing them would blur who recorded what and make
-  the response's `author`/`source` describe a document that no longer exists. Changing something is
-  still possible, as a separate amendment resource — see
-  [Amendments are new resources](#amendments-are-new-resources). Channel B is the
-  exception, by construction: it hands a filler an endpoint and the answers land unreviewed. That is
-  why it is off by default.
+- **The browser never holds a credential, and the log never holds one either.** The error handler
+  answers with a stable code rather than the error's own text, and the logger redacts every field
+  that could carry grant material. Minted access tokens are not persisted at all: they are minted,
+  encrypted into the grant file and forgotten.
+- **Referential integrity will reject foreign subjects - and for answers from another app this is
+  the normal case, not an edge case.** A third-party filler names the patient in _its_ terms, so a
+  response naming a patient the destination does not hold fails the whole write. `ReviewResponse`
+  probes the subject against the destination _before_ enabling Accept and offers reconciliation,
+  including a search of that destination, since a reference is only worth anything on the server it
+  will be stored on. The subject is never silently stripped to force the write through - that would
+  lose who the answers are about, and clearing it is an explicit, labelled choice. Picking a patient
+  replaces the foreign `display` rather than merging it, because a name the filler's system chose
+  does not describe the record the reviewer just pointed at.
+- **Answers naming _no_ patient are the quieter half of the same problem.** An unresolvable subject
+  at least fails loudly. A response with no `subject` is accepted by every server and files the
+  answers against nobody, permanently, so it is asked about just as loudly. On the direct-send path
+  the grant decides this: no `patient` in the grant means no subject on the response, rather than a
+  filler-local reference that would mean nothing on the destination.
+- **The request's own patient is the shortcut, and it comes off the returned Task.** The Task that
+  comes back with the answers _is_ the requester's own invitation Task, so its `for` still names the
+  patient on the requester's own server - which is exactly the answer the reviewer would otherwise
+  search for. `ReviewResponse` offers it as one click, and only when it differs from what the
+  answers already say. This used to be looked up in a browser-local record of the mint, which made
+  the shortcut appear for requests sent from _this_ browser and nowhere else; minting is a server
+  operation now (FR-011), so the Task is both the only record and the better one.
+- **The scan-back path never writes without review.** `ReviewResponse` renders read-only on purpose:
+  editing another party's answers before committing them would blur who recorded what and make the
+  response's `author`/`source` describe a document that no longer exists.
 - **A foreign `id` is stripped before writing, but not the whole of `meta`.** A response from another
-  app carries identity from *its* server, so `id`, `meta.versionId`, `meta.lastUpdated` and
-  `meta.source` go. `meta.security`, `meta.tag` and `meta.profile` **stay**. Dropping `meta` wholesale
-  is the obvious reading of "strip foreign identity" and it silently discards the `PATAST`
+  app carries identity from _its_ server, so `id`, `meta.versionId`, `meta.lastUpdated` and
+  `meta.source` go. `meta.security`, `meta.tag` and `meta.profile` **stay**. Dropping `meta`
+  wholesale is the obvious reading of "strip foreign identity" and it silently discards the `PATAST`
   patient-asserted label, filing answers a patient typed on their phone as though a clinician had
   recorded them. Any accompanying `Provenance` is written too, retargeted from its `urn:uuid` to the
   created response.
-- **A reply slot's placeholder is unique per slot.** A fixed sentinel makes every slot after the first a
-  byte-identical create, which servers that deduplicate refuse outright
-  (`HAPI-2840: Can not create resource duplicating existing resource`) — so the second request ever
-  minted would fail to get a slot.
-- **`Location` headers from the forms server are wrong** — it reports
-  `http://smartforms.csiro.au/fhir/Binary/{id}`: wrong scheme *and* wrong path. `blobStore.ts` takes
-  only the id and rebuilds the URL against the configured base.
-- **Camera:** scanning needs a secure context. `localhost` qualifies; opening the dev server by LAN
-  IP from a phone does not — use HTTPS or a tunnel. There is a paste fallback on `/scan`.
+- **`ifNoneExist` casing is exact.** Aidbox is case-sensitive about the field, so a transaction that
+  spells it otherwise silently loses its idempotence and creates a second response.
+- **Development does not run Vite's dev server, and the reason is the session cookie.** `/launch`
+  builds its
+  `redirect_uri` from `APP_ORIGIN` and the authorisation server is registered against that exact
+  callback, so the browser always comes back to the BFF's origin and the cookie is set there. A dev
+  server on a second port proxying the API would leave you looking at an origin that is not signed
+  in, which fails in ways that read like session bugs. Hence `vite build --watch` in the `Procfile`:
+  rebuild-on-save, one origin, no HMR. `APP_ORIGIN` has to match the origin the browser actually
+  used, for the same reason.
+- **Camera:** scanning needs a secure context. `localhost` qualifies; opening the app by LAN IP from
+  a phone does not - use HTTPS or a tunnel. There is a paste fallback on `/scan`.
 - **Two style systems:** the shell is Tailwind, the form is MUI. MUI is a hard dependency of the
   renderer, so it ships either way; `apps/demo-renderer-app` upstream makes the same trade.
 - **Renderer API:** `SmartFormsRenderer` is deprecated upstream. This app uses the supported
   `useBuildForm` + `RendererThemeProvider` + `BaseRenderer` composition. Note that `useBuildForm`
-  takes a params object — the positional signature in upstream's `demo-renderer-app` is stale.
+  takes a params object - the positional signature in upstream's `demo-renderer-app` is stale.
+- **npm, not bun.** The house preference is bun; this repo stayed on npm because swapping it would
+  touch the lockfile, every script, the Dockerfile and the docs for no feature value.
 
 ## Provenance
 
@@ -1383,12 +1112,13 @@ interoperate with [Platypus](https://github.com/aehrc/platypus). It depends on
 monorepo's `main`.
 
 It is a demonstrator: it exists to show that the round trip works and to pin down the wire formats in
-[`docs/`](docs) precisely enough for someone else to implement against. It is not a supported product,
-and the default servers are public sandboxes.
+[`docs/`](docs) precisely enough for someone else to implement against. It is not a supported
+product.
 
 ## Licence
 
-Apache License 2.0 — see [`LICENSE`](LICENSE). The same licence as
+Apache License 2.0 - see [`LICENSE`](LICENSE). The same licence as
 [smart-forms](https://github.com/aehrc/smart-forms).
 
-Copyright 2026 Commonwealth Scientific and Industrial Research Organisation (CSIRO).
+Copyright © 2026, Commonwealth Scientific and Industrial Research Organisation (CSIRO) ABN 41 687
+119 230.

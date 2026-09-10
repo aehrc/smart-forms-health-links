@@ -4,61 +4,116 @@
 # The image tag is not set here: the deploy workflow passes the commit it built,
 # so the tag in the cluster names the code that is running.
 #
+# ## What changed when the app became a confidential SMART app
+#
+# This file used to carry fifteen `config` keys naming a forms server, a
+# response server and a blob host. It carries four, because the app no longer
+# has servers to be pointed at: the requester launches from a clinical system,
+# and that one launched server is the questionnaire catalogue, the patient
+# source, the response destination and the request-task store. Which servers a
+# deployment may launch against is `issuers` below, and that is server-side
+# configuration rather than something the browser is told.
+#
+# ## The demo cannot launch against the smart-launcher facade any more
+#
+# The previous issuer was `proxy.smartforms.io/v/r4/sim/…`, a smart-launcher-v2
+# facade, used with a *public* client. This architecture needs two things that
+# facade does not offer: a **confidential** launch client, whose secret lives in
+# the Secret named below, and a **SMART Backend Services** client that can mint
+# a short-lived access token per manifest fetch using `private_key_jwt`. Without
+# the second one there is no grant to put in the link, and the direct-send
+# channel degrades to the scan-back fallback on every request.
+#
+# So the registry names an Aidbox instance, which does offer both.
+# `ops/aidboxSetup.ts` applies both client registrations, their access policies
+# and the demonstration data idempotently; `docs/aidbox-validation.md` walks
+# through it. Point this at a different server by replacing the entry, not by
+# adding configuration to the browser.
+#
+# ## This entry is not yet a deployable demo
+#
+# `sczsqtqcgi.aidbox.app` is a **free-tier** instance, and it is the one the
+# development setup targets. It is right for local bring-up and for validating
+# the loop; it is a poor choice for a continuously deployed public demo, because
+# a free tier carries its own limits and because a shared demo should not depend
+# on somebody's personal instance. Before this deploys, either point it at an
+# instance provisioned for the demo, or accept the free tier deliberately.
+#
+# ## Before this deploys, a Secret has to exist
+#
+# `smart-forms-health-links-secrets` in the `formlinks` namespace, holding
+# `SESSION_COOKIE_SECRET`, `LAUNCH_CLIENT_SECRET` and `BACKEND_PRIVATE_JWK`. The
+# chart never templates a secret value, so the release fails to start until it
+# is there. See deploy/helm/smart-forms-health-links/README.md.
+#
 # Author: John Grimes
 smartFormsHealthLinks:
-  replicas: 2
+  # Links have to name the public origin, not the pod's own.
+  appOrigin: "https://formlinks.fhirapp.net"
 
-  # Replaces the config.json baked into the image, so this is the whole
-  # configuration and not an overlay on it: a key added to public/config.json
-  # has to be added here too, or the demo silently falls back to
-  # FALLBACK_CONFIG in src/lib/config.ts, which turns features off.
-  config:
-    formsServerUrl: "https://smartforms.csiro.au/api/fhir"
+  existingSecret: "smart-forms-health-links-secrets"
+
+  # One replica, and this is a constraint rather than a preference: the sessions
+  # and the hosted invitations are one SQLite file on one ReadWriteOnce volume.
+  # A second replica would not see the first one's links.
+
+  issuers:
+    - issuer: "https://sczsqtqcgi.aidbox.app/fhir"
+      label: "Aidbox demo"
+      launchClient:
+        clientId: "smart-forms-health-links"
+        clientSecret: "env:LAUNCH_CLIENT_SECRET"
+        # `cruds` rather than the `cu` this app once asked for. Create and update
+        # alone is what write-back needs and what pre-population silently fails
+        # on: a form that queries the record with no read or search scope comes
+        # back with empty answers rather than an error.
+        scopes: "openid fhirUser launch launch/patient online_access user/*.cruds"
+      backendClient:
+        clientId: "smart-forms-health-links-backend"
+        privateKeyJwk: "env:BACKEND_PRIVATE_JWK"
+        # The narrowest grant that closes the loop: create the response and its
+        # provenance, read and complete the request task. Nothing else.
+        scopes: "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u"
+      # The filler's send window, which starts when they open the link rather
+      # than when the clinic minted it.
+      grantTtlSeconds: 3600
+
+  # The browser-visible settings, replacing the file baked into the image. This
+  # is the whole configuration and not an overlay on it: a key added to
+  # public/config.json has to be added here too, or the demo falls back to
+  # FALLBACK_CONFIG in src/lib/config.ts, which turns every capability off.
+  #
+  # linkBaseUrl is left out on purpose. The app and its links now share one
+  # origin, so resolveLinkBaseUrl falling back to location.origin is already
+  # right, and naming the host twice is a way for the two to disagree.
+  appConfig:
     terminologyServerUrl: "https://r4.ontoserver.csiro.au/fhir"
-    # Links have to name the public origin, not the pod's own.
-    linkBaseUrl: "https://formlinks.fhirapp.net"
     linkCodec: "shl"
-    responseServerUrl: "https://proxy.smartforms.io/fhir"
-    blobServerUrl: "https://proxy.smartforms.io/fhir"
-    blobStore: "fhir-binary"
-    shlManifestUrl: null
+    linkBaseUrl: null
     senderName: "Smart Forms Health Links demo"
-    # Channels B and C stay off: B accepts answers without review, and C's
-    # primary path is a link the filler mints and the requester reviews.
-    enableServerReturn: false
-    enableEncryptedReply: false
-    # Channel D is on, as it is in the shipped config: a filler that cannot do
-    # C's crypto still needs a way to answer. Slots go to blobServerUrl.
+    linkLifetimeDays: 30
+    # Channel D, the no-infrastructure fallback for a filler whose send window
+    # has closed or whose destination has no Backend Services.
     enableOneShotWrite: true
-    writeSlotServerUrl: null
-    # Both on, as they are in the shipped config. They were absent here, which
-    # is the failure this file's header warns about: the demo ran the new code
-    # with both features off. Pre-population is the one that mattered for the
-    # grant — buildScopes adds PRE_POPULATE_SCOPES only when
-    # enablePrePopulate is true, so the launch asked for user/Condition.cu and
-    # never user/Condition.crus, and a form querying the record would have
-    # come back empty rather than refused.
     enableWriteBack: true
     enablePrePopulate: true
-    linkLifetimeDays: 30
     publishRequestTasks: true
-    # A launch is optional: with none the app stays anonymous, which the filler
-    # half depends on.
-    #
-    # The issuer is the smart-launcher-v2 facade over the same data as
-    # responseServerUrl, and the only base there that serves
-    # .well-known/smart-configuration. The /sim/ segment is required: it is
-    # base64url of the launcher's launch-options array, here
-    # [2, "example-hypertension", "cardy-igist", "AUTO", 1, 1, 0, "", "", "",
-    #  "", "", "", "", 0, 1, ""] — a provider-standalone launch with the
-    # practitioner and patient pinned and both interactive screens skipped.
-    #
-    # Pinned and skipped because this launcher deployment serves no UI at all:
-    # every screen it redirects to answers "this route does not exist". A launch
-    # that needs no screen completes in the backend, so signing in yields a real
-    # token and a real fhirUser (Practitioner/cardy-igist) for attribution, at
-    # the cost of one fixed demo identity. See docs/smart-app-launch.md.
-    enableSmartLaunch: true
-    smartIssuerUrl: "https://proxy.smartforms.io/v/r4/sim/WzIsImV4YW1wbGUtaHlwZXJ0ZW5zaW9uIiwiY2FyZHktaWdpc3QiLCJBVVRPIiwxLDEsMCwiIiwiIiwiIiwiIiwiIiwiIiwiIiwwLDEsIiJd/fhir"
-    smartClientId: "smart-forms-health-links"
-    smartScopes: null
+
+  # The ingress is applied beside the release from deploy/demo/ingress.yaml,
+  # matching the cluster's pattern, so the chart does not template one.
+  ingress:
+    enabled: false
+
+  persistence:
+    size: "1Gi"
+    # The cluster has no default StorageClass, so an unset value leaves the claim
+    # Pending forever. gp3 is what the other namespaces on this cluster use.
+    storageClassName: "gp3"
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"

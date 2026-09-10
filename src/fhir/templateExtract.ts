@@ -1,5 +1,15 @@
-import type { Bundle, OperationOutcome, Questionnaire, QuestionnaireResponse } from 'fhir/r4';
-import { canBeTemplateExtracted, extractResultIsOperationOutcome, inAppExtract } from '@aehrc/sdc-template-extract';
+import {
+  canBeTemplateExtracted,
+  extractResultIsOperationOutcome,
+  inAppExtract,
+} from "@aehrc/sdc-template-extract";
+
+import type {
+  Bundle,
+  OperationOutcome,
+  Questionnaire,
+  QuestionnaireResponse,
+} from "fhir/r4";
 
 /**
  * Template-based extraction, and the parts of extraction that depend on nothing else.
@@ -14,8 +24,13 @@ import { canBeTemplateExtracted, extractResultIsOperationOutcome, inAppExtract }
  * TypeScript over `fhirpath` and bundles for Node without complaint.
  */
 
-/** Whether this form declares template-based extraction. */
-export function canTemplateExtract(questionnaire: Questionnaire | undefined): boolean {
+/**
+ * Whether this form declares template-based extraction.
+ * @param questionnaire
+ */
+export function canTemplateExtract(
+  questionnaire: Questionnaire | undefined,
+): boolean {
   return questionnaire !== undefined && canBeTemplateExtracted(questionnaire);
 }
 
@@ -45,33 +60,48 @@ export function canTemplateExtract(questionnaire: Questionnaire | undefined): bo
  *
  * So everything the template produces is still treated as new, which is what `null` expresses.
  * Extracting only what the patient actually changed is worth doing and is not done here yet.
+ * @param response
+ * @param questionnaire
  */
 export async function templateExtract(
   response: QuestionnaireResponse,
-  questionnaire: Questionnaire
+  questionnaire: Questionnaire,
 ): Promise<{ bundle: Bundle; issues: OperationOutcome | null }> {
-  const { extractResult } = await inAppExtract(structuredClone(response), questionnaire, null);
+  const { extractResult } = await inAppExtract(
+    structuredClone(response),
+    questionnaire,
+    null,
+  );
 
   if (extractResultIsOperationOutcome(extractResult)) {
-    throw new Error(describeOutcome(extractResult) ?? 'Extraction failed.');
+    throw new Error(describeOutcome(extractResult) ?? "Extraction failed.");
   }
 
-  return { bundle: extractResult.extractedBundle, issues: extractResult.issues };
+  return {
+    bundle: extractResult.extractedBundle,
+    issues: extractResult.issues,
+  };
 }
 
-/** The human-readable half of an OperationOutcome, when it has one. */
+/**
+ * The human-readable half of an OperationOutcome, when it has one.
+ * @param outcome
+ */
 export function describeOutcome(outcome: OperationOutcome): string | null {
   const text = (outcome.issue ?? [])
     .map((issue) => issue.diagnostics ?? issue.details?.text)
     .filter((value): value is string => !!value);
 
-  return text.length > 0 ? text.join('; ') : null;
+  return text.length > 0 ? text.join("; ") : null;
 }
 
-/** Whether an OperationOutcome carries anything worse than a warning. */
+/**
+ * Whether an OperationOutcome carries anything worse than a warning.
+ * @param outcome
+ */
 export function outcomeHasErrors(outcome: OperationOutcome): boolean {
   return (outcome.issue ?? []).some(
-    (issue) => issue.severity === 'error' || issue.severity === 'fatal'
+    (issue) => issue.severity === "error" || issue.severity === "fatal",
   );
 }
 
@@ -88,14 +118,17 @@ export function outcomeHasErrors(outcome: OperationOutcome): boolean {
  * the failure the reviewer just spent a reconciliation step fixing.
  *
  * Deliberately narrow. It rewrites `subject` and `patient` only, only where the value still equals the
- * *original* subject, and never invents one where the resource had none: a resource whose subject the
+ * original* subject, and never invents one where the resource had none: a resource whose subject the
  * template left empty is a template bug, and quietly filling it in would hide that behind a plausible
  * answer.
+ * @param bundle
+ * @param reconciled
+ * @param originalSubject
  */
 export function retargetSubject(
   bundle: Bundle,
   reconciled: QuestionnaireResponse,
-  originalSubject?: string
+  originalSubject?: string,
 ): Bundle {
   const replacement = reconciled.subject?.reference;
 
@@ -105,18 +138,18 @@ export function retargetSubject(
 
   const rewrite = (value: unknown): unknown => {
     if (Array.isArray(value)) {
-      return value.map(rewrite);
+      return value.map((entry) => rewrite(entry));
     }
 
-    if (value === null || typeof value !== 'object') {
+    if (value === null || typeof value !== "object") {
       return value;
     }
 
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, nested]) => {
-        const isSubjectSlot = key === 'subject' || key === 'patient';
+        const isSubjectSlot = key === "subject" || key === "patient";
         const reference =
-          isSubjectSlot && nested !== null && typeof nested === 'object'
+          isSubjectSlot && nested !== null && typeof nested === "object"
             ? (nested as { reference?: unknown }).reference
             : undefined;
 
@@ -128,12 +161,12 @@ export function retargetSubject(
             // the same call `reconciledResponse` already makes in `ReviewResponse`.
             reconciled.subject?.display
               ? { reference: replacement, display: reconciled.subject.display }
-              : { reference: replacement }
+              : { reference: replacement },
           ];
         }
 
         return [key, rewrite(nested)];
-      })
+      }),
     );
   };
 

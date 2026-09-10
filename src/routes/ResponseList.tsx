@@ -1,22 +1,38 @@
-import { useState } from 'react';
-import { Link as RouterLink, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ClipboardList, Loader2, ShieldCheck, UserRound, X } from 'lucide-react';
-import type { QuestionnaireResponse } from 'fhir/r4';
-import { useConfig } from '@/lib/ConfigContext';
-import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
+import { useQuery } from "@tanstack/react-query";
+import {
+  ArrowLeft,
+  ClipboardList,
+  Loader2,
+  ShieldCheck,
+  UserRound,
+  X,
+} from "lucide-react";
+import { useState } from "react";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
+
+import type { QuestionnaireResponse } from "fhir/r4";
+
+import { useEhrServerUrl, useSmartSession } from "@/auth/SmartContext";
+import FormRenderer from "@/components/FormRenderer";
+import RawAnswers from "@/components/RawAnswers";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   fetchPatient,
   fetchUserDisplay,
   patientDisplay,
-  searchQuestionnaireResponses
-} from '@/fhir/ehrServer';
-import { fetchQuestionnaireByCanonical } from '@/fhir/formsServer';
-import FormRenderer from '@/components/FormRenderer';
-import RawAnswers from '@/components/RawAnswers';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+  searchQuestionnaireResponses,
+} from "@/fhir/ehrServer";
+import { fetchQuestionnaireByCanonical } from "@/fhir/formsServer";
+import { useConfig } from "@/lib/configContextValue";
+import { FHIR_PROXY_BASE } from "@/lib/session";
 
 /**
  * QuestionnaireResponses already stored on the EHR.
@@ -29,13 +45,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
  * already in the record by the time they show up.
  */
 
-/** Whether a response carries the patient-asserted security label. */
+/**
+ * Whether a response carries the patient-asserted security label.
+ * @param response
+ */
 function isPatientAsserted(response: QuestionnaireResponse): boolean {
-  return (response.meta?.security ?? []).some((coding) => coding.code === 'PATAST');
+  return (response.meta?.security ?? []).some(
+    (coding) => coding.code === "PATAST",
+  );
 }
 
 /** Where a sender may put the form's human title alongside the canonical, as a primitive extension. */
-const QUESTIONNAIRE_DISPLAY_EXTENSION = 'http://hl7.org/fhir/StructureDefinition/display';
+const QUESTIONNAIRE_DISPLAY_EXTENSION =
+  "http://hl7.org/fhir/StructureDefinition/display";
 
 /**
  * The form's title as the *sender* gave it, from the `display` extension on `_questionnaire`.
@@ -43,17 +65,23 @@ const QUESTIONNAIRE_DISPLAY_EXTENSION = 'http://hl7.org/fhir/StructureDefinition
  * This is the one source that needs no network and cannot go stale differently from the response it
  * travels with. Worth preferring over anything resolved later: it is what the app that wrote the
  * answers believed the form was called, which is the label a reviewer should see.
+ * @param response
  */
-function declaredQuestionnaireDisplay(response: QuestionnaireResponse): string | undefined {
+function declaredQuestionnaireDisplay(
+  response: QuestionnaireResponse,
+): string | undefined {
   return response._questionnaire?.extension?.find(
-    (extension) => extension.url === QUESTIONNAIRE_DISPLAY_EXTENSION
+    (extension) => extension.url === QUESTIONNAIRE_DISPLAY_EXTENSION,
   )?.valueString;
 }
 
-/** The last path segment of a canonical, version suffix removed. */
+/**
+ * The last path segment of a canonical, version suffix removed.
+ * @param canonical
+ */
 function canonicalSlug(canonical: string): string {
-  const [url] = canonical.split('|');
-  return url.split('/').filter(Boolean).pop() ?? canonical;
+  const [url] = canonical.split("|");
+  return url.split("/").findLast(Boolean) ?? canonical;
 }
 
 /**
@@ -67,8 +95,13 @@ function canonicalSlug(canonical: string): string {
  *  1. `_questionnaire`'s display extension, when the sender supplied one.
  *  2. The real `Questionnaire.title`, resolved from the forms server.
  *  3. The slug, which at least distinguishes rows while the lookup is in flight or has failed.
+ * @param response
+ * @param titles
  */
-function responseTitle(response: QuestionnaireResponse, titles: Map<string, string>): string {
+function responseTitle(
+  response: QuestionnaireResponse,
+  titles: Map<string, string>,
+): string {
   const declared = declaredQuestionnaireDisplay(response);
   if (declared) {
     return declared;
@@ -76,7 +109,7 @@ function responseTitle(response: QuestionnaireResponse, titles: Map<string, stri
 
   const canonical = response.questionnaire;
   if (!canonical) {
-    return 'Response to an unnamed form';
+    return "Response to an unnamed form";
   }
 
   return titles.get(canonical) ?? canonicalSlug(canonical);
@@ -93,10 +126,12 @@ function responseTitle(response: QuestionnaireResponse, titles: Map<string, stri
  * Returns null when the server holds no author at all, which callers should render as an explicit
  * absence: an accepted response that nobody is recorded as having authored is a real gap, not a
  * cosmetic one, and hiding it would make the record look more complete than it is.
+ * @param response
+ * @param names
  */
 function authorLabel(
   response: QuestionnaireResponse,
-  names: Map<string, string>
+  names: Map<string, string>,
 ): { text: string; resolved: boolean } | null {
   const author = response.author;
   if (!author) {
@@ -113,28 +148,56 @@ function authorLabel(
   }
 
   const name = names.get(reference);
-  return name ? { text: name, resolved: true } : { text: reference, resolved: false };
+  return name
+    ? { text: name, resolved: true }
+    : { text: reference, resolved: false };
+}
+
+/**
+ *
+ */
+/**
+ * When the answers were given, falling back to when the server stored them.
+ *
+ * The two are labelled differently on purpose: `authored` is the filler's own claim about when they
+ * answered, and `lastUpdated` is the server's record of when it heard about it. Presenting the
+ * second as the first would overstate what is known.
+ * @param response the response to describe
+ * @returns the text to append, or null when neither timestamp is present
+ */
+function timestampText(response: QuestionnaireResponse): string | null {
+  if (response.authored) {
+    return ` · ${new Date(response.authored).toLocaleString()}`;
+  }
+  if (response.meta?.lastUpdated) {
+    return ` · stored ${new Date(response.meta.lastUpdated).toLocaleString()}`;
+  }
+  return null;
 }
 
 export default function ResponseList() {
-  const config = useConfig();
   const [params, setParams] = useSearchParams();
   const [selected, setSelected] = useState<QuestionnaireResponse | null>(null);
 
-  const subject = params.get('subject') ?? undefined;
+  const subject = params.get("subject") ?? undefined;
   const ehrServerUrl = useEhrServerUrl();
   const session = useSmartSession();
 
   const {
     data: page,
     isPending,
-    error
+    error,
   } = useQuery({
     // `fhirUser` in the key so signing in or out refetches — see PatientList.
-    queryKey: ['ehr-responses', ehrServerUrl, session?.fhirUser ?? null, subject],
+    queryKey: [
+      "ehr-responses",
+      ehrServerUrl,
+      session?.fhirUser ?? null,
+      subject,
+    ],
     queryFn: ({ signal }) =>
-      searchQuestionnaireResponses(ehrServerUrl!, { subject, session }, signal),
-    enabled: ehrServerUrl !== null
+      searchQuestionnaireResponses(ehrServerUrl!, { subject }, signal),
+    enabled: ehrServerUrl !== null,
   });
 
   /*
@@ -150,26 +213,36 @@ export default function ResponseList() {
   const authorRefs = [
     ...new Set(
       (page?.resources ?? [])
-        .map((response) => (response.author?.display ? undefined : response.author?.reference))
-        .filter((reference): reference is string => reference !== undefined)
-    )
-  ].sort();
+        .map((response) =>
+          response.author?.display ? undefined : response.author?.reference,
+        )
+        .filter((reference): reference is string => reference !== undefined),
+    ),
+  ].toSorted();
 
   const { data: authorNames } = useQuery({
-    queryKey: ['response-authors', ehrServerUrl, session?.fhirUser ?? null, authorRefs.join('|')],
+    queryKey: [
+      "response-authors",
+      ehrServerUrl,
+      session?.fhirUser ?? null,
+      authorRefs.join("|"),
+    ],
     queryFn: async ({ signal }) => {
       const resolved = await Promise.all(
-        authorRefs.map(async (reference) => [
-          reference,
-          await fetchUserDisplay(ehrServerUrl!, reference, signal, session)
-        ] as const)
+        authorRefs.map(
+          async (reference) =>
+            [
+              reference,
+              await fetchUserDisplay(ehrServerUrl!, reference, signal),
+            ] as const,
+        ),
       );
 
       return new Map(
-        resolved.filter((pair): pair is [string, string] => pair[1] !== null)
+        resolved.filter((pair): pair is [string, string] => pair[1] !== null),
       );
     },
-    enabled: ehrServerUrl !== null && authorRefs.length > 0
+    enabled: ehrServerUrl !== null && authorRefs.length > 0,
   });
 
   /*
@@ -188,40 +261,53 @@ export default function ResponseList() {
       (page?.resources ?? [])
         .filter((response) => !declaredQuestionnaireDisplay(response))
         .map((response) => response.questionnaire)
-        .filter((canonical): canonical is string => canonical !== undefined)
-    )
-  ].sort();
+        .filter((canonical): canonical is string => canonical !== undefined),
+    ),
+  ].toSorted();
 
   const { data: questionnaireTitles } = useQuery({
-    queryKey: ['response-form-titles', config.formsServerUrl, canonicalsNeedingTitles.join('|')],
+    queryKey: [
+      "response-form-titles",
+      FHIR_PROXY_BASE,
+      canonicalsNeedingTitles.join("|"),
+    ],
     queryFn: async ({ signal }) => {
       const resolved = await Promise.all(
         canonicalsNeedingTitles.map(async (canonical) => {
           try {
             const questionnaire = await fetchQuestionnaireByCanonical(
-              config.formsServerUrl,
+              FHIR_PROXY_BASE,
               canonical,
-              signal
+              signal,
             );
-            return [canonical, questionnaire.title ?? questionnaire.name] as const;
+            return [
+              canonical,
+              questionnaire.title ?? questionnaire.name,
+            ] as const;
           } catch {
             return [canonical, undefined] as const;
           }
-        })
+        }),
       );
 
       return new Map(
-        resolved.filter((pair): pair is [string, string] => pair[1] !== undefined)
+        resolved.filter(
+          (pair): pair is [string, string] => pair[1] !== undefined,
+        ),
       );
     },
-    enabled: canonicalsNeedingTitles.length > 0
+    enabled: canonicalsNeedingTitles.length > 0,
   });
 
   // Only to name the filter chip; the list itself is already filtered server-side.
   const { data: filterPatient } = useQuery({
-    queryKey: ['ehr-patient', ehrServerUrl, session?.fhirUser ?? null, subject],
-    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subject!.split('/')[1], signal, session),
-    enabled: ehrServerUrl !== null && subject !== undefined && subject.startsWith('Patient/')
+    queryKey: ["ehr-patient", ehrServerUrl, session?.fhirUser ?? null, subject],
+    queryFn: ({ signal }) =>
+      fetchPatient(ehrServerUrl!, subject!.split("/", 2)[1], signal),
+    enabled:
+      ehrServerUrl !== null &&
+      subject !== undefined &&
+      subject.startsWith("Patient/"),
   });
 
   if (!ehrServerUrl) {
@@ -229,10 +315,11 @@ export default function ResponseList() {
       <div className="space-y-4">
         <BackLink />
         <Alert tone="warning" title="No EHR server is configured">
-          Set <span className="font-mono text-xs">responseServerUrl</span> in{' '}
-          <span className="font-mono text-xs">config.json</span>. That is the server holding patients and
-          their responses — deliberately not the forms server, which is a read-only catalogue of
-          questionnaire definitions.
+          Set <span className="font-mono text-xs">responseServerUrl</span> in{" "}
+          <span className="font-mono text-xs">config.json</span>. That is the
+          server holding patients and their responses — deliberately not the
+          forms server, which is a read-only catalogue of questionnaire
+          definitions.
         </Alert>
       </div>
     );
@@ -243,11 +330,13 @@ export default function ResponseList() {
       <BackLink />
 
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Responses on the server</h1>
+        <h1 className="text-xl font-semibold text-slate-900">
+          Responses on the server
+        </h1>
         <p className="text-sm text-slate-500">
-          Completed QuestionnaireResponses held by{' '}
+          Completed QuestionnaireResponses held by{" "}
           <span className="font-mono text-xs">{ehrServerUrl}</span>
-          {page?.total !== undefined ? ` · ${page.total} in total` : null}
+          {page?.total === undefined ? null : ` · ${page.total} in total`}
         </p>
       </div>
 
@@ -258,15 +347,19 @@ export default function ResponseList() {
             <button
               type="button"
               onClick={() => {
-                params.delete('subject');
+                params.delete("subject");
                 setParams(params, { replace: true });
               }}
               aria-label="Clear patient filter"
-              className="rounded-full hover:bg-slate-200">
+              className="rounded-full hover:bg-slate-200"
+            >
               <X className="h-3 w-3" aria-hidden />
             </button>
           </span>
-          <RouterLink to="/patients" className="text-xs text-slate-600 underline">
+          <RouterLink
+            to="/patients"
+            className="text-xs text-slate-600 underline"
+          >
             Change patient
           </RouterLink>
         </div>
@@ -294,8 +387,8 @@ export default function ResponseList() {
       {page && page.resources.length === 0 ? (
         <Alert title="Nothing stored yet">
           {subject
-            ? 'This patient has no responses on this server.'
-            : 'This server holds no QuestionnaireResponses.'}
+            ? "This patient has no responses on this server."
+            : "This server holds no QuestionnaireResponses."}
         </Alert>
       ) : null}
 
@@ -304,36 +397,54 @@ export default function ResponseList() {
           <li key={response.id}>
             <Card className="transition-colors hover:border-slate-400">
               <CardContent className="flex flex-wrap items-start gap-3 p-4">
-                <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                <ClipboardList
+                  className="mt-0.5 h-4 w-4 shrink-0 text-slate-400"
+                  aria-hidden
+                />
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-slate-900">
-                    {responseTitle(response, questionnaireTitles ?? new Map())}
+                    {responseTitle(
+                      response,
+                      questionnaireTitles ?? new Map<string, string>(),
+                    )}
                   </p>
                   <p className="truncate font-mono text-xs text-slate-500">
-                    {response.questionnaire ?? 'no questionnaire canonical'}
+                    {response.questionnaire ?? "no questionnaire canonical"}
                   </p>
                   <p className="mt-0.5 text-xs text-slate-500">
                     QuestionnaireResponse/{response.id}
-                    {response.subject?.reference ? ` · ${response.subject.reference}` : null}
-                    {response.authored
-                      ? ` · ${new Date(response.authored).toLocaleString()}`
-                      : response.meta?.lastUpdated
-                        ? ` · stored ${new Date(response.meta.lastUpdated).toLocaleString()}`
-                        : null}
+                    {response.subject?.reference
+                      ? ` · ${response.subject.reference}`
+                      : null}
+                    {timestampText(response)}
                   </p>
                   {(() => {
-                    const author = authorLabel(response, authorNames ?? new Map());
+                    const author = authorLabel(
+                      response,
+                      authorNames ?? new Map<string, string>(),
+                    );
                     return (
                       <p className="mt-0.5 flex items-center gap-1 text-xs">
-                        <UserRound className="h-3 w-3 shrink-0 text-slate-400" aria-hidden />
+                        <UserRound
+                          className="h-3 w-3 shrink-0 text-slate-400"
+                          aria-hidden
+                        />
                         {author ? (
-                          <span className={author.resolved ? 'text-slate-600' : 'font-mono text-slate-500'}>
+                          <span
+                            className={
+                              author.resolved
+                                ? "text-slate-600"
+                                : "font-mono text-slate-500"
+                            }
+                          >
                             Recorded by {author.text}
                           </span>
                         ) : (
                           /* Stated rather than omitted: an accepted response records who answered but
                              nobody as having recorded it, and that absence is worth seeing. */
-                          <span className="text-slate-400 italic">No author recorded</span>
+                          <span className="text-slate-400 italic">
+                            No author recorded
+                          </span>
                         )}
                       </p>
                     );
@@ -344,7 +455,8 @@ export default function ResponseList() {
                   {isPatientAsserted(response) ? (
                     <span
                       className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-900"
-                      title="Recorded by the patient rather than a clinician">
+                      title="Recorded by the patient rather than a clinician"
+                    >
                       <ShieldCheck className="h-3 w-3" aria-hidden />
                       Patient
                     </span>
@@ -352,7 +464,11 @@ export default function ResponseList() {
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
                     {response.status}
                   </span>
-                  <Button variant="outline" size="sm" onClick={() => setSelected(response)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelected(response)}
+                  >
                     View
                   </Button>
                 </div>
@@ -362,7 +478,9 @@ export default function ResponseList() {
         ))}
       </ul>
 
-      {selected ? <ResponseViewer response={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? (
+        <ResponseViewer response={selected} onClose={() => setSelected(null)} />
+      ) : null}
     </div>
   );
 }
@@ -378,8 +496,14 @@ export default function ResponseList() {
  *
  * Either way there is no form to render, so this falls back to showing the raw answers rather than an
  * error: the data is there and worth seeing, even unlabelled.
+ * @param props
+ * @param props.response
+ * @param props.onClose
  */
-function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () => void }) {
+function ResponseViewer(props: {
+  response: QuestionnaireResponse;
+  onClose: () => void;
+}) {
   const { response, onClose } = props;
   const config = useConfig();
 
@@ -388,12 +512,13 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
   const {
     data: questionnaire,
     isPending,
-    error
+    error,
   } = useQuery({
-    queryKey: ['questionnaire-by-canonical', config.formsServerUrl, canonical],
-    queryFn: ({ signal }) => fetchQuestionnaireByCanonical(config.formsServerUrl, canonical!, signal),
+    queryKey: ["questionnaire-by-canonical", FHIR_PROXY_BASE, canonical],
+    queryFn: ({ signal }) =>
+      fetchQuestionnaireByCanonical(FHIR_PROXY_BASE, canonical!, signal),
     enabled: canonical !== undefined,
-    retry: false
+    retry: false,
   });
 
   return (
@@ -408,14 +533,19 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
                 questionnaire?.name ??
                 (response.questionnaire
                   ? canonicalSlug(response.questionnaire)
-                  : 'Response to an unnamed form')}
+                  : "Response to an unnamed form")}
             </CardTitle>
             <CardDescription>
-              QuestionnaireResponse/{response.id} · read-only. Already stored on the server; there is
-              nothing to accept here.
+              QuestionnaireResponse/{response.id} · read-only. Already stored on
+              the server; there is nothing to accept here.
             </CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={onClose} className="ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            className="ml-auto"
+          >
             <X className="h-4 w-4" aria-hidden />
             Close
           </Button>
@@ -427,8 +557,8 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
           <Alert title="Patient-asserted answers">
             <span className="inline-flex items-center gap-1.5">
               <ShieldCheck className="h-3.5 w-3.5 text-slate-500" aria-hidden />
-              Labelled <span className="font-mono text-xs">PATAST</span> — recorded by the person
-              themselves rather than by a clinician.
+              Labelled <span className="font-mono text-xs">PATAST</span> —
+              recorded by the person themselves rather than by a clinician.
             </span>
           </Alert>
         ) : null}
@@ -442,20 +572,28 @@ function ResponseViewer(props: { response: QuestionnaireResponse; onClose: () =>
 
         {!canonical || error ? (
           <>
-            <Alert tone="warning" title="The form definition could not be resolved">
+            <Alert
+              tone="warning"
+              title="The form definition could not be resolved"
+            >
               {canonical ? (
                 <>
-                  This response cites{' '}
-                  <span className="font-mono text-xs break-all">{canonical}</span>, which{' '}
-                  <span className="font-mono text-xs">{config.formsServerUrl}</span> does not hold. That
-                  is common on a shared server — responses cite whatever canonical the app that wrote
-                  them used. The answers are shown as stored instead.
+                  This response cites{" "}
+                  <span className="font-mono text-xs break-all">
+                    {canonical}
+                  </span>
+                  , which{" "}
+                  <span className="font-mono text-xs">{FHIR_PROXY_BASE}</span>{" "}
+                  does not hold. That is common on a shared server — responses
+                  cite whatever canonical the app that wrote them used. The
+                  answers are shown as stored instead.
                 </>
               ) : (
                 <>
-                  This response has no <span className="font-mono text-xs">questionnaire</span>{' '}
-                  canonical, so there is no definition to render it against. The answers are shown as
-                  stored instead.
+                  This response has no{" "}
+                  <span className="font-mono text-xs">questionnaire</span>{" "}
+                  canonical, so there is no definition to render it against. The
+                  answers are shown as stored instead.
                 </>
               )}
             </Alert>
@@ -482,7 +620,8 @@ function BackLink() {
   return (
     <RouterLink
       to="/"
-      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900"
+    >
       <ArrowLeft className="h-4 w-4" aria-hidden />
       All forms
     </RouterLink>

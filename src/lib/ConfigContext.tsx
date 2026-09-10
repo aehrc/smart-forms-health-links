@@ -1,19 +1,20 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { FALLBACK_CONFIG, loadConfig, type AppConfig } from './config';
+import { useEffect, useState, type ReactNode } from "react";
 
-const ConfigContext = createContext<AppConfig>(FALLBACK_CONFIG);
+import { loadConfig, type AppConfig } from "./config";
+import { ConfigContext } from "./configContextValue";
 
-export function useConfig(): AppConfig {
-  return useContext(ConfigContext);
-}
-
+/**
+ *
+ * @param root0
+ * @param root0.children
+ */
 export function ConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    loadConfig().then((loaded) => {
+    void loadConfig().then((loaded) => {
       if (!cancelled) {
         setConfig(loaded);
       }
@@ -28,5 +29,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     return null;
   }
 
-  return <ConfigContext.Provider value={config}>{children}</ConfigContext.Provider>;
+  return (
+    <ConfigContext.Provider value={config}>{children}</ConfigContext.Provider>
+  );
 }

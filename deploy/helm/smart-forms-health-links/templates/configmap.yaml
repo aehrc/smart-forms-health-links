@@ -1,17 +1,20 @@
-# The app fetches /config.json at boot to learn which servers to talk to. This
-# ConfigMap is mounted over the copy built into the image, so a deployment can
-# point the same image at different servers. It is only created when values
-# supply config; otherwise the built-in file is served.
-#
-# Author: John Grimes
-{{- if .Values.smartFormsHealthLinks.config }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}-config
+  name: {{ .Release.Name }}-configmap
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app: {{ .Release.Name }}
 data:
-  config.json: {{ toJson .Values.smartFormsHealthLinks.config | quote }}
+  # The issuer registry the server reads at startup, one entry per FHIR server this deployment
+  # may launch against. Secret-bearing fields hold `env:VARIABLE_NAME` references that the
+  # server resolves from the pod's environment, so no credential appears in this object.
+  issuers.json: |
+{{ toPrettyJson .Values.smartFormsHealthLinks.issuers | indent 4 }}
+{{- with .Values.smartFormsHealthLinks.appConfig }}
+  # The browser-visible settings, served at /config.json in place of the file baked into the
+  # image. Mounted over that file rather than merged with it, so this is the whole configuration:
+  # a key omitted here falls back to FALLBACK_CONFIG in src/lib/config.ts, which turns every
+  # capability off. Nothing secret belongs in here - the browser reads it.
+  config.json: |
+{{ toPrettyJson . | indent 4 }}
 {{- end }}

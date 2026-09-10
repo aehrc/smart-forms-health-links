@@ -1,0 +1,17 @@
+[
+  {
+    "issuer": "https://sczsqtqcgi.aidbox.app/fhir",
+    "label": "Aidbox demo",
+    "launchClient": {
+      "clientId": "smart-forms-health-links",
+      "clientSecret": "env:LAUNCH_CLIENT_SECRET",
+      "scopes": "openid fhirUser launch launch/patient online_access user/*.cruds"
+    },
+    "backendClient": {
+      "clientId": "smart-forms-health-links-backend",
+      "privateKeyJwk": "env:BACKEND_PRIVATE_JWK",
+      "scopes": "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u"
+    },
+    "grantTtlSeconds": 3600
+  }
+]

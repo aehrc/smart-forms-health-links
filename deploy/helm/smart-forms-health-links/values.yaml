@@ -1,25 +1,53 @@
-# Author: John Grimes
 smartFormsHealthLinks:
   image: "smart-forms-health-links:latest"
   imagePullPolicy: "Always"
-  replicas: 2
 
-  # The app fetches /config.json at boot. Leaving this empty serves the file
-  # baked into the image; supplying keys replaces it entirely, so a deployment
-  # that sets anything must set everything it cares about.
+  # Origin the app is served from. Derived from `ingress.host` when unset; set it explicitly
+  # only when an intermediate proxy publishes a different host or scheme.
+  appOrigin: ~
+
+  # Name of an existing Secret holding SESSION_COOKIE_SECRET, LAUNCH_CLIENT_SECRET and
+  # BACKEND_PRIVATE_JWK. Required: the chart never templates a secret value.
+  existingSecret: ""
+
+  # Issuer registry, rendered into a ConfigMap. Secret-bearing fields hold
+  # `env:VARIABLE_NAME` references to keys of the Secret above, never values.
+  issuers: []
+
+  # Extra environment variables for the server process.
   config: {}
+
+  # Browser-visible settings, served at /config.json in place of the file baked into the image.
+  # Empty means serve the baked-in file. Supplying this replaces it entirely rather than
+  # overlaying it, so a deployment that sets anything must set everything it cares about.
+  # Nothing secret belongs here.
+  appConfig: {}
+
+  resources: {}
+    # requests:
+    #   memory: "256Mi"
+    #   cpu: "100m"
+    # limits:
+    #   memory: "512Mi"
+    #   cpu: "500m"
 
   service:
     type: "ClusterIP"
     port: 80
 
-  resources:
-    requests:
-      memory: "32Mi"
-      cpu: "100m"
-    limits:
-      memory: "128Mi"
-      cpu: "500m"
+  ingress:
+    enabled: true
+    className: ~
+    host: ""
+    annotations: {}
+    tls:
+      enabled: true
+      secretName: ~
+
+  # The SQLite file holding sessions and invitations.
+  persistence:
+    size: "1Gi"
+    storageClassName: ~
 
   nodeSelector: {}
   tolerations: []

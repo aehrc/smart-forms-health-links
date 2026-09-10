@@ -16,25 +16,30 @@
  *
  * With no `SMART_ISSUER`, the issuer is read from `public/config.json`.
  */
-import { readFileSync } from 'node:fs';
-import { DEFAULT_SMART_SCOPES } from '../src/lib/config';
+import { readFileSync } from "node:fs";
+
+import { DEFAULT_SMART_SCOPES } from "../src/lib/config";
 
 let failures = 0;
 let total = 0;
 
-function check(name: string, condition: boolean, detail = '') {
+function check(name: string, condition: boolean, detail = "") {
   total++;
   if (!condition) {
     failures++;
   }
-  console.log(`  ${condition ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(
+    `  ${condition ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
 }
 
 function configuredIssuer(): string | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync('public/config.json', 'utf8'));
+    const parsed: unknown = JSON.parse(
+      readFileSync("public/config.json", "utf8"),
+    );
     const issuer = (parsed as { smartIssuerUrl?: unknown }).smartIssuerUrl;
-    return typeof issuer === 'string' ? issuer : null;
+    return typeof issuer === "string" ? issuer : null;
   } catch {
     return null;
   }
@@ -44,27 +49,33 @@ const issuer = process.env.SMART_ISSUER ?? configuredIssuer();
 
 if (!issuer) {
   console.error(
-    'No issuer to check. Set `smartIssuerUrl` in public/config.json, or pass SMART_ISSUER=…\n' +
-      'This is not a failure: a deployment that does not offer SMART App Launch has nothing here to check.'
+    "No issuer to check. Set `smartIssuerUrl` in public/config.json, or pass SMART_ISSUER=…\n" +
+      "This is not a failure: a deployment that does not offer SMART App Launch has nothing here to check.",
   );
   process.exit(0);
 }
 
 console.log(`issuer: ${issuer}\n`);
-console.log('--- discovery ---');
+console.log("--- discovery ---");
 
-const wellKnown = `${issuer.replace(/\/+$/, '')}/.well-known/smart-configuration`;
+const wellKnown = `${issuer.replace(/\/+$/, "")}/.well-known/smart-configuration`;
 
 let document: Record<string, unknown> = {};
 try {
-  const response = await fetch(wellKnown, { headers: { Accept: 'application/json' } });
-  check('discovery/reachable', response.ok, `${response.status} ${response.statusText}`);
+  const response = await fetch(wellKnown, {
+    headers: { Accept: "application/json" },
+  });
+  check(
+    "discovery/reachable",
+    response.ok,
+    `${response.status} ${response.statusText}`,
+  );
 
   const body: unknown = await response.json();
   const isOperationOutcome =
-    typeof body === 'object' &&
+    typeof body === "object" &&
     body !== null &&
-    (body as { resourceType?: string }).resourceType === 'OperationOutcome';
+    (body as { resourceType?: string }).resourceType === "OperationOutcome";
 
   /*
    * Called out separately because it is the failure everyone hits. A FHIR server with no SMART support
@@ -72,38 +83,47 @@ try {
    * OperationOutcome, which a naive check reads as success.
    */
   check(
-    'discovery/notAFhirError',
+    "discovery/notAFhirError",
     !isOperationOutcome,
     isOperationOutcome
-      ? 'the server returned an OperationOutcome — this is a plain FHIR base, not a SMART issuer'
-      : ''
+      ? "the server returned an OperationOutcome — this is a plain FHIR base, not a SMART issuer"
+      : "",
   );
 
   if (response.ok && !isOperationOutcome) {
     document = body as Record<string, unknown>;
   }
-} catch (cause) {
-  check('discovery/reachable', false, cause instanceof Error ? cause.message : String(cause));
+} catch (error) {
+  check(
+    "discovery/reachable",
+    false,
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
-console.log('\n--- endpoints ---');
-for (const field of ['authorization_endpoint', 'token_endpoint', 'issuer']) {
-  check(`endpoints/${field}`, typeof document[field] === 'string', String(document[field] ?? '—'));
+console.log("\n--- endpoints ---");
+for (const field of ["authorization_endpoint", "token_endpoint", "issuer"]) {
+  check(
+    `endpoints/${field}`,
+    typeof document[field] === "string",
+    String(document[field] ?? "—"),
+  );
 }
 
-console.log('\n--- capabilities this app needs ---');
+console.log("\n--- capabilities this app needs ---");
 
-const methods = (document.code_challenge_methods_supported as string[] | undefined) ?? [];
+const methods =
+  (document.code_challenge_methods_supported as string[] | undefined) ?? [];
 check(
-  'pkce/S256',
-  methods.includes('S256'),
+  "pkce/S256",
+  methods.includes("S256"),
   // Not negotiable: `smartSession.ts` sets `pkceMode: 'required'`, because a public client has no
   // secret and PKCE is the only thing binding the authorisation code to this app.
-  methods.length > 0 ? methods.join(', ') : 'none advertised'
+  methods.length > 0 ? methods.join(", ") : "none advertised",
 );
 
 const capabilities = (document.capabilities as string[] | undefined) ?? [];
-for (const capability of ['launch-ehr', 'launch-standalone', 'client-public']) {
+for (const capability of ["launch-ehr", "launch-standalone", "client-public"]) {
   check(`capabilities/${capability}`, capabilities.includes(capability));
 }
 
@@ -112,19 +132,25 @@ for (const capability of ['launch-ehr', 'launch-standalone', 'client-public']) {
  * do not enumerate every scope an app might ask for — so a missing entry here is a prompt to look, not
  * evidence of a problem.
  */
-console.log('\n--- scopes (advisory) ---');
+console.log("\n--- scopes (advisory) ---");
 const supported = (document.scopes_supported as string[] | undefined) ?? [];
 if (supported.length === 0) {
-  console.log('  --    the issuer does not advertise scopes_supported; nothing to compare against');
+  console.log(
+    "  --    the issuer does not advertise scopes_supported; nothing to compare against",
+  );
 } else {
-  for (const scope of DEFAULT_SMART_SCOPES.split(' ')) {
-    const wildcard = scope.replace(/\/.*$/, '/*.*');
+  for (const scope of DEFAULT_SMART_SCOPES.split(" ")) {
+    const wildcard = scope.replace(/\/.*$/, "/*.*");
     const known = supported.includes(scope) || supported.includes(wildcard);
-    console.log(`  ${known ? 'ok  ' : '--  '}  scopes/${scope}${known ? '' : ' — not advertised'}`);
+    console.log(
+      `  ${known ? "ok  " : "--  "}  scopes/${scope}${known ? "" : " — not advertised"}`,
+    );
   }
 }
 
 console.log(
-  failures === 0 ? `\nAll ${total} checks passed.` : `\n${failures} of ${total} check(s) failed.`
+  failures === 0
+    ? `\nAll ${total} checks passed.`
+    : `\n${failures} of ${total} check(s) failed.`,
 );
 process.exit(failures === 0 ? 0 : 1);

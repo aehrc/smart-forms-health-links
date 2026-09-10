@@ -1,9 +1,11 @@
-import { Link as RouterLink } from 'react-router-dom';
-import { useSmartSession } from '@/auth/SmartContext';
-import { LAUNCH_SETUP_PATH } from '@/auth/routes';
-import { isPrePopulateScope, isWriteBackScope, missingScopes } from '@/auth/scopes';
-import { useConfig } from '@/lib/ConfigContext';
-import { Alert } from '@/components/ui/alert';
+import {
+  isPrePopulateScope,
+  isWriteBackScope,
+  missingScopes,
+} from "@/auth/scopes";
+import { useSmartSession } from "@/auth/SmartContext";
+import { Alert } from "@/components/ui/alert";
+import { useConfig } from "@/lib/configContextValue";
 
 /**
  * Says so when the server granted less than was asked for.
@@ -43,7 +45,7 @@ export default function ScopeWarning() {
   const writeBack = missing.filter(isWriteBackScope);
   const prePopulate = missing.filter(isPrePopulateScope);
   const other = missing.filter(
-    (scope) => !isWriteBackScope(scope) && !isPrePopulateScope(scope)
+    (scope) => !isWriteBackScope(scope) && !isPrePopulateScope(scope),
   );
   const featureOnly = other.length === 0;
 
@@ -53,8 +55,8 @@ export default function ScopeWarning() {
    * fact in terms of what they were about to try to do.
    */
   const affected = [
-    prePopulate.length > 0 ? 'Filling a form from the record' : null,
-    writeBack.length > 0 ? 'writing into the patient record' : null
+    prePopulate.length > 0 ? "Filling a form from the record" : null,
+    writeBack.length > 0 ? "writing into the patient record" : null,
   ].filter((phrase): phrase is string => phrase !== null);
 
   return (
@@ -62,9 +64,10 @@ export default function ScopeWarning() {
       tone="warning"
       title={
         featureOnly
-          ? `${affected.join(' and ')} ${affected.length > 1 ? 'are' : 'is'} not permitted on this server`
-          : 'Your server granted fewer permissions than this app asked for'
-      }>
+          ? `${affected.join(" and ")} ${affected.length > 1 ? "are" : "is"} not permitted on this server`
+          : "Your server granted fewer permissions than this app asked for"
+      }
+    >
       <ul className="space-y-0.5">
         {missing.map((scope) => (
           <li key={scope} className="font-mono text-xs">
@@ -75,14 +78,18 @@ export default function ScopeWarning() {
 
       {prePopulate.length > 0 ? (
         <p className="mt-1">
-          A form can still be requested; it will go out blank rather than pre-filled. Worth knowing
-          that this failure is <strong>silent</strong> if it is ignored — a search the server refuses
-          produces an empty answer, which looks exactly like a record holding nothing.
+          A form can still be requested; it will go out blank rather than
+          pre-filled. Worth knowing that this failure is <strong>silent</strong>{" "}
+          if it is ignored — a search the server refuses produces an empty
+          answer, which looks exactly like a record holding nothing.
           {config.enablePrePopulate ? (
             <>
-              {' '}
-              Set <span className="font-mono text-xs">enablePrePopulate: false</span> to remove the
-              option rather than have it quietly return nothing.
+              {" "}
+              Set{" "}
+              <span className="font-mono text-xs">
+                enablePrePopulate: false
+              </span>{" "}
+              to remove the option rather than have it quietly return nothing.
             </>
           ) : null}
         </p>
@@ -90,14 +97,17 @@ export default function ScopeWarning() {
 
       {writeBack.length > 0 ? (
         <p className="mt-1">
-          Answers can still be reviewed and saved. What will fail is the last step — writing the
-          resources extracted from them into the record — and it will fail at the point of accepting,
-          not before.
+          Answers can still be reviewed and saved. What will fail is the last
+          step — writing the resources extracted from them into the record — and
+          it will fail at the point of accepting, not before.
           {config.enableWriteBack ? (
             <>
-              {' '}
-              Set <span className="font-mono text-xs">enableWriteBack: false</span> to remove the
-              option rather than have it refused.
+              {" "}
+              Set{" "}
+              <span className="font-mono text-xs">
+                enableWriteBack: false
+              </span>{" "}
+              to remove the option rather than have it refused.
             </>
           ) : null}
         </p>
@@ -105,16 +115,13 @@ export default function ScopeWarning() {
 
       {other.length > 0 ? (
         <p className="mt-1">
-          Parts of the app that need these will come back empty or refuse. This is the authorisation
-          server&rsquo;s decision, not a configuration error here.
+          Parts of the app that need these will come back empty or refuse. This
+          is the authorisation server&rsquo;s decision, not a configuration
+          error here.
         </p>
       ) : null}
 
-      <p className="mt-1">
-        <RouterLink to={LAUNCH_SETUP_PATH} className="underline underline-offset-2">
-          What this deployment asks for, and why
-        </RouterLink>
-      </p>
+      <p className="mt-1"> What this deployment asks for, and why</p>
     </Alert>
   );
 }

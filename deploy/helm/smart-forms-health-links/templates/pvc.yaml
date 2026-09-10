@@ -1,0 +1,18 @@
+{{- $app := .Values.smartFormsHealthLinks }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-pvc
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  # ReadWriteOnce is enough, and honest: one pod writes this SQLite file, and the Deployment is
+  # pinned to a single replica for that reason.
+  accessModes:
+    - ReadWriteOnce
+  {{- with $app.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $app.persistence.size | quote }}

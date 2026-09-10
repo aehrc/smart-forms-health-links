@@ -20,18 +20,18 @@ place it can answer this one.
 
 ## The two mechanisms
 
-| | Extension | Engine | Forms on the default server |
-| --- | --- | --- | --- |
-| Template-based | `sdc-questionnaire-templateExtract` | `@aehrc/sdc-template-extract` | 26 of 138 |
-| Observation-based | `sdc-questionnaire-observationExtract` | `@aehrc/smart-forms-renderer` | 5 of 138 |
+|                   | Extension                              | Engine                        | Forms on the default server |
+| ----------------- | -------------------------------------- | ----------------------------- | --------------------------- |
+| Template-based    | `sdc-questionnaire-templateExtract`    | `@aehrc/sdc-template-extract` | 26 of 138                   |
+| Observation-based | `sdc-questionnaire-observationExtract` | `@aehrc/smart-forms-renderer` | 5 of 138                    |
 
 Both run **entirely in the browser**. There is no `$extract` endpoint, no StructureMap transform
 server, and nothing added to the deployment — which matters here, because this app is a static site
 and [claim 6](../README.md#what-this-demonstrates) says so.
 
 The remaining 107 forms declare no extraction, and for those the panel does not appear. That is
-deliberate and worth stating: an empty write-back box reads as *"this form found nothing clinically
-relevant"*, which is a far stronger claim than *"this form has no templates"*.
+deliberate and worth stating: an empty write-back box reads as _"this form found nothing clinically
+relevant"_, which is a far stronger claim than _"this form has no templates"_.
 
 ### The two that are absent
 
@@ -60,7 +60,7 @@ POST the transaction Bundle       ← writeBundle.ts
 
 **Extraction runs on the reconciled response, never on the answers as they arrived.** This has no
 counterpart in smart-forms, which extracts from a response it populated itself and therefore always
-has the right subject. Here the answers come from a stranger's phone naming the patient in *that*
+has the right subject. Here the answers come from a stranger's phone naming the patient in _that_
 app's terms — Platypus sends its own local vault key — and a `Condition` filed against that key is
 either rejected outright or, worse, filed against nobody.
 
@@ -83,7 +83,7 @@ no document explaining where they came from. smart-forms makes the same call in
 ## `modifiedOnly` does not apply here
 
 smart-forms passes `inAppExtract` a comparison response, built by re-populating the questionnaire from
-the EHR, so that only answers the clinician *changed* get extracted.
+the EHR, so that only answers the clinician _changed_ get extracted.
 
 That baseline used not to exist here. The person who filled the form had no access to the EHR and no
 launch context — [claim 2](../README.md#what-this-demonstrates), not an oversight — so there was
@@ -92,7 +92,7 @@ nothing to diff against.
 [Pre-population](pre-population.md) changed that. A request can now go out with answers filled in from
 the record, and where one did, the requester holds exactly the baseline smart-forms would build.
 `comparisonSourceResponse` is still `null`, and now by choice rather than by necessity: the baseline is
-the *requester's* while the answers are a *stranger's*, comparable only if the filler preserved the
+the _requester's_ while the answers are a _stranger's_, comparable only if the filler preserved the
 `linkId` structure; a request sent blank still has no baseline at all, so diffing would give the app
 two extraction modes producing different resources from identical answers. `templateExtract.ts` carries
 the argument in full. Extracting only what the patient actually changed is worth doing and is not done
@@ -138,7 +138,7 @@ user/MedicationStatement.cu  user/Immunization.cu  user/Procedure.cu  user/Encou
 is amending something that already exists, and there is no create-only way to express that.
 
 What still holds, and is asserted by `check:roundtrip`: nothing is ever deleted, and the resources the
-app *authors* — the response, its Task, its Provenance, any Patient it registers — remain create-only.
+app _authors_ — the response, its Task, its Provenance, any Patient it registers — remain create-only.
 [Amendments are new resources](../README.md#amendments-are-new-resources) exists precisely so a stored
 response never has to be updated in place.
 

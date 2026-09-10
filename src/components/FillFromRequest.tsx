@@ -1,87 +1,94 @@
-import { useState } from 'react';
-import { CheckCircle2, Link2, Loader2, Send, ShieldCheck } from 'lucide-react';
-import type { Questionnaire, QuestionnaireResponse, Task } from 'fhir/r4';
-import { useConfig } from '@/lib/ConfigContext';
 import {
-  canCreateHealthLinks,
+  CheckCircle2,
+  Link2,
+  Loader2,
+  ShieldCheck,
+  Upload,
+} from "lucide-react";
+import { useState } from "react";
+
+import type { Questionnaire, Task } from "fhir/r4";
+
+import FormRenderer from "@/components/FormRenderer";
+import ShareLinkPanel from "@/components/ShareLinkPanel";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { useConfig } from "@/lib/configContextValue";
+import {
   createResponseLink,
   sendEncryptedReply,
-  sendOneShotWrite
-} from '@/link/createLink';
-import { taskCorrelationId } from '@/link/exchange';
-import { parseReturnChannels } from '@/link/replyDescriptor';
-import FormRenderer from '@/components/FormRenderer';
-import ShareLinkPanel from '@/components/ShareLinkPanel';
-import { Button } from '@/components/ui/button';
-import { Alert } from '@/components/ui/alert';
+  sendOneShotWrite,
+} from "@/link/createLink";
+import { taskCorrelationId } from "@/link/exchange";
+import { parseReturnChannels } from "@/link/replyDescriptor";
 
 export interface FillFromRequestProps {
   questionnaire: Questionnaire;
   task: Task;
-  /**
-   * Answers the requester filled in from their record before sending, when they did.
-   *
-   * Passed to the renderer **by reference**, and it must stay one: `useBuildForm` compares it that
-   * way, so a fresh object each render rebuilds the form in a loop (the caveat `ReviewResponse`
-   * documents). It arrives from `parseRequestBundle` inside a cached query, which is stable — so
-   * nothing here may reshape it on the way past.
-   */
-  prePopulated?: QuestionnaireResponse;
   label?: string;
+  /**
+   * Whether the surface above is already offering to write the answers to the named server.
+   *
+   * Suppresses this component's "this request also names a server, and this app does not write
+   * there" note, which stops being true the moment a grant makes such a write possible.
+   */
+  directSendOffered?: boolean;
+  /**
+   * Whether returning a link is now the way these answers get home.
+   *
+   * Set when the direct channel is shut with nothing delivered - an expired window or a refused
+   * credential. It makes the return the primary action and says so, rather than leaving a person
+   * to work out that the alternative in the corner is now the only option (FR-025, FR-028).
+   */
+  scanBackPromoted?: boolean;
 }
 
 /**
  * The filler's side: a request arrived, so render its embedded Questionnaire and hand the answers
  * back.
  *
- * The form may arrive partly filled in. The requester can populate it from their own record before
- * sending — the only side that can, since nothing here has a path to their servers — and those
- * answers travel as a seed the renderer starts from. It is a starting point and not an assertion:
- * this device owns it once the link is open, and clearing a field is as final as typing in one. The
- * alert below the channel list says so, and it is not decoration — it is the only thing between
- * somebody and silently endorsing a clinician's data as their own.
+ * Two return paths live here, and neither is the direct send - that is offered above this
+ * component, by the surface that holds the grant.
  *
- * Two return paths:
+ * - **Return answers as a link** - the answers are compressed into a link the requester scans and
+ *   accepts under their own session. Always available: it needs no session, no host and no
+ *   network, which is what makes it the fallback every other channel can fall back *to*. The link
+ *   is not encrypted, and the panel that shows it says so.
+ * - **Send securely** - the answers are encrypted to a public key the request carried and parked
+ *   in a slot the requester polls. Offered only when the request asked for it, which no request
+ *   this app mints does. It remains here because honouring someone else's return channel is a
+ *   different question from offering our own: refusing would strand their answers.
  *
- * - **SMART Health Link** — the answers are encrypted, hosted, and handed back as a link the
- *   requester scans. This is the default path and the one Platypus uses, so it is what the requester
- *   side is built to read. It needs somewhere to put the payload; in production that would be the
- *   filling app's own storage.
- * - **Send securely** — the answers are encrypted to a public key the request carried and parked in
- *   a slot the requester polls. Offered only when the request asked for it, which by default no
- *   request this app mints does. It remains here because honouring someone else's return channel is
- *   a different question from offering our own: refusing would strand their answers.
- * - **Send answers** — a single conditional `PUT` into a slot the request pre-allocated. Plaintext
- *   FHIR, so the slot host sees the content, in exchange for needing no crypto at all to answer;
- *   also offered only when the request asked for it.
- *
- * When a request offers a slot of either kind, that becomes the primary action — it is the one that
- * needs nothing further from the person filling the form.
- *
- * ## Why this app *does* write to a channel-D slot, having refused channel B
- *
- * The objection to channel B was never "writing is wrong". It was that B named a record server with
- * no capability attached, so answering it meant pushing an unreviewed assertion into somebody's
- * record and hoping that was wanted. A channel-D slot is a single pre-allocated resource on the
- * requester's own transport host, the write is bounded to once, and the requester still reviews
- * before anything reaches a record. Nothing that made B refusable is present, so refusing it would
- * strand answers for no gain — which is the same reasoning that has this app honour someone else's
- * reply slot.
+ * Which one leads depends on what the request offers and on what has already been tried. A reply
+ * slot leads when there is one, because it needs nothing further from the person filling the form.
+ * `scanBackPromoted` overrides that: once the direct channel has closed with nothing delivered,
+ * the link is the way home and is presented as such.
+ * @param props the form, the request it answers, and what the surface above has already offered
+ * @returns the filler's surface
  */
 export default function FillFromRequest(props: FillFromRequestProps) {
-  const { questionnaire, task, prePopulated, label } = props;
+  const {
+    questionnaire,
+    task,
+    label,
+    directSendOffered = false,
+    scanBackPromoted = false,
+  } = props;
   const config = useConfig();
 
   const [link, setLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState<'shl' | 'reply' | 'write' | null>(null);
-  /** Which channel the answers went down, or null while they have not been sent. */
-  const [sent, setSent] = useState<'reply' | 'write' | null>(null);
+  const [pending, setPending] = useState<"shl" | "reply" | "write" | null>(
+    null,
+  );
+  const [sent, setSent] = useState(false);
   /**
-   * The slot had already been answered.
+   * The slot had already been written.
    *
-   * Kept apart from {@link error} on purpose: it is not a failure the person can retry their way out
-   * of, and offering them a retry that is guaranteed to fail again would be a lie.
+   * Its own state rather than an error, because it usually is not one: the commonest way to reach
+   * it is a filler who sent the answers, lost the page, and came back. Telling them that failed
+   * would be worse than untrue - it would invite them to find another way to send answers that are
+   * already there.
    */
   const [taken, setTaken] = useState(false);
 
@@ -89,13 +96,13 @@ export default function FillFromRequest(props: FillFromRequestProps) {
 
   async function handleReturn() {
     setError(null);
-    setPending('shl');
+    setPending("shl");
     try {
       const created = await createResponseLink(questionnaire, config, task);
       setLink(created);
-    } catch (cause) {
+    } catch (error_) {
       setLink(null);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(error_ instanceof Error ? error_.message : String(error_));
     } finally {
       setPending(null);
     }
@@ -107,60 +114,56 @@ export default function FillFromRequest(props: FillFromRequestProps) {
     }
 
     setError(null);
-    setPending('reply');
+    setPending("reply");
     try {
       await sendEncryptedReply(questionnaire, channels.reply, task);
-      setSent('reply');
-    } catch (cause) {
+      setSent(true);
+    } catch (error_) {
       // Never mark it sent on failure: the honest state is "not sent", with a retry available.
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(error_ instanceof Error ? error_.message : String(error_));
     } finally {
       setPending(null);
     }
   }
 
-  async function handleSendAnswers() {
+  /*
+   * Channel D. Kept beside the encrypted reply rather than replacing it, because the two fail in
+   * different ways and a filler may only have one of them: this needs no crypto at all, and the
+   * slot refuses a second write, so "taken" usually means the answers already arrived and this is a
+   * duplicate rather than a failure to report as one.
+   */
+  async function handleWriteToSlot() {
     if (!channels.write) {
       return;
     }
 
     setError(null);
-    setPending('write');
+    setPending("write");
     try {
-      const outcome = await sendOneShotWrite(questionnaire, channels.write, task);
-
-      switch (outcome.status) {
-        case 'written':
-          setSent('write');
-          break;
-        case 'taken':
-          // Someone got there first, or an earlier send of ours landed without us seeing it. Either
-          // way the request has its answers and a second write must not be attempted.
-          setTaken(true);
-          break;
-        case 'refused':
-          setError(
-            'The requester\u2019s server refused the token this request carried, so the answers were ' +
-              `not written (${outcome.detail}). Return them as a link instead.`
-          );
-          break;
-        case 'gone':
-          setError(
-            'The slot this request named no longer exists, so there is nowhere to write the answers. ' +
-              'Return them as a link instead.'
-          );
-          break;
+      const outcome = await sendOneShotWrite(
+        questionnaire,
+        channels.write,
+        task,
+      );
+      if (outcome.status === "written") {
+        setSent(true);
+      } else if (outcome.status === "taken") {
+        setTaken(true);
+      } else {
+        setError(
+          outcome.status === "refused"
+            ? outcome.detail
+            : "That slot is no longer there, so the answers could not be sent.",
+        );
       }
-    } catch (cause) {
-      // Never mark it sent on failure: the honest state is "not sent", with a retry available.
-      setError(cause instanceof Error ? cause.message : String(cause));
+    } catch (error_) {
+      setError(error_ instanceof Error ? error_.message : String(error_));
     } finally {
       setPending(null);
     }
   }
 
   const correlationId = taskCorrelationId(task);
-  const canHost = canCreateHealthLinks(config);
   const requester = task.requester?.display;
   const addressedTo = task.for?.display;
 
@@ -168,152 +171,160 @@ export default function FillFromRequest(props: FillFromRequestProps) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
             {label ?? questionnaire.title ?? questionnaire.id}
           </h1>
-          <p className="text-sm text-slate-500">
-            {requester ? `${requester} has asked for this form to be completed.` : 'Someone has asked for this form to be completed.'}
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {requester
+              ? `${requester} has asked for this form to be completed.`
+              : "Someone has asked for this form to be completed."}
             {addressedTo ? (
               <>
-                {' '}
+                {" "}
                 Addressed to <strong>{addressedTo}</strong>.
               </>
             ) : null}
             {correlationId ? (
               <>
-                {' '}
-                Request <span className="font-mono text-xs">{correlationId}</span>
+                {" "}
+                Request{" "}
+                <span className="font-mono text-xs">{correlationId}</span>
               </>
             ) : null}
           </p>
         </div>
 
-        {sent || taken ? null : (
+        {sent ? null : (
           <div className="ml-auto flex flex-wrap gap-2">
             {channels.reply ? (
-              <Button onClick={handleSendSecurely} disabled={pending !== null}>
-                {pending === 'reply' ? (
+              <Button
+                variant={scanBackPromoted ? "outline" : undefined}
+                onClick={() => {
+                  void handleSendSecurely();
+                }}
+                disabled={pending !== null}
+              >
+                {pending === "reply" ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                 ) : (
                   <ShieldCheck className="h-4 w-4" aria-hidden />
                 )}
-                {pending === 'reply' ? 'Encrypting and sending…' : 'Send securely'}
+                {pending === "reply"
+                  ? "Encrypting and sending…"
+                  : "Send securely"}
               </Button>
             ) : null}
             {channels.write ? (
               <Button
-                variant={channels.reply ? 'outline' : undefined}
-                onClick={handleSendAnswers}
+                variant={
+                  channels.reply || scanBackPromoted ? "outline" : undefined
+                }
+                onClick={() => {
+                  void handleWriteToSlot();
+                }}
                 disabled={pending !== null}
-                title="Written straight into the slot the requester set aside — once">
-                {pending === 'write' ? (
+                title="Written straight into the slot the requester set aside, once"
+              >
+                {pending === "write" ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                 ) : (
-                  <Send className="h-4 w-4" aria-hidden />
+                  <Upload className="h-4 w-4" aria-hidden />
                 )}
-                {pending === 'write' ? 'Sending…' : 'Send answers'}
+                {pending === "write" ? "Sending…" : "Send answers"}
               </Button>
             ) : null}
             <Button
-              variant={channels.reply || channels.write ? 'outline' : undefined}
-              onClick={handleReturn}
-              disabled={pending !== null || !canHost}
-              title={
-                canHost
-                  ? 'Encrypted and hosted — the requester scans it back'
-                  : 'Needs blobServerUrl in config.json'
-              }>
-              {pending === 'shl' ? (
+              variant={
+                (channels.reply || channels.write) && !scanBackPromoted
+                  ? "outline"
+                  : undefined
+              }
+              onClick={() => {
+                void handleReturn();
+              }}
+              disabled={pending !== null}
+              title="The requester scans it back and accepts the answers themselves"
+            >
+              {pending === "shl" ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
               ) : (
                 <Link2 className="h-4 w-4" aria-hidden />
               )}
-              Return as Health Link
+              Return answers as a link
             </Button>
           </div>
         )}
       </div>
 
-      {sent === 'reply' ? (
+      {taken ? (
+        <Alert title="These answers were already sent">
+          That slot has been written once already, which is all it accepts. If
+          you sent them from this device a moment ago, they arrived - there is
+          nothing more to do.
+        </Alert>
+      ) : null}
+
+      {sent ? (
         <Alert title="Sent securely">
           <span className="inline-flex items-center gap-1.5">
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-600" aria-hidden />
-            The encrypted answers were delivered to the requester&rsquo;s reply slot.
+            <CheckCircle2
+              className="h-3.5 w-3.5 text-green-600 dark:text-green-400"
+              aria-hidden
+            />
+            The encrypted answers were delivered to the requester&rsquo;s reply
+            slot.
           </span>
           <p className="mt-1">
-            Only they can read them — the answers were encrypted to their key before leaving this
-            device. This confirms delivery to the slot and nothing more: there is no signal available
-            for whether they have collected it yet.
+            Only they can read them - the answers were encrypted to their key
+            before leaving this device. This confirms delivery to the slot and
+            nothing more: there is no signal available for whether they have
+            collected it yet.
           </p>
         </Alert>
       ) : null}
 
-      {sent === 'write' ? (
-        <Alert title="Answers sent">
-          <span className="inline-flex items-center gap-1.5">
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-600" aria-hidden />
-            The answers were written to the slot the requester set aside.
-          </span>
-          <p className="mt-1">
-            That was the one write this request allowed, so they cannot be sent again this way. It
-            confirms delivery and nothing more — the requester still has to collect them, and someone
-            there still has to review them before they reach a record.
-          </p>
+      {/*
+       * Above the form, because it is an instruction rather than a footnote: the surface that
+       * closed the direct channel has explained why, and this is what to do about it. It says
+       * where the answers go and who does the accepting, since a link that the requester has to
+       * scan needs the requester to be in the room.
+       */}
+      {!sent && scanBackPromoted ? (
+        <Alert title="Return these answers as a link">
+          Finish the form, then use <strong>Return answers as a link</strong>{" "}
+          above. It produces a QR code and a link for{" "}
+          {requester ?? "whoever asked for this form"} to scan, and they accept
+          the answers into the record themselves. Nothing is sent from here.
         </Alert>
       ) : null}
 
-      {taken ? (
-        <Alert title="This request has already been answered">
-          The slot the request named already holds a completed response, so nothing was written — an
-          answer either arrived from somewhere else, or an earlier send from here landed after all.
-          The write was refused rather than overwriting it, which is the point of it being a single
-          write.
-          <p className="mt-1">
-            If these answers are the ones that should stand, return them as a Health Link instead and
-            let the requester decide.
-          </p>
-          <Button variant="outline" className="mt-2" onClick={handleReturn} disabled={!canHost}>
-            <Link2 className="h-4 w-4" aria-hidden />
-            Return as Health Link
-          </Button>
-        </Alert>
-      ) : null}
-
-      {!sent && !taken && channels.reply ? (
+      {!sent && channels.reply ? (
         <Alert title="This request can accept answers directly">
-          The answers will be encrypted to the requester&rsquo;s key on this device and left in a slot
-          for them to collect, so nothing has to be scanned back.
-          {channels.reply.replyMethod !== 'PUT' ? (
+          The answers will be encrypted to the requester&rsquo;s key on this
+          device and left in a slot for them to collect, so nothing has to be
+          scanned back.
+          {channels.reply.replyMethod === "PUT" ? null : (
             <p className="mt-1">
-              It asks for delivery by{' '}
-              <span className="font-mono text-xs">{channels.reply.replyMethod}</span>, which this app
-              does not implement — use one of the link options instead.
+              It asks for delivery by{" "}
+              <span className="font-mono text-xs">
+                {channels.reply.replyMethod}
+              </span>
+              , which this app does not implement - use one of the link options
+              instead.
             </p>
-          ) : null}
+          )}
         </Alert>
       ) : null}
 
-      {!sent && !taken && channels.write ? (
-        <Alert title="This request set aside a place for the answers">
-          They will be written straight to{' '}
-          <span className="font-mono text-xs break-all">{channels.write.writeUrl}</span>, so nothing
-          has to be scanned back.
-          <p className="mt-1">
-            Two things worth knowing before you use it. The answers travel as ordinary FHIR, so
-            whoever runs that server can read them — unlike the encrypted reply, where they cannot.
-            And the request allows{' '}
-            {channels.write.writeEtag ? <strong>exactly one</strong> : 'a'} write
-            {channels.write.writeEtag ? ', so corrections after that go through the requester' : ''}.
-          </p>
-        </Alert>
-      ) : null}
-
-      {!sent && !taken && channels.serverTaskUrl && !channels.write ? (
+      {!sent && channels.serverTaskUrl && !directSendOffered ? (
         <Alert title="This request also names a server">
-          Answers may be written directly to{' '}
-          <span className="font-mono text-xs break-all">{channels.serverTaskUrl}</span>. This app does
-          not do that — it names a record server and carries no capability, so answering it would push
-          answers into someone&rsquo;s record unreviewed. Use one of the options above instead.
+          Answers may be written directly to{" "}
+          <span className="font-mono text-xs break-all">
+            {channels.serverTaskUrl}
+          </span>
+          . This app does not do that without a grant that authorises it - it
+          returns answers to the requester rather than writing into their record
+          unreviewed.
         </Alert>
       ) : null}
 
@@ -325,21 +336,9 @@ export default function FillFromRequest(props: FillFromRequestProps) {
 
       {link ? <ShareLinkPanel link={link} kind="response" /> : null}
 
-      {prePopulated ? (
-        <Alert title="Some of this is already filled in">
-          <p>
-            {task.requester?.display ?? 'Whoever sent this'} filled in part of this form from their
-            own records before sending it. <strong>Check it.</strong> Anything wrong or out of date
-            can be changed or cleared here, and what you send back is what you leave on the form —
-            nothing is kept from the original.
-          </p>
-        </Alert>
-      ) : null}
-
       <div className="form-surface">
         <FormRenderer
           questionnaire={questionnaire}
-          questionnaireResponse={prePopulated}
           terminologyServerUrl={config.terminologyServerUrl}
         />
       </div>

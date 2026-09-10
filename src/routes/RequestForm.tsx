@@ -1,281 +1,224 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Eye, Inbox, Loader2, Send, Sparkles } from 'lucide-react';
-import { fetchQuestionnaireById, isRenderableQuestionnaire } from '@/fhir/formsServer';
-import { useConfig } from '@/lib/ConfigContext';
-import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
-import { useLaunchContext } from '@/auth/useLaunchContext';
-import { fetchPatient, patientDisplay } from '@/fhir/ehrServer';
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, Inbox, Loader2, Send, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
 import {
-  canMintRequest,
-  canPrePopulate,
-  canUseEncryptedReply,
-  canUseOneShotWrite,
-  canUseServerReturn,
-  resolveWriteSlotServerUrl
-} from '@/lib/config';
-import { prePopulate, questionnaireDeclaresPopulation } from '@/fhir/populate';
-import { populatedRows, pruneAnswers } from '@/lib/answerRows';
-import { saveRequest } from '@/lib/requestStore';
-import { canCreateHealthLinks, createRequestLink } from '@/link/createLink';
-import { questionnaireCanonicalOf, taskCorrelationId } from '@/link/exchange';
-import PatientPicker from '@/components/PatientPicker';
-import PrePopulatePanel from '@/components/PrePopulatePanel';
-import FormRenderer from '@/components/FormRenderer';
-import ShareLinkPanel from '@/components/ShareLinkPanel';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { LaunchRequired } from '@/components/LaunchRequired';
+  Link as RouterLink,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
+
+import Connect from "./Connect";
+
+import { useSmartSession } from "@/auth/SmartContext";
+import PatientPicker from "@/components/PatientPicker";
+import PrePopulatePanel from "@/components/PrePopulatePanel";
+import ShareLinkPanel from "@/components/ShareLinkPanel";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Loading } from "@/components/ui/loading";
+import { fetchPatient, patientDisplay } from "@/fhir/ehrServer";
+import {
+  fetchQuestionnaireById,
+  isRenderableQuestionnaire,
+} from "@/fhir/formsServer";
+import { prePopulate, questionnaireDeclaresPopulation } from "@/fhir/populate";
+import { populatedRows, pruneAnswers } from "@/lib/answerRows";
+import { canPrePopulate } from "@/lib/config";
+import { useConfig } from "@/lib/configContextValue";
+import { FHIR_PROXY_BASE, useRequesterGate } from "@/lib/session";
+import { createRequestLink, type CreatedRequest } from "@/link/createLink";
 
 /**
- * Create a "please fill this in" SMART Health Link for a form.
+ * Create a "please fill this in" link for a form.
  *
- * The Questionnaire is embedded in the encrypted payload, so whoever scans this needs no access to
- * the forms server. The link itself stays a few hundred bytes because it carries only a URL and a
- * decryption key.
+ * The page asks the BFF to mint (`POST /api/invitations`) and shows what comes back. Three
+ * things happen server-side that used to happen here, and all three are the point of the
+ * feature: the request Task is published to the launched server with the session's authority
+ * (FR-010), the encrypted payload is hosted by this app rather than by a third-party blob server
+ * (FR-013), and the link resolves to a manifest that mints a fresh, short-lived grant on every
+ * fetch (FR-014). Nothing about that is visible from here except that it either worked or it
+ * did not.
+ *
+ * The subject is pre-filled from the launch context. An EHR launch already names the patient the
+ * clinician is looking at, so asking them to pick that patient again would be asking them to
+ * repeat what they just told the system. The reference is resolved through the proxy for a
+ * display name, because a filler cannot resolve a reference into a server it has no access to -
+ * the name is the only part of "who is this for" that survives the trip. It stays editable: a
+ * request is not always for the patient on screen.
+ * @author John Grimes
+ */
+
+/**
+ * Create-a-request page.
+ * @returns the form, a launch prompt, or a loading line
  */
 export default function RequestForm() {
   const { questionnaireId } = useParams<{ questionnaireId: string }>();
   const [params] = useSearchParams();
   const config = useConfig();
 
-  const session = useSmartSession();
-  const ehrServerUrl = useEhrServerUrl();
-
-  const [subject, setSubject] = useState('');
-  const [subjectDisplay, setSubjectDisplay] = useState('');
-
-  /*
-   * An EHR launch from a chart already knows who the request is for, and who is asking. Looking that
-   * patient up and filling both fields is the difference between a launch that means something and one
-   * that only changes which server is written to — being made to search for the patient you launched
-   * from is exactly the friction the launch exists to remove.
-   *
-   * Shared with the context strip in the header rather than fetched here, which is also what keeps
-   * SDC's `user` context and the strip's label from being two reads of one resource.
-   */
-  const {
-    patient: launchPatient,
-    patientReference: launchPatientRef,
-    user: launchedUser,
-    userDisplay: launchedUserName
-  } = useLaunchContext();
-
-  /*
-   * The patient picker navigates back here with the chosen patient in the query string. Applied via an
-   * effect rather than as initial state so returning from the picker updates the fields on a route that
-   * is already mounted.
-   */
-  const pickedSubject = params.get('subject');
-  const pickedDisplay = params.get('subjectDisplay');
-  useEffect(() => {
-    if (pickedSubject) {
-      setSubject(pickedSubject);
-    }
-    if (pickedDisplay) {
-      setSubjectDisplay(pickedDisplay);
-    }
-  }, [pickedSubject, pickedDisplay]);
-
-  /*
-   * The launch context seeds the fields, but only while they are still empty. An explicit choice — a
-   * patient picked here, or one carried in the query string — is the clinician overriding the chart
-   * they launched from, and a background fetch landing afterwards must not undo that.
-   */
-  useEffect(() => {
-    if (!launchPatientRef || pickedSubject) {
-      return;
-    }
-
-    setSubject((current) => (current === '' ? launchPatientRef : current));
-    if (launchPatient) {
-      setSubjectDisplay((current) => (current === '' ? patientDisplay(launchPatient) : current));
-    }
-  }, [launchPatientRef, launchPatient, pickedSubject]);
-  /*
-   * Pre-population, and the three pieces of state it needs.
-   *
-   * `deselected` rather than `selected`, which is not a stylistic choice: the answers arrive
-   * asynchronously, and tracking what is *kept* would mean an effect that ticks everything each time
-   * the query resolves — racing the clinician's own unticking, and re-ticking a row they had just
-   * removed. Tracking what they took away needs no effect at all, and the default falls out of it:
-   * nothing removed means everything sent.
-   */
-  const [prePopulateOn, setPrePopulateOn] = useState(false);
-  const [deselected, setDeselected] = useState<ReadonlySet<string>>(new Set());
-  const [showPreview, setShowPreview] = useState(false);
-
-  const [link, setLink] = useState<string | null>(null);
-  const [correlationId, setCorrelationId] = useState<string | undefined>();
-  /** Whether the request just created actually minted a reply slot, as opposed to config saying it could. */
-  const [hadReplySlot, setHadReplySlot] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [editedSubject, setEditedSubject] = useState<string | null>(null);
+  const [editedDisplay, setEditedDisplay] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreatedRequest | null>(null);
+  const [error, setError] = useState<Error | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-
-  const canHost = canCreateHealthLinks(config);
+  const [prePopulateOn, setPrePopulateOn] = useState(false);
   /*
-   * Gated on the session rather than on a destination, unlike every other capability flag here. A
-   * request is not always a write — with `publishRequestTasks` off it touches the EHR not at all — but
-   * it is always a claim about who is asking, and only a launch makes that claim answerable. See
-   * `canMintRequest`.
+   * Deselection is stored and selection derived, so a row that stops existing - the patient changed,
+   * the record moved - cannot leave a stale tick behind that silently keeps an answer in the payload.
    */
-  const mintable = canMintRequest(session);
-  const serverReturn = canUseServerReturn(config);
-  const encryptedReply = canUseEncryptedReply(config);
-  const oneShotWrite = canUseOneShotWrite(config);
+  const [deselected, setDeselected] = useState<Set<string>>(new Set());
 
   const {
     data: questionnaire,
     isPending,
-    error: loadError
+    error: loadError,
   } = useQuery({
-    queryKey: ['questionnaire', config.formsServerUrl, questionnaireId],
+    queryKey: ["questionnaire", questionnaireId],
     queryFn: ({ signal }) =>
-      fetchQuestionnaireById(config.formsServerUrl, questionnaireId!, signal),
-    enabled: !!questionnaireId
+      fetchQuestionnaireById(FHIR_PROXY_BASE, questionnaireId!, signal),
+    enabled: !!questionnaireId,
   });
 
-  const subjectReference = subject.trim() === '' ? undefined : subject.trim();
+  const gate = useRequesterGate(loadError ?? error);
+  const launchPatientId =
+    gate.kind === "ready" ? gate.session.patientId : undefined;
 
   /*
-   * Populate needs a `Patient` **resource**, and the subject field holds a reference. The launch
-   * patient is not a substitute: this route deliberately lets a `PatientPicker` choice override the
-   * chart that was launched from, and populating the launched patient's record into a request
-   * addressed to somebody else is the worst bug available here.
+   * The launch context patient, resolved for a name. A launch that carried no patient - every
+   * standalone launch, and an EHR launch without `launch/patient` - simply leaves the fields
+   * empty for the picker to fill.
    */
-  const subjectPatientId = /^Patient\/([A-Za-z0-9\-.]{1,64})$/.exec(subjectReference ?? '')?.[1];
-  const { data: subjectPatient } = useQuery({
-    queryKey: ['patient', ehrServerUrl, subjectPatientId],
-    queryFn: ({ signal }) => fetchPatient(ehrServerUrl!, subjectPatientId!, signal, session),
-    enabled: !!subjectPatientId && !!ehrServerUrl
+  const { data: launchPatient } = useQuery({
+    queryKey: ["launch-patient", launchPatientId],
+    queryFn: ({ signal }) =>
+      fetchPatient(FHIR_PROXY_BASE, launchPatientId!, signal),
+    enabled: launchPatientId !== undefined && launchPatientId !== null,
   });
 
-  const declaresPopulation = questionnaireDeclaresPopulation(questionnaire);
+  /*
+   * Pre-fill, then get out of the way. The picker navigates back here with its choice in the query
+   * string, and an EHR launch names a patient of its own; both are defaults, so they are resolved
+   * during render in order of specificity rather than written back into state. Anything the user
+   * typed or chose is held separately and always wins, and the launch context resolving late
+   * cannot overwrite it.
+   */
+  const pickedSubject = params.get("subject");
+  const pickedDisplay = params.get("subjectDisplay");
+  const launchSubject =
+    launchPatient?.id === undefined ? "" : `Patient/${launchPatient.id}`;
+  const launchDisplay =
+    launchPatient?.id === undefined ? "" : patientDisplay(launchPatient);
+  const subject = editedSubject ?? pickedSubject ?? launchSubject;
+  const subjectDisplay = editedDisplay ?? pickedDisplay ?? launchDisplay;
+
+  const session = useSmartSession();
+  const subjectPatientId = /^Patient\/(.+)$/.exec(subject.trim())?.[1];
+
+  const { data: subjectPatient } = useQuery({
+    queryKey: ["request-subject-patient", subjectPatientId],
+    queryFn: ({ signal }) =>
+      fetchPatient(FHIR_PROXY_BASE, subjectPatientId!, signal),
+    enabled: subjectPatientId !== undefined,
+    retry: false,
+  });
+
+  const declaresPopulation =
+    questionnaire !== undefined &&
+    questionnaireDeclaresPopulation(questionnaire);
   const prePopulateAvailable =
-    canPrePopulate(config, session, ehrServerUrl) && declaresPopulation && !!subjectPatient;
+    canPrePopulate(config, session) &&
+    declaresPopulation &&
+    subjectPatient !== undefined;
 
   const {
     data: populated,
     isFetching: isPopulating,
-    error: populateError
+    error: populateError,
   } = useQuery({
-    queryKey: ['pre-populate', ehrServerUrl, questionnaireId, subjectPatientId],
+    queryKey: ["pre-populate", questionnaireId, subjectPatientId],
     queryFn: ({ signal }) =>
       prePopulate({
         questionnaire: questionnaire!,
-        ehrServerUrl: ehrServerUrl!,
+        ehrServerUrl: FHIR_PROXY_BASE,
         session: session!,
         patient: subjectPatient!,
-        ...(launchedUser?.resourceType === 'Practitioner' ? { user: launchedUser } : {}),
-        signal
+        signal,
       }),
-    enabled: prePopulateOn && prePopulateAvailable && !!questionnaire
+    enabled:
+      prePopulateOn && prePopulateAvailable && questionnaire !== undefined,
   });
 
   const rows = useMemo(
     () => (populated?.response ? populatedRows(populated.response) : []),
-    [populated]
+    [populated],
   );
 
-  /*
-   * Selection is derived rather than stored, so a row that stops existing — the patient changed, the
-   * record moved — cannot leave a stale tick behind that silently keeps an answer in the payload.
-   */
   const selected = useMemo(
-    () => new Set(rows.map((row) => row.path).filter((path) => !deselected.has(path))),
-    [rows, deselected]
+    () =>
+      new Set(
+        rows.map((row) => row.path).filter((path) => !deselected.has(path)),
+      ),
+    [rows, deselected],
   );
 
   const seed = useMemo(() => {
     if (!populated?.response || selected.size === 0) {
-      return undefined;
+      return;
     }
-
     return pruneAnswers(populated.response, selected);
   }, [populated, selected]);
 
-  /*
-   * Changing who the request is for discards everything chosen about the previous patient. The query
-   * key already refetches, but the *ticks* are keyed by path and paths collide across patients — the
-   * same form produces the same `linkId`s — so without this a row unticked for one patient stays
-   * unticked for the next, and the reason would be invisible.
-   */
-  useEffect(() => {
-    setDeselected(new Set());
-    setShowPreview(false);
-  }, [subjectPatientId]);
-
+  /** Mint the link, or explain why nothing was created. */
   async function handleCreate() {
-    if (!questionnaire) {
+    if (questionnaireId === undefined) {
       return;
     }
 
     setError(null);
     setIsCreating(true);
     try {
-      const created = await createRequestLink(questionnaire, config, {
-        subjectReference,
-        subjectDisplay: subjectDisplay.trim() === '' ? undefined : subjectDisplay.trim(),
-        session,
-        requesterDisplay: launchedUserName ?? undefined,
-        // Only what is still ticked, and only while the toggle is on — an untoggled request is blank.
-        prePopulated: prePopulateOn ? seed : undefined
-      });
-
-      const id = taskCorrelationId(created.task);
-
+      setCreated(
+        await createRequestLink(questionnaireId, config, {
+          subjectReference: subject.trim() === "" ? undefined : subject.trim(),
+          subjectDisplay:
+            subjectDisplay.trim() === "" ? undefined : subjectDisplay.trim(),
+          // Only what is still ticked, and only while the toggle is on - an untoggled request is
+          // blank.
+          prePopulated: prePopulateOn ? seed : undefined,
+        }),
+      );
+    } catch (error_) {
+      setCreated(null);
       /*
-       * Persist before showing the link, and let a storage failure surface as a failure to create.
-       * The private key that decrypts the reply exists only here — handing over a QR whose answers
-       * could never be read would be worse than not creating the request at all.
+       * Anything that is not already an Error is wrapped rather than stringified: `String()` on an
+       * arbitrary thrown object yields "[object Object]", which tells the reader nothing, and the
+       * original value is still reachable through `cause`.
        */
-      if (id) {
-        saveRequest({
-          id,
-          label: questionnaire.title ?? questionnaire.name ?? questionnaire.id ?? 'Questionnaire',
-          questionnaireCanonical: questionnaireCanonicalOf(questionnaire),
-          createdAt: new Date().toISOString(),
-          expiresAt: created.expiresAt,
-          link: created.link,
-          subjectDisplay: subjectDisplay.trim() === '' ? undefined : subjectDisplay.trim(),
-          // Kept so scanned answers naming a foreign patient can be reconciled in one click.
-          subjectReference,
-          /*
-           * Recorded because the reviewer cannot tell otherwise. "The patient confirmed their
-           * medication list" and "the patient never touched the medication list" arrive as the same
-           * resource, and only the request knows which one it asked for.
-           */
-          prePopulated: prePopulateOn && seed !== undefined,
-          reply: created.reply
-            ? { url: created.reply.url, privateJwk: created.reply.privateJwk }
-            : undefined,
-          serverTaskUrl: created.serverTaskUrl,
-          serverReturnOffered: created.serverReturnOffered,
-          write: created.write
-        });
-      }
-
-      setLink(created.link);
-      setCorrelationId(id);
-      setHadReplySlot(created.reply !== undefined);
-    } catch (cause) {
-      setLink(null);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(
+        error_ instanceof Error
+          ? error_
+          : new Error("The request could not be created.", { cause: error_ }),
+      );
     } finally {
       setIsCreating(false);
     }
   }
 
-  if (isPending) {
-    return (
-      <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
-        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-        Loading form…
-      </p>
-    );
+  if (gate.kind === "loading" || isPending) {
+    return <Loading>Loading form…</Loading>;
+  }
+
+  if (gate.kind === "launch-required") {
+    return <Connect reason={gate.reason} />;
   }
 
   if (loadError) {
@@ -289,8 +232,8 @@ export default function RequestForm() {
   if (!isRenderableQuestionnaire(questionnaire)) {
     return (
       <Alert tone="warning" title="This form has no items">
-        {questionnaire.title ?? questionnaireId} contains no questions, so there is nothing to
-        request.
+        {questionnaire.title ?? questionnaireId} contains no questions, so there
+        is nothing to request.
       </Alert>
     );
   }
@@ -299,301 +242,217 @@ export default function RequestForm() {
     <div className="space-y-4">
       <RouterLink
         to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+        className="inline-flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+      >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         All forms
       </RouterLink>
 
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">
-          Request: {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+          Request:{" "}
+          {questionnaire.title ?? questionnaire.name ?? questionnaire.id}
         </h1>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Creates an encrypted SMART Health Link containing this whole form.
+          Answers come back to {gate.session.issuerLabel}.
         </p>
       </div>
 
-      {!mintable ? (
-        <LaunchRequired title="Sending a request needs a launch">
-          An invitation says who it is from, and asks somebody to hand over health information on the
-          strength of that. Without a launch the only name available is the one in this deployment's
-          config, identical on every request it has ever sent. Signing in makes the requester you.
-        </LaunchRequired>
-      ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Who is this for?</CardTitle>
-            <CardDescription>
-              Both optional. The reference correlates the answers on your own server; the name is the part
-              a filler can actually read, since it cannot resolve a reference into a server it has no
-              access to.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {ehrServerUrl ? (
-              <div className="space-y-1.5">
-                <p className="text-xs font-medium text-slate-700">
-                  Search <span className="font-mono">{ehrServerUrl}</span>
-                </p>
-                <PatientPicker
-                  serverUrl={ehrServerUrl}
-                  selectedReference={subject.trim() === '' ? undefined : subject.trim()}
-                  onChoose={(chosen) => {
-                    setSubject(chosen.reference);
-                    setSubjectDisplay(chosen.display);
-                  }}
-                  label="Search patients to address this request to"
-                  allowCreate
-                  prefillName={subjectDisplay}
-                />
-              </div>
-            ) : null}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Who is this for?</CardTitle>
+          <CardDescription>
+            {launchPatient
+              ? "Pre-filled from the patient you launched with. Change it if this request is for someone else."
+              : "Both optional. The reference correlates the answers on your own server; the name is the part a filler can actually read, since it cannot resolve a reference into a server it has no access to."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-slate-700 dark:text-slate-300">
+              Search the server you are signed in to
+            </p>
+            <PatientPicker
+              serverUrl={FHIR_PROXY_BASE}
+              selectedReference={
+                subject.trim() === "" ? undefined : subject.trim()
+              }
+              onChoose={(chosen) => {
+                setEditedSubject(chosen.reference);
+                setEditedDisplay(chosen.display);
+              }}
+              label="Search patients to address this request to"
+            />
+          </div>
 
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-slate-700">
-                {ehrServerUrl ? 'Or enter it by hand' : 'Subject'}
-              </p>
-              <Input
-                value={subject}
-                onChange={(event) => setSubject(event.target.value)}
-                placeholder="Patient/123"
-                aria-label="Subject reference"
-              />
-              <Input
-                value={subjectDisplay}
-                onChange={(event) => setSubjectDisplay(event.target.value)}
-                placeholder="Jane Citizen"
-                aria-label="Subject name"
-              />
-            </div>
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-slate-700 dark:text-slate-300">
+              Or enter it by hand
+            </p>
+            <Input
+              value={subject}
+              onChange={(event) => setEditedSubject(event.target.value)}
+              placeholder="Patient/123"
+              aria-label="Subject reference"
+            />
+            <Input
+              value={subjectDisplay}
+              onChange={(event) => setEditedDisplay(event.target.value)}
+              placeholder="Jane Citizen"
+              aria-label="Subject name"
+            />
+          </div>
 
-            {ehrServerUrl ? (
-              <p className="text-xs text-slate-500">
-                Or{' '}
-                <RouterLink
-                  to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ''}`)}`}
-                  className="underline">
-                  browse the full patient list
-                </RouterLink>
-                , which also shows what each one has already answered.
-              </p>
-            ) : null}
-
-            {config.enablePrePopulate && declaresPopulation ? (
-              <div className="space-y-1.5 border-t border-slate-200 pt-4">
-                <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="mt-1"
-                    checked={prePopulateOn}
-                    disabled={!prePopulateAvailable || !!link}
-                    onChange={(event) => setPrePopulateOn(event.target.checked)}
-                  />
-                  <span>
-                    <span className="inline-flex items-center gap-1.5 font-medium text-slate-900">
-                      <Sparkles className="h-3.5 w-3.5" aria-hidden />
-                      Fill this in from the record first
-                    </span>
-                    <span className="mt-0.5 block text-xs text-slate-500">
-                      This form declares pre-population, so the record can answer part of it before it
-                      goes out. You check every answer before the link is made.
-                    </span>
-                  </span>
-                </label>
-
-                {prePopulateAvailable ? null : (
-                  <p className="pl-6 text-xs text-amber-800">
-                    {!session
-                      ? 'Sign in through your EHR to read the record.'
-                      : !ehrServerUrl
-                        ? 'No record server is configured to read from.'
-                        : !subjectPatientId
-                          ? 'Choose a patient above — a form can only be filled in from somebody’s record.'
-                          : 'Looking up that patient…'}
-                  </p>
-                )}
-              </div>
-            ) : null}
-
-            <Button onClick={handleCreate} disabled={isCreating || !canHost || isPopulating}>
-              {isCreating ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              ) : (
-                <Send className="h-4 w-4" aria-hidden />
-              )}
-              {isCreating
-                ? 'Encrypting and uploading…'
-                : isPopulating
-                  ? 'Reading the record…'
-                  : seed
-                    ? 'Create request link, pre-filled'
-                    : 'Create request link'}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {prePopulateOn && populateError ? (
-        <Alert tone="error" title="The record could not be read">
-          <p>{populateError instanceof Error ? populateError.message : String(populateError)}</p>
-          <p className="mt-1">
-            Nothing has been pre-filled. The form can still be sent blank — untick the box above —
-            but do not read this as the record holding nothing, because it is the opposite: the
-            reads did not complete.
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Or{" "}
+            <RouterLink
+              to={`/patients?returnTo=${encodeURIComponent(`/request/${questionnaireId ?? ""}`)}`}
+              className="underline"
+            >
+              browse the full patient list
+            </RouterLink>
+            , which also shows what each one has already answered.
           </p>
-        </Alert>
-      ) : null}
 
-      {prePopulateOn && populated && !populateError ? (
-        <>
-          <PrePopulatePanel
-            rows={rows}
-            issues={populated.issues}
-            selected={selected}
-            onSelectedChange={(next) => {
-              setDeselected(new Set(rows.map((row) => row.path).filter((path) => !next.has(path))));
-            }}
-            sourceLabel={ehrServerUrl ?? 'the record server'}
-            disabled={!!link}
-          />
+          {config.enablePrePopulate && declaresPopulation ? (
+            <div className="space-y-1.5 border-t border-slate-200 dark:border-slate-800 pt-4">
+              <label
+                className="flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-slate-100"
+                htmlFor="pre-populate"
+              >
+                <input
+                  id="pre-populate"
+                  type="checkbox"
+                  checked={prePopulateOn}
+                  disabled={!prePopulateAvailable || created !== null}
+                  onChange={(event) => {
+                    setPrePopulateOn(event.target.checked);
+                  }}
+                  aria-describedby="pre-populate-help"
+                />
+                <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                Fill this in from the record first
+              </label>
+              <p
+                id="pre-populate-help"
+                className="pl-6 text-xs text-slate-500 dark:text-slate-400"
+              >
+                This form declares pre-population, so the record can answer part
+                of it before it goes out. You check every answer before the link
+                is made.
+              </p>
 
-          {seed ? (
-            <div className="space-y-2">
-              <Button variant="outline" size="sm" onClick={() => setShowPreview((open) => !open)}>
-                <Eye className="h-4 w-4" aria-hidden />
-                {showPreview ? 'Hide the form' : 'Preview as the patient will see it'}
-              </Button>
+              {prePopulateAvailable ? null : (
+                <p className="pl-6 text-xs text-amber-800 dark:text-amber-500">
+                  {subjectPatientId === undefined
+                    ? "Choose a patient above — a form can only be filled in from somebody’s record."
+                    : "Looking up that patient…"}
+                </p>
+              )}
 
-              {/*
-                * Mounted only while open. The renderer's questionnaire and response stores are
-                * module-level singletons — `FormRenderer` says so — so a second form on screen would
-                * fight this one for them. Read-only because the choice being made here is what to
-                * send, not what to answer; the answering is the patient's.
-                */}
-              {showPreview ? (
-                <div className="form-surface">
-                  <FormRenderer
-                    questionnaire={questionnaire}
-                    questionnaireResponse={seed}
-                    terminologyServerUrl={config.terminologyServerUrl}
-                    readOnly
-                  />
-                </div>
+              {isPopulating ? (
+                <p className="pl-6 text-xs text-slate-500 dark:text-slate-400">
+                  Reading the record…
+                </p>
+              ) : null}
+
+              {populateError ? (
+                <p className="pl-6 text-xs text-amber-800 dark:text-amber-500">
+                  {populateError instanceof Error
+                    ? populateError.message
+                    : "The record could not be read, so nothing was filled in."}
+                </p>
+              ) : null}
+
+              {prePopulateOn && populated ? (
+                <PrePopulatePanel
+                  rows={rows}
+                  issues={populated.issues}
+                  selected={selected}
+                  onSelectedChange={(next) => {
+                    setDeselected(
+                      new Set(
+                        rows
+                          .map((row) => row.path)
+                          .filter((path) => !next.has(path)),
+                      ),
+                    );
+                  }}
+                  sourceLabel="the record you are signed in to"
+                  disabled={created !== null}
+                />
               ) : null}
             </div>
           ) : null}
-        </>
-      ) : null}
 
-      <Alert
-        tone={serverReturn ? 'warning' : undefined}
-        title={`${serverReturn || encryptedReply ? 'Two' : 'One'} return channel${
-          serverReturn || encryptedReply ? 's' : ''
-        }`}>
-        <ul className="space-y-1">
-          <li>
-            <strong>Answers come back as a link</strong> — whoever fills this in produces their own
-            SMART Health Link and you scan or paste it into{' '}
-            <RouterLink to="/scan" className="underline">
-              Scan
-            </RouterLink>
-            . You review the answers, and nothing is written until you accept. Nothing has to be
-            arranged in advance, so this needs no setting.
-          </li>
-          {encryptedReply ? (
-            <li>
-              <strong>Encrypted reply</strong> — a slot is created alongside the link and the answers
-              come back encrypted to a key held only in this browser. You collect them from{' '}
-              <RouterLink to="/requests" className="underline">
-                Sent requests
-              </RouterLink>
-              . Useful when whoever fills this in cannot get a QR code back to you.
-            </li>
-          ) : null}
-          <li>
-            <strong>Write once to a slot</strong> —{' '}
-            {oneShotWrite ? (
-              <>
-                enabled. The request carries the address of an empty response on{' '}
-                <span className="font-mono text-xs">{resolveWriteSlotServerUrl(config)}</span>, plus a
-                token and the version to write against, so a filler can send the answers there without
-                showing you anything. The write succeeds <strong>once</strong>; you still collect and
-                review them here before they reach a record.
-              </>
+          <Button
+            onClick={() => {
+              void handleCreate();
+            }}
+            disabled={isCreating}
+          >
+            {isCreating ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             ) : (
-              <>
-                off. Set <span className="font-mono text-xs">enableOneShotWrite</span> to offer it —
-                the channel to use when a filler has no way to get a QR code back to you and no way to
-                do the encrypted reply&rsquo;s crypto.
-              </>
+              <Send className="h-4 w-4" aria-hidden />
             )}
-          </li>
-          <li>
-            <strong>Direct write to your server</strong> —{' '}
-            {serverReturn ? (
-              <>
-                enabled. The form will declare{' '}
-                <span className="font-mono text-xs">{config.responseServerUrl}</span> via
-                sdc-questionnaire-endpoint, so a filler can post answers there itself.{' '}
-                <strong>Those arrive unreviewed</strong> — point the endpoint at a staging server if that
-                is not what you want.
-              </>
-            ) : (
-              <>
-                off. Set <span className="font-mono text-xs">enableServerReturn</span> and{' '}
-                <span className="font-mono text-xs">responseServerUrl</span> to offer it.
-              </>
-            )}
-          </li>
-        </ul>
-        {encryptedReply ? null : (
+            {isCreating ? "Publishing and encrypting…" : "Create request link"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Alert title="How answers come back">
+        <p>
+          <strong>Straight into {gate.session.issuerLabel}</strong> - the link
+          carries a short-lived credential that lets whoever fills the form
+          write their answers back to this request, and nowhere else.
+        </p>
+        <p className="mt-2">
+          If that credential has expired by the time they finish, they can
+          instead hand the answers back as their own link for you to{" "}
+          <RouterLink to="/scan" className="underline">
+            scan
+          </RouterLink>
+          , and nothing is written until you accept it.
+        </p>
+        {(gate.session.userDisplay ?? config.senderName) ? null : (
           <p className="mt-2">
-            The encrypted reply channel is off. Set{' '}
-            <span className="font-mono text-xs">enableEncryptedReply</span> to offer it as well —
-            worth doing when a filler may have no way to show you a QR code.
-          </p>
-        )}
-        {config.senderName ?? launchedUserName ? null : (
-          <p className="mt-2">
-            No <span className="font-mono text-xs">senderName</span> is configured, so this request
-            cannot say who it is from — which is a reason for someone to decline it.
+            This launch disclosed no user and no{" "}
+            <span className="font-mono text-xs">senderName</span> is configured,
+            so the request cannot say who it is from. That is a reason for
+            someone to decline it.
           </p>
         )}
       </Alert>
 
-      {!canHost ? (
-        <Alert tone="warning" title="Nowhere to host the encrypted payload">
-          Set <span className="font-mono text-xs">blobServerUrl</span> in{' '}
-          <span className="font-mono text-xs">config.json</span>. It deliberately does not default to
-          the forms server, which is a read-only catalogue of questionnaires rather than somewhere to
-          put transactional data.
-        </Alert>
-      ) : null}
-
       {error ? (
         <Alert tone="error" title="Could not create the request">
-          {error}
+          {error.message}
         </Alert>
       ) : null}
 
-      {link ? (
+      {created ? (
         <>
-          {correlationId ? (
-            <Alert title="Saved to Sent requests">
-              <p>
-                Reference <span className="font-mono text-xs">{correlationId}</span>.{' '}
-                {hadReplySlot
-                  ? 'The key that decrypts the reply is stored in this browser only — collect it from '
-                  : 'When the answers come back, this reference is what matches them to this request. Track it from '}
-                <RouterLink to="/requests" className="inline-flex items-center gap-1 underline">
-                  <Inbox className="h-3 w-3" aria-hidden />
-                  Sent requests
-                </RouterLink>
-                .
-              </p>
-            </Alert>
-          ) : null}
-          <ShareLinkPanel link={link} kind="request" />
+          <Alert title="Published to the server">
+            <p>
+              Reference{" "}
+              <span className="font-mono text-xs">
+                {created.requestIdentifier}
+              </span>
+              . The request is now a task on {gate.session.issuerLabel}; track
+              it from{" "}
+              <RouterLink
+                to="/requests"
+                className="inline-flex items-center gap-1 underline"
+              >
+                <Inbox className="h-3 w-3" aria-hidden />
+                Sent requests
+              </RouterLink>
+              .
+            </p>
+          </Alert>
+          <ShareLinkPanel link={created.link} kind="request" />
         </>
       ) : null}
     </div>

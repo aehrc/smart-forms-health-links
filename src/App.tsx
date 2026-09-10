@@ -1,116 +1,269 @@
-import { Navigate, Link as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
-import { ClipboardList, Inbox, QrCode, ScanLine, Users } from 'lucide-react';
-import FormList from './routes/FormList';
-import FillForm from './routes/FillForm';
-import RequestForm from './routes/RequestForm';
-import Requests from './routes/Requests';
-import ResponseList from './routes/ResponseList';
-import PatientList from './routes/PatientList';
-import ViewLink from './routes/ViewLink';
-import Scan from './routes/Scan';
-import Launch from './routes/Launch';
-import LaunchSetup from './routes/LaunchSetup';
-import Callback from './routes/Callback';
-import { LINK_CODECS } from './link/registry';
-import { CALLBACK_PATH, LAUNCH_PATH, LAUNCH_SETUP_PATH } from './auth/routes';
-import LaunchContextBar from './components/LaunchContextBar';
-import ScopeWarning from './components/ScopeWarning';
+import {
+  ClipboardList,
+  Inbox,
+  LogOut,
+  QrCode,
+  ScanLine,
+  Users,
+} from "lucide-react";
+import {
+  Navigate,
+  Link as RouterLink,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 
-/** Does the current fragment look like a link payload from any registered codec? */
+import { Loading } from "./components/ui/loading";
+import { useLogout, useRequesterGate, useSession } from "./lib/session";
+import { LINK_CODECS } from "./link/registry";
+import Connect from "./routes/Connect";
+import FillForm from "./routes/FillForm";
+import FormList from "./routes/FormList";
+import PatientList from "./routes/PatientList";
+import RequestForm from "./routes/RequestForm";
+import Requests from "./routes/Requests";
+import ResponseList from "./routes/ResponseList";
+import Scan from "./routes/Scan";
+import ViewLink from "./routes/ViewLink";
+
+import type { Session } from "./lib/session";
+import type { ReactNode } from "react";
+
+/**
+ * The shell: navigation, the signed-in identity, and which routes need a session.
+ *
+ * The app has two halves and they have opposite requirements. The **requester** half - forms,
+ * patients, responses, sent requests - reads a clinical system through the BFF proxy, so every
+ * one of its surfaces needs a launched session and offers a launch when there is not one
+ * (FR-006). The **filler** half - `/view` and `/scan` - is reached by someone holding a link they
+ * were sent, who has no account anywhere and must not be asked for one.
+ * @author John Grimes
+ */
+
+/**
+ * Does the current fragment look like a link payload from any registered codec?
+ * @param hash the location hash, including its leading `#`
+ * @returns true when some registered codec claims it
+ */
 function fragmentHasLink(hash: string): boolean {
-  return hash !== '' && LINK_CODECS.some((codec) => codec.canDecode(hash));
+  return hash !== "" && LINK_CODECS.some((codec) => codec.canDecode(hash));
 }
 
-function Header() {
+/**
+ * Gate a requester surface on the session.
+ *
+ * Renders the launch prompt in place of the surface when there is no session, so a signed-out
+ * visitor lands on something that explains itself rather than on a screen full of failed reads.
+ * The surfaces gate again on their own read failures, which is how a session that dies while one
+ * of them is open turns into a re-launch prompt rather than an error.
+ * @param root0 the component props
+ * @param root0.children the surface to render once there is a session
+ * @returns the surface, a launch prompt, or a loading line
+ */
+function RequesterRoute({ children }: Readonly<{ children: ReactNode }>) {
+  const gate = useRequesterGate();
+
+  if (gate.kind === "loading") {
+    return <Loading>Checking your session…</Loading>;
+  }
+  if (gate.kind === "launch-required") {
+    return <Connect reason={gate.reason} />;
+  }
+  return children;
+}
+
+/**
+ * One navigation link, so the classes that style them live in one place.
+ * @param root0 the component props
+ * @param root0.to the in-app path to navigate to
+ * @param root0.icon the Lucide icon component to show beside the label
+ * @param root0.children the label
+ * @returns the link
+ */
+function NavLink({
+  to,
+  icon: Icon,
+  children,
+}: Readonly<{
+  to: string;
+  icon: typeof Users;
+  children: ReactNode;
+}>) {
   return (
-    <header className="border-b border-slate-200 bg-white">
-      {/*
-        * Destinations only, now that the session and the launch-setup link live in the strip below.
-        * That is what got this row back inside a 1024-wide viewport: the badge carrying a name and a
-        * host was the widest thing in it, and it was never a destination in the first place.
-        *
-        * `flex-wrap` stays for genuinely narrow viewports, where the honest options are a second row or
-        * cryptic unlabelled icons. A few pixels of height is the cheaper of the two.
-        */}
+    <RouterLink
+      to={to}
+      className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+    >
+      <Icon className="h-4 w-4" aria-hidden />
+      {children}
+    </RouterLink>
+  );
+}
+
+/**
+ * Who is signed in, and how to stop being.
+ *
+ * Rendered only inside the requester's navigation, which only exists when there is a session. The
+ * alternative - a permanent "signed out" chip - would be noise on the filler surfaces, where
+ * being signed out is the normal condition rather than a state to report.
+ * @param props the component props
+ * @param props.session the launched session this badge describes
+ * @returns the identity and sign-out control
+ */
+function SessionBadge({ session }: Readonly<{ session: Session }>) {
+  const signOut = useLogout();
+  const { issuerLabel, userDisplay } = session;
+
+  return (
+    <div className="flex items-center gap-2 border-l border-slate-200 pl-2 dark:border-slate-800">
+      <div className="min-w-0 text-right">
+        <p className="truncate text-xs font-medium text-slate-700 dark:text-slate-200">
+          {issuerLabel}
+        </p>
+        <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+          {userDisplay ?? "Signed in"}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => signOut.mutate()}
+        disabled={signOut.isPending}
+        title={`Sign out of ${issuerLabel}`}
+        aria-label={`Sign out of ${issuerLabel}`}
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+      >
+        <LogOut className="h-4 w-4" aria-hidden />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The application header: brand, and - for a requester - navigation and identity.
+ *
+ * The navigation is a requester's navigation, all of it. Every destination in it reads or writes
+ * the launched clinical system through the session proxy - `/scan` included, since scanning a
+ * link is how a requester takes someone's answers into that system. Shown to a filler - a patient
+ * who opened an invitation on their phone and has no account anywhere - not one of those links
+ * leads to anything but a prompt to sign in to a clinic they do not work at.
+ *
+ * So an anonymous visitor gets the app's name and nothing else. It is not a permissions question
+ * (the routes gate themselves) but an honesty one: offering navigation that cannot go anywhere is
+ * the same failure as offering a send that cannot land.
+ *
+ * The loading state shows no navigation either, deliberately. A brief flash of clinician links on
+ * a patient's phone is worse than a header that fills in a moment later.
+ * @returns the header
+ */
+function Header() {
+  const state = useSession();
+
+  return (
+    <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
         <RouterLink
           to="/"
-          className="flex items-center gap-2 whitespace-nowrap font-semibold text-slate-900">
+          className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100"
+        >
           <QrCode className="h-5 w-5" aria-hidden />
           Smart Forms Health Links
         </RouterLink>
-        <nav className="ml-auto flex flex-wrap items-center justify-end gap-1">
-          <RouterLink
-            to="/patients"
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
-            <Users className="h-4 w-4" aria-hidden />
-            Patients
-          </RouterLink>
-          <RouterLink
-            to="/responses"
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
-            <ClipboardList className="h-4 w-4" aria-hidden />
-            Responses
-          </RouterLink>
-          <RouterLink
-            to="/requests"
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
-            <Inbox className="h-4 w-4" aria-hidden />
-            Sent requests
-          </RouterLink>
-          <RouterLink
-            to="/scan"
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
-            <ScanLine className="h-4 w-4" aria-hidden />
-            Scan
-          </RouterLink>
-        </nav>
+        {state.kind === "active" ? (
+          <nav className="ml-auto flex flex-wrap items-center gap-1">
+            <NavLink to="/patients" icon={Users}>
+              Patients
+            </NavLink>
+            <NavLink to="/responses" icon={ClipboardList}>
+              Responses
+            </NavLink>
+            <NavLink to="/requests" icon={Inbox}>
+              Sent requests
+            </NavLink>
+            <NavLink to="/scan" icon={ScanLine}>
+              Scan
+            </NavLink>
+            <SessionBadge session={state.session} />
+          </nav>
+        ) : null}
       </div>
     </header>
   );
 }
 
+/**
+ * The application shell.
+ * @returns the header and the routed surface
+ */
 export default function App() {
   const location = useLocation();
 
   /*
    * SMART Health Links are conventionally presented as `https://viewer.example.org#shlink:/...`,
    * i.e. a payload in the fragment at the site root. Honour that shape by forwarding any root-level
-   * link fragment to the viewer, preserving the hash.
+   * link fragment to the viewer, preserving the hash. Ahead of the session gate on purpose: someone
+   * arriving with a link is a filler, and must never be asked to sign in.
    */
-  if (location.pathname === '/' && fragmentHasLink(location.hash)) {
-    return <Navigate to={{ pathname: '/view', hash: location.hash }} replace />;
+  if (location.pathname === "/" && fragmentHasLink(location.hash)) {
+    return <Navigate to={{ pathname: "/view", hash: location.hash }} replace />;
   }
 
   return (
     <div className="min-h-screen">
       <Header />
-      {/*
-        * Between the nav and the content, on every route, for the same reason `ScopeWarning` sits above
-        * the routes rather than inside them: what this says applies to whichever screen the user
-        * happens to reach. Unlike `ScopeWarning` it renders in every state, including no session —
-        * see the component.
-        */}
-      <LaunchContextBar />
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-6">
-        {/*
-          * Above the routes rather than inside them. A narrowed grant affects whichever screen the
-          * user happens to reach, and it renders nothing at all when there is nothing to report.
-          */}
-        <ScopeWarning />
+      <main className="mx-auto max-w-5xl px-4 py-6">
         <Routes>
-          <Route path="/" element={<FormList />} />
-          <Route path="/fill/:questionnaireId" element={<FillForm />} />
-          <Route path="/request/:questionnaireId" element={<RequestForm />} />
-          <Route path="/requests" element={<Requests />} />
-          <Route path="/responses" element={<ResponseList />} />
-          <Route path="/patients" element={<PatientList />} />
+          <Route
+            path="/"
+            element={
+              <RequesterRoute>
+                <FormList />
+              </RequesterRoute>
+            }
+          />
+          <Route
+            path="/fill/:questionnaireId"
+            element={
+              <RequesterRoute>
+                <FillForm />
+              </RequesterRoute>
+            }
+          />
+          <Route
+            path="/request/:questionnaireId"
+            element={
+              <RequesterRoute>
+                <RequestForm />
+              </RequesterRoute>
+            }
+          />
+          <Route
+            path="/requests"
+            element={
+              <RequesterRoute>
+                <Requests />
+              </RequesterRoute>
+            }
+          />
+          <Route
+            path="/responses"
+            element={
+              <RequesterRoute>
+                <ResponseList />
+              </RequesterRoute>
+            }
+          />
+          <Route
+            path="/patients"
+            element={
+              <RequesterRoute>
+                <PatientList />
+              </RequesterRoute>
+            }
+          />
+          {/* The filler's half. No session, by design: whoever holds the link has no account. */}
           <Route path="/view" element={<ViewLink />} />
           <Route path="/scan" element={<Scan />} />
-          {/* Before /launch only for readability; both are exact paths and cannot shadow each other. */}
-          <Route path={LAUNCH_SETUP_PATH} element={<LaunchSetup />} />
-          <Route path={LAUNCH_PATH} element={<Launch />} />
-          <Route path={CALLBACK_PATH} element={<Callback />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

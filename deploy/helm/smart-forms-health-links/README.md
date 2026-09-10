@@ -1,129 +1,213 @@
-# Smart Forms Health Links Helm chart
+# smart-forms-health-links
 
-Deploys [Smart Forms Health Links](https://github.com/aehrc/smart-forms-health-links),
-a single-page app for sending and filling FHIR Questionnaires over SMART Health
-Links. The app has no server side: the chart runs nginx serving the built
-static site.
+Deploys Smart Forms Health Links: a confidential SMART app that launches from a clinical system,
+mints a SMART Health Link carrying a form for a patient to fill in, and receives the completed
+response back through the link's own token channel.
+
+One container serves the SPA, the BFF API and the public SHL routes from a single origin, because
+the session cookie must be same-site with the API and because a SHL embeds exactly one origin.
 
 ## Features
 
-- Serves the app from nginx, with unknown paths falling through to
-  `index.html` so client-side routing and shared links work.
-- Supplies `/config.json` from a ConfigMap, so one image can be pointed at
-  different forms, terminology and FHIR servers.
-- Rolls the pods when that configuration changes, via a checksum annotation.
-- Runs unprivileged, with a read-only root filesystem and all capabilities
-  dropped.
-- Probes `/healthz`, which answers independently of the app bundle.
+- One pod, one origin: the SPA, `/api`, `/shl` and `/.well-known/jwks.json` behind one Ingress
+  rule.
+- The issuer registry as a ConfigMap, holding `env:VARIABLE_NAME` references rather than
+  credentials.
+- Credentials read from a Secret you create yourself. The chart never templates a secret value,
+  so a rendered manifest is safe to commit or to diff.
+- SQLite on a PersistentVolumeClaim, with the Deployment pinned to a single replica and the
+  `Recreate` strategy so that two pods never hold the same file.
+- Liveness, readiness and startup probes on `GET /health`.
 
 ## Prerequisites
 
-- Kubernetes 1.19 or later, for `networking.k8s.io/v1` ingresses if you add
-  one.
-- Helm 3.
+- Kubernetes 1.25 or later.
+- An Ingress controller, and a DNS name resolving to it.
+- A StorageClass that can provision a `ReadWriteOnce` volume.
+- The image built and pushed somewhere the cluster can pull from:
 
-The chart contains no Ingress: how the app is exposed is environment-specific,
-so the ingress is applied beside the release. See `deploy/demo/ingress.yaml`
-in the repository for the ALB ingress used by the demo deployment.
+  ```bash
+  docker build -t ghcr.io/aehrc/smart-forms-health-links:0.1.0 .
+  docker push ghcr.io/aehrc/smart-forms-health-links:0.1.0
+  ```
+
+- A Secret holding the credentials, created before the release. See below.
+
+## The Secret you must create first
+
+The chart names an existing Secret and mounts every key in it as an environment variable. It
+never writes one, so the values stay out of the chart, out of the values file and out of any
+rendered manifest.
+
+Three keys are always needed:
+
+| Key                     | Contents                                                                                              |
+| ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| `SESSION_COOKIE_SECRET` | Signs the `shl_session` cookie. At least 32 characters; generate with `openssl rand -base64 48`.      |
+| `LAUNCH_CLIENT_SECRET`  | The confidential launch client's secret, as registered with the FHIR server's authorisation server.   |
+| `BACKEND_PRIVATE_JWK`   | The SMART Backend Services RS384 signing key, one line of JWK JSON with the private members included. |
+
+Add one key per additional `env:VARIABLE_NAME` reference in the registry: a second issuer with
+its own launch client needs its own key.
+
+```bash
+kubectl create secret generic smart-forms-health-links \
+  --from-literal=SESSION_COOKIE_SECRET="$(openssl rand -base64 48)" \
+  --from-literal=LAUNCH_CLIENT_SECRET="$LAUNCH_CLIENT_SECRET" \
+  --from-literal=BACKEND_PRIVATE_JWK="$BACKEND_PRIVATE_JWK"
+```
+
+Rendering fails with a clear message if `smartFormsHealthLinks.existingSecret` is unset, and
+again if `smartFormsHealthLinks.appOrigin` cannot be derived from an Ingress host.
 
 ## Installation
 
-```bash
-helm upgrade --install smart-forms-health-links deploy/helm/smart-forms-health-links \
-  --namespace formlinks \
-  --set smartFormsHealthLinks.image=my-registry/smart-forms-health-links:abc1234
+Write a values file naming the image, the host, the Secret and the issuers:
+
+```yaml
+# values.production.yaml
+smartFormsHealthLinks:
+  image: "ghcr.io/aehrc/smart-forms-health-links:0.1.0"
+  existingSecret: "smart-forms-health-links"
+
+  ingress:
+    className: "nginx"
+    host: "shl.example.org"
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt"
+    tls:
+      enabled: true
+      secretName: "shl-example-org-tls"
+
+  issuers:
+    - issuer: "https://ehr.example.org/fhir"
+      label: "Example EHR"
+      launchClient:
+        clientId: "smart-forms-health-links"
+        clientSecret: "env:LAUNCH_CLIENT_SECRET"
+        scopes: "openid fhirUser launch launch/patient online_access user/*.cruds"
+      backendClient:
+        clientId: "smart-forms-health-links-backend"
+        privateKeyJwk: "env:BACKEND_PRIVATE_JWK"
+        scopes: "system/QuestionnaireResponse.c system/Task.r system/Task.u"
+      grantTtlSeconds: 3600
 ```
 
-The `Service` is a `ClusterIP` on port 80. To reach it without an ingress:
+Then install:
 
 ```bash
-kubectl port-forward service/smart-forms-health-links-service 8080:80 --namespace formlinks
+helm upgrade --install shl helm/smart-forms-health-links \
+  --namespace smart-forms-health-links --create-namespace \
+  --values values.production.yaml
 ```
+
+Finally, register the app with each authorisation server in the registry. The redirect URI is
+`https://shl.example.org/auth/callback` and the Backend Services `jwks_uri` is
+`https://shl.example.org/.well-known/jwks.json`; both are printed on install.
 
 ## Configuration
 
-| Parameter                                       | Description                                                                                                 | Default                              |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `smartFormsHealthLinks.image`                   | Container image to run                                                                                      | `smart-forms-health-links:latest`    |
-| `smartFormsHealthLinks.imagePullPolicy`         | Image pull policy                                                                                           | `Always`                             |
-| `smartFormsHealthLinks.replicas`                | Number of replicas                                                                                          | `2`                                  |
-| `smartFormsHealthLinks.config`                  | Contents of `/config.json`. Empty serves the file baked into the image; any value replaces it wholesale      | `{}`                                 |
-| `smartFormsHealthLinks.service.type`            | Service type                                                                                                | `ClusterIP`                          |
-| `smartFormsHealthLinks.service.port`            | Service port                                                                                                | `80`                                 |
-| `smartFormsHealthLinks.resources.requests.cpu`  | CPU request                                                                                                 | `100m`                               |
-| `smartFormsHealthLinks.resources.requests.memory` | Memory request                                                                                             | `32Mi`                               |
-| `smartFormsHealthLinks.resources.limits.cpu`    | CPU limit                                                                                                   | `500m`                               |
-| `smartFormsHealthLinks.resources.limits.memory` | Memory limit                                                                                                | `128Mi`                              |
-| `smartFormsHealthLinks.nodeSelector`            | Node selector for the pods                                                                                  | `{}`                                 |
-| `smartFormsHealthLinks.tolerations`             | Tolerations for the pods                                                                                     | `[]`                                 |
-| `smartFormsHealthLinks.affinity`                | Affinity rules for the pods                                                                                  | `{}`                                 |
+| Parameter                                            | Description                                                                                                    | Default                           |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `smartFormsHealthLinks.image`                        | Container image to run                                                                                         | `smart-forms-health-links:latest` |
+| `smartFormsHealthLinks.imagePullPolicy`              | Image pull policy                                                                                              | `Always`                          |
+| `smartFormsHealthLinks.appOrigin`                    | `APP_ORIGIN`, the one origin the app is published on. Derived from the Ingress host when unset                 | `~`                               |
+| `smartFormsHealthLinks.existingSecret`               | Name of the Secret holding the credentials. Required                                                           | `""`                              |
+| `smartFormsHealthLinks.issuers`                      | Issuer registry, rendered into the ConfigMap as `issuers.json`. Secret-bearing fields hold `env:VARIABLE_NAME` | `[]`                              |
+| `smartFormsHealthLinks.config`                       | Extra environment variables for the server process                                                             | `{}`                              |
+| `smartFormsHealthLinks.resources`                    | Container resource requests and limits                                                                         | `{}`                              |
+| `smartFormsHealthLinks.service.type`                 | Service type                                                                                                   | `ClusterIP`                       |
+| `smartFormsHealthLinks.service.port`                 | Port the Service publishes                                                                                     | `80`                              |
+| `smartFormsHealthLinks.ingress.enabled`              | Create an Ingress                                                                                              | `true`                            |
+| `smartFormsHealthLinks.ingress.className`            | `ingressClassName` of the controller to use                                                                    | `~`                               |
+| `smartFormsHealthLinks.ingress.host`                 | Host the app is published on. Required unless `appOrigin` is set and the Ingress is disabled                   | `""`                              |
+| `smartFormsHealthLinks.ingress.annotations`          | Annotations on the Ingress, for example a cert-manager issuer                                                  | `{}`                              |
+| `smartFormsHealthLinks.ingress.tls.enabled`          | Terminate TLS at the Ingress. Also decides the derived `APP_ORIGIN` scheme                                     | `true`                            |
+| `smartFormsHealthLinks.ingress.tls.secretName`       | Secret holding the certificate, when the controller does not source it from an annotation                      | `~`                               |
+| `smartFormsHealthLinks.persistence.size`             | Size of the volume holding the SQLite file                                                                     | `1Gi`                             |
+| `smartFormsHealthLinks.persistence.storageClassName` | StorageClass for that volume; the cluster default when unset                                                   | `~`                               |
+| `smartFormsHealthLinks.nodeSelector`                 | Pod node selector                                                                                              | `{}`                              |
+| `smartFormsHealthLinks.tolerations`                  | Pod tolerations                                                                                                | `[]`                              |
+| `smartFormsHealthLinks.affinity`                     | Pod affinity rules                                                                                             | `{}`                              |
 
-### Application configuration
-
-`smartFormsHealthLinks.config` is written verbatim as `/config.json`, which the
-app fetches at boot. It is a replacement rather than an overlay: a deployment
-that sets one field must set every field it cares about, because nothing merges
-it with the file in the image. The fields are documented in `src/lib/config.ts`.
-
-Two of them decide whether the app can do anything transactional at all.
-`responseServerUrl` is where reviewed responses are written and
-`blobServerUrl` is where SMART Health Link payloads are hosted; both are
-deliberately unset by default, and the app explains rather than guesses when
-they are missing. `linkBaseUrl` must name the public origin, since links minted
-by a pod that used its own origin would be unreachable.
-
-```yaml
-smartFormsHealthLinks:
-  config:
-    formsServerUrl: "https://smartforms.csiro.au/api/fhir"
-    terminologyServerUrl: "https://r4.ontoserver.csiro.au/fhir"
-    linkBaseUrl: "https://formlinks.example.org"
-    linkCodec: "shl"
-    responseServerUrl: "https://fhir.example.org/fhir"
-    blobServerUrl: "https://fhir.example.org/fhir"
-    blobStore: "fhir-binary"
-    senderName: "Parkview Medical Centre"
-    linkLifetimeDays: 30
-    publishRequestTasks: true
-```
+The Deployment fixes the rest: `PORT=3000`, `SQLITE_PATH=/data/links.sqlite` on the volume, and
+`ISSUER_REGISTRY_PATH=/etc/smart-forms-health-links/issuers.json` on the ConfigMap mount. There
+is no replica count, because the state is one SQLite file.
 
 ## Examples
 
-A minimal install, serving the configuration built into the image:
+### Development, on a cluster with no TLS
 
 ```yaml
 smartFormsHealthLinks:
-  image: "my-registry/smart-forms-health-links:abc1234"
+  image: "smart-forms-health-links:latest"
+  imagePullPolicy: "IfNotPresent"
+  existingSecret: "smart-forms-health-links"
+  ingress:
+    host: "shl.localtest.me"
+    tls:
+      enabled: false
 ```
 
-A single replica for a development cluster, reachable on a node port:
+`APP_ORIGIN` becomes `http://shl.localtest.me`, which is what the authorisation server must have
+registered as the redirect URI's origin.
+
+### Behind a proxy that publishes a different host
 
 ```yaml
 smartFormsHealthLinks:
-  image: "my-registry/smart-forms-health-links:abc1234"
-  replicas: 1
-  service:
-    type: "NodePort"
+  appOrigin: "https://forms.health.example.org"
+  existingSecret: "smart-forms-health-links"
+  ingress:
+    host: "shl-internal.example.org"
+```
+
+The derived origin would be wrong here, so it is set explicitly. Links minted by this deployment
+carry `https://forms.health.example.org`, whatever the Ingress host is.
+
+### With resource limits
+
+```yaml
+smartFormsHealthLinks:
+  existingSecret: "smart-forms-health-links"
+  ingress:
+    host: "shl.example.org"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
 ```
 
 ## Upgrading
 
-Upgrades are rolling: the new pods must pass their readiness probe before the
-old ones are removed. Set `smartFormsHealthLinks.image` to a tag that names a
-commit rather than a moving tag, otherwise Helm sees no change to apply and the
-pods are not replaced.
+The `Recreate` strategy means a short outage on every upgrade: the old pod terminates and
+releases the volume before the new one starts. That is deliberate - two pods writing one SQLite
+file is worse than a few seconds of downtime.
+
+Editing `smartFormsHealthLinks.issuers` changes an annotation checksum on the pod template, so
+the pod restarts and picks the registry up. The server reads it once, at startup, so nothing else
+would.
+
+Sessions and minted invitations live on the volume and survive the restart.
 
 ## Uninstalling
 
 ```bash
-helm uninstall smart-forms-health-links --namespace formlinks
+helm uninstall shl --namespace smart-forms-health-links
 ```
 
-Anything applied beside the release, such as an ingress, is not removed by
-this and has to be deleted separately.
+Helm does not delete the PersistentVolumeClaim, so the minted links survive a reinstall. Remove
+it deliberately when you want the state gone:
+
+```bash
+kubectl --namespace smart-forms-health-links delete persistentvolumeclaim shl-pvc
+```
 
 ## Compatibility
 
 | Chart version | App version | Kubernetes |
 | ------------- | ----------- | ---------- |
-| 0.1.0         | 0.1.0       | 1.19+      |
+| 0.1.0         | 0.1.0       | >= 1.25    |

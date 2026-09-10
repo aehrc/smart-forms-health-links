@@ -1,84 +1,98 @@
-import { useState } from 'react';
-import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ClipboardList, Loader2, Search, Send, User } from 'lucide-react';
-import type { Patient } from 'fhir/r4';
-import { useEhrServerUrl, useSmartSession } from '@/auth/SmartContext';
-import { describePatient, patientDisplay, searchPatients } from '@/fhir/ehrServer';
-import { useDebounced } from '@/lib/useDebounced';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Alert } from '@/components/ui/alert';
-import { Card, CardContent } from '@/components/ui/card';
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, ClipboardList, Search, Send, User } from "lucide-react";
+import { useState } from "react";
+import {
+  Link as RouterLink,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
+
+import Connect from "./Connect";
+
+import type { Patient } from "fhir/r4";
+
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Loading } from "@/components/ui/loading";
+import {
+  describePatient,
+  patientDisplay,
+  searchPatients,
+} from "@/fhir/ehrServer";
+import { FHIR_PROXY_BASE, useRequesterGate } from "@/lib/session";
+import { useDebounced } from "@/lib/useDebounced";
 
 /**
- * Patients on the EHR.
+ * Patients on the launched server.
  *
- * Two jobs, both about not typing references by hand. It picks the subject of a request — `Task.for`
- * wants a reference the requester's server can resolve *and* a display name, since a filler cannot
- * resolve a reference into a server it has no access to. And it filters the response list.
+ * Two jobs, both about not typing references by hand. It picks the subject of a request -
+ * `Task.for` wants a reference the requester's server can resolve *and* a display name, since a
+ * filler cannot resolve a reference into a server it has no access to. And it filters the
+ * response list.
  *
- * `returnTo` carries the caller through, so choosing a patient goes back where you came from rather
- * than dead-ending here.
+ * `returnTo` carries the caller through, so choosing a patient goes back where you came from
+ * rather than dead-ending here.
+ * @author John Grimes
  */
 
 /** Rows per page here. Larger than the inline picker's, because this page is for browsing. */
 const PAGE_SIZE = 50;
 
+/**
+ * The patient list.
+ * @returns the list, a launch prompt, or a loading line
+ */
 export default function PatientList() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState("");
   const debouncedSearch = useDebounced(searchText, 300);
 
-  const ehrServerUrl = useEhrServerUrl();
-  const session = useSmartSession();
   /*
-   * Where to go once a patient is chosen. Restricted to an in-app path: this value comes from the URL,
-   * so treating it as a destination without checking would let a crafted link bounce someone off-site.
+   * Where to go once a patient is chosen. Restricted to an in-app path: this value comes from the
+   * URL, so treating it as a destination without checking would let a crafted link bounce someone
+   * off-site.
    */
-  const rawReturnTo = params.get('returnTo');
-  const returnTo = rawReturnTo?.startsWith('/') && !rawReturnTo.startsWith('//') ? rawReturnTo : null;
+  const rawReturnTo = params.get("returnTo");
+  const returnTo =
+    rawReturnTo?.startsWith("/") && !rawReturnTo.startsWith("//")
+      ? rawReturnTo
+      : null;
 
   const {
     data: page,
     isPending,
-    error
+    error,
   } = useQuery({
-    // `fhirUser` in the key so signing in or out refetches: the same URL can return different
-    // rows to an authorised reader than to an anonymous one.
-    queryKey: ['ehr-patients', ehrServerUrl, session?.fhirUser ?? null, debouncedSearch, PAGE_SIZE],
+    queryKey: ["patients", debouncedSearch, PAGE_SIZE],
     queryFn: ({ signal }) =>
-      searchPatients(ehrServerUrl!, debouncedSearch, PAGE_SIZE, signal, session),
-    enabled: ehrServerUrl !== null
+      searchPatients(FHIR_PROXY_BASE, debouncedSearch, PAGE_SIZE, signal),
   });
+
+  const gate = useRequesterGate(error);
 
   function choose(patient: Patient) {
     const reference = `Patient/${patient.id}`;
     const display = patientDisplay(patient);
 
     if (returnTo) {
-      const separator = returnTo.includes('?') ? '&' : '?';
-      navigate(
-        `${returnTo}${separator}subject=${encodeURIComponent(reference)}&subjectDisplay=${encodeURIComponent(display)}`
+      const separator = returnTo.includes("?") ? "&" : "?";
+      void navigate(
+        `${returnTo}${separator}subject=${encodeURIComponent(reference)}&subjectDisplay=${encodeURIComponent(display)}`,
       );
       return;
     }
 
-    navigate(`/responses?subject=${encodeURIComponent(reference)}`);
+    void navigate(`/responses?subject=${encodeURIComponent(reference)}`);
   }
 
-  if (!ehrServerUrl) {
-    return (
-      <div className="space-y-4">
-        <BackLink />
-        <Alert tone="warning" title="No EHR server is configured">
-          Set <span className="font-mono text-xs">responseServerUrl</span> in{' '}
-          <span className="font-mono text-xs">config.json</span> — that is the server holding patients.
-          The forms server is a catalogue of questionnaire definitions and holds none.
-        </Alert>
-      </div>
-    );
+  if (gate.kind === "loading") {
+    return <Loading>Checking your session…</Loading>;
+  }
+  if (gate.kind === "launch-required") {
+    return <Connect reason={gate.reason} />;
   }
 
   return (
@@ -86,11 +100,13 @@ export default function PatientList() {
       <BackLink />
 
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">Patients</h1>
-        <p className="text-sm text-slate-500">
-          On <span className="font-mono text-xs">{ehrServerUrl}</span>
-          {page?.total !== undefined ? ` · ${page.total} in total` : null}
-          {returnTo ? ' · choose who the request is for' : null}
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+          Patients
+        </h1>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          On {gate.session.issuerLabel}
+          {page?.total === undefined ? null : ` · ${page.total} in total`}
+          {returnTo ? " · choose who the request is for" : null}
         </p>
       </div>
 
@@ -114,17 +130,12 @@ export default function PatientList() {
         </Alert>
       ) : null}
 
-      {isPending ? (
-        <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          Loading patients…
-        </p>
-      ) : null}
+      {isPending ? <Loading>Loading patients…</Loading> : null}
 
       {page && page.resources.length === 0 ? (
         <Alert title="No patients found">
-          {debouncedSearch.trim() === ''
-            ? 'This server holds no patients.'
+          {debouncedSearch.trim() === ""
+            ? `${gate.session.issuerLabel} holds no patients this session can read.`
             : `Nothing matched “${debouncedSearch}”.`}
         </Alert>
       ) : null}
@@ -132,14 +143,21 @@ export default function PatientList() {
       <ul className="space-y-2">
         {(page?.resources ?? []).map((patient) => (
           <li key={patient.id}>
-            <Card className="transition-colors hover:border-slate-400">
+            <Card className="transition-colors hover:border-slate-400 dark:hover:border-slate-600">
               <CardContent className="flex flex-wrap items-start gap-3 p-4">
-                <User className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                <User
+                  className="mt-0.5 h-4 w-4 shrink-0 text-slate-400"
+                  aria-hidden
+                />
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-slate-900">{patientDisplay(patient)}</p>
-                  <p className="truncate text-xs text-slate-500">
+                  <p className="font-medium text-slate-900 dark:text-slate-100">
+                    {patientDisplay(patient)}
+                  </p>
+                  <p className="truncate text-xs text-slate-500 dark:text-slate-400">
                     Patient/{patient.id}
-                    {describePatient(patient) ? ` · ${describePatient(patient)}` : null}
+                    {describePatient(patient)
+                      ? ` · ${describePatient(patient)}`
+                      : null}
                   </p>
                 </div>
 
@@ -151,7 +169,8 @@ export default function PatientList() {
                     </Button>
                   ) : null}
                   <RouterLink
-                    to={`/responses?subject=${encodeURIComponent(`Patient/${patient.id}`)}`}>
+                    to={`/responses?subject=${encodeURIComponent(`Patient/${patient.id}`)}`}
+                  >
                     <Button variant="outline" size="sm">
                       <ClipboardList className="h-3.5 w-3.5" aria-hidden />
                       Responses
@@ -167,11 +186,16 @@ export default function PatientList() {
   );
 }
 
+/**
+ * The link back to the form list, repeated on every sub-surface.
+ * @returns the link
+ */
 function BackLink() {
   return (
     <RouterLink
       to="/"
-      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900">
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+    >
       <ArrowLeft className="h-4 w-4" aria-hidden />
       All forms
     </RouterLink>

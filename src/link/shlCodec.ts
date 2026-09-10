@@ -1,32 +1,40 @@
-import type { Bundle } from 'fhir/r4';
-import type { DecodeOptions, EncodeOptions, LinkCodec, LinkContent } from './codec';
-import { bundleFromJson, extractFragment, mergeBundles, PasscodeRequiredError } from './codec';
-import { decodeUtf8, encodeUtf8, fromBase64Url, toBase64Url } from './binary';
-import { decryptJwe, encryptJwe, generateKey, keyFromBase64Url, keyToBase64Url } from './jwe';
-import { JOSE_CONTENT_TYPE } from '@/fhir/blobStore';
+import { GRANT_CONTENT_TYPE, parseGrant } from "./apiAccess";
+import { decodeUtf8, fromBase64Url } from "./binary";
+import {
+  bundleFromJson,
+  extractFragment,
+  mergeBundles,
+  PasscodeRequiredError,
+} from "./codec";
+import { decryptJwe, keyFromBase64Url } from "./jwe";
+
+import type { ReceivedGrant } from "./apiAccess";
+import type { DecodeOptions, LinkCodec, LinkContent } from "./codec";
+import type { Bundle } from "fhir/r4";
 
 /**
- * SMART Health Links — https://docs.smarthealthit.org/smart-health-links/spec/
+ * SMART Health Links - https://docs.smarthealthit.org/smart-health-links/spec/
  *
  * The link carries no clinical data, only a pointer and a key:
  *
  *   shlink:/BASE64URL({"url": "...", "key": "...", "flag": "U", "label": "...", "exp": 123})
  *
- * presented either bare or, as here, in the fragment of a viewer URL —
- * `https://viewer.example.org/view#shlink:/...` — which is the form the spec itself uses.
+ * presented either bare or, as here, in the fragment of a viewer URL
+ * (`https://viewer.example.org/view#shlink:/...`), which is the form the spec itself uses.
  *
- * ## What this codec writes
+ * ## This codec only reads
  *
- * Always the `U` flag: a single encrypted file fetched with a plain `GET`. That needs only a static
- * file host rather than a manifest service, which is why the payload can live as a FHIR `Binary` on
- * the forms server with no new infrastructure. The cost is real and worth stating plainly: **`U`
- * cannot be combined with `P`, so these links have no passcode**, and they can be neither revoked
- * nor varied per recipient.
+ * There is no `encode` here any more, and its absence is the architecture rather than a gap.
+ * Hosting an SHL payload means being a manifest server, and this deployment's manifest server is
+ * its own BFF: a requester's invitation is minted, published and hosted by
+ * `POST /api/invitations` under the session's authority, and the browser is handed a finished
+ * `shlink:/` (`contracts/http-api.md`). Minting from the page would mean parking transactional
+ * data on a third-party blob host, which is exactly what this feature removed (FR-013).
  *
  * ## What this codec reads
  *
- * Both hosting modes, because a link we read was probably not written by us — and, increasingly,
- * *is* not: the primary return path is now a filler minting its own link and the requester scanning
+ * Both hosting modes, because a link we read was probably not written by us - and, increasingly,
+ * is* not: the primary return path is now a filler minting its own link and the requester scanning
  * it back. A filler that hosts its payload behind a proper manifest endpoint produces a `U`-less
  * link, and that has to work here. Concretely, reading is tolerant in four ways:
  *
@@ -43,22 +51,19 @@ import { JOSE_CONTENT_TYPE } from '@/fhir/blobStore';
  *
  * SHL is strictly one-directional and defines no submission channel, so a returned
  * QuestionnaireResponse is never *written* anywhere by its sender. It is published; the receiving app
- * pulls it, presents it for human review, and only then writes to its own server — see
+ * pulls it, presents it for human review, and only then writes to its own server - see
  * `src/fhir/submit.ts`.
  */
 
-const PREFIX = 'shlink:/';
+const PREFIX = "shlink:/";
 
 /** SHL protocol version this codec implements. */
 const SHL_VERSION = 1;
 
 /** Identifies us in the manifest request, per the spec's `recipient` field. */
-const RECIPIENT = 'Smart Forms Health Links';
+const RECIPIENT = "Smart Forms Health Links";
 
-/** The spec caps `label` at 80 characters. */
-const MAX_LABEL_LENGTH = 80;
-
-const FHIR_JSON = 'application/fhir+json';
+const FHIR_JSON = "application/fhir+json";
 
 interface ShlPayload {
   url: string;
@@ -76,41 +81,46 @@ interface ManifestFile {
 }
 
 function isShlPayload(value: unknown): value is ShlPayload {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return false;
   }
 
   const candidate = value as Record<string, unknown>;
-  return typeof candidate.url === 'string' && typeof candidate.key === 'string';
+  return typeof candidate.url === "string" && typeof candidate.key === "string";
 }
 
-/** Parse and validate the base64url JSON payload that follows `shlink:/`. */
+/**
+ * Parse and validate the base64url JSON payload that follows `shlink:/`.
+ * @param fragment
+ */
 function decodePayload(fragment: string): ShlPayload {
   const body = fragment.slice(PREFIX.length);
-  if (body === '') {
-    throw new Error('SMART Health Link payload is empty.');
+  if (body === "") {
+    throw new Error("SMART Health Link payload is empty.");
   }
 
   let parsed: unknown;
   try {
     // Unlike the bespoke codec, an SHL payload is plain base64url JSON with no compression.
     parsed = JSON.parse(decodeUtf8(fromBase64Url(body)));
-  } catch (cause) {
-    throw new Error('SMART Health Link payload is corrupt or truncated.', { cause });
+  } catch (error) {
+    throw new Error("SMART Health Link payload is corrupt or truncated.", {
+      cause: error,
+    });
   }
 
   if (!isShlPayload(parsed)) {
-    throw new Error('SMART Health Link payload is missing `url` or `key`.');
+    throw new Error("SMART Health Link payload is missing `url` or `key`.");
   }
 
   if (parsed.v !== undefined && parsed.v > SHL_VERSION) {
     throw new Error(
-      `This link uses SHL protocol v${parsed.v}, which this app does not support yet.`
+      `This link uses SHL protocol v${parsed.v}, which this app does not support yet.`,
     );
   }
 
   if (parsed.exp !== undefined && parsed.exp * 1000 < Date.now()) {
-    throw new Error('This link has expired.');
+    throw new Error("This link has expired.");
   }
 
   return parsed;
@@ -123,39 +133,47 @@ async function fetchJwe(url: string): Promise<string> {
    *
    * ⚠️ KNOWN DEFECT: the spec also makes `recipient` *required* on this GET, and we send it only on
    * the manifest path below. Omitting it here is non-conformant and fails against a host that
-   * insists on it — and it is why the unopenable links described in `docs/u-flag-hosting.md` still
+   * insists on it - and it is why the unopenable links described in `docs/u-flag-hosting.md` still
    * work in our own viewer. Fix both halves together.
    */
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(
-      `Could not retrieve the linked payload (${response.status} ${response.statusText}).`
+      `Could not retrieve the linked payload (${response.status} ${response.statusText}).`,
     );
   }
 
-  return (await response.text()).trim();
+  const body = await response.text();
+  return body.trim();
 }
 
-/** Fetch the manifest, for links without the `U` flag. */
+/**
+ * Fetch the manifest, for links without the `U` flag.
+ * @param payload
+ * @param options
+ */
 async function fetchManifest(
   payload: ShlPayload,
-  options: DecodeOptions = {}
+  options: DecodeOptions = {},
 ): Promise<ManifestFile[]> {
-  const body: Record<string, unknown> = { recipient: options.recipient ?? RECIPIENT };
+  const body: Record<string, unknown> = {
+    recipient: options.recipient ?? RECIPIENT,
+  };
   if (options.passcode !== undefined) {
     body.passcode = options.passcode;
   }
 
   const response = await fetch(payload.url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 
   if (response.status === 401) {
     let remaining: number | undefined;
     try {
-      remaining = ((await response.json()) as { remainingAttempts?: number }).remainingAttempts;
+      remaining = ((await response.json()) as { remainingAttempts?: number })
+        .remainingAttempts;
     } catch {
       // The spec defines this body, but don't fail the error path over a missing one.
     }
@@ -163,42 +181,90 @@ async function fetchManifest(
     // Typed, so the caller can prompt rather than dead-end. See `PasscodeRequiredError`.
     throw new PasscodeRequiredError({
       remainingAttempts: remaining,
-      wasAttempted: options.passcode !== undefined
+      wasAttempted: options.passcode !== undefined,
     });
   }
 
   if (!response.ok) {
     throw new Error(
-      `Could not retrieve the link manifest (${response.status} ${response.statusText}).`
+      `Could not retrieve the link manifest (${response.status} ${response.statusText}).`,
     );
   }
 
   const manifest = (await response.json()) as { files?: ManifestFile[] };
   if (!Array.isArray(manifest.files)) {
-    throw new Error('Link manifest contained no `files` array.');
+    throw new TypeError("Link manifest contained no `files` array.");
   }
 
   return manifest.files;
 }
 
-/** Decrypt one manifest file, whether it arrived embedded or by reference. */
-async function readManifestFile(file: ManifestFile, key: Uint8Array): Promise<string> {
-  const jwe = file.embedded ?? (file.location ? await fetchJwe(file.location) : undefined);
+/**
+ * Decrypt one manifest file, whether it arrived embedded or by reference.
+ * @param file
+ * @param key
+ */
+async function readManifestFile(
+  file: ManifestFile,
+  key: Uint8Array,
+): Promise<string> {
+  const jwe =
+    file.embedded ??
+    (file.location ? await fetchJwe(file.location) : undefined);
   if (jwe === undefined) {
-    throw new Error('Link manifest file had neither `embedded` content nor a `location`.');
+    throw new Error(
+      "Link manifest file had neither `embedded` content nor a `location`.",
+    );
   }
 
   return decodeUtf8(await decryptJwe(jwe, key));
 }
 
 /**
- * Whether a manifest file holds FHIR JSON.
+ * A content type without its parameters.
  *
- * Compared after stripping any `;charset=…` parameter, because `application/fhir+json;charset=utf-8`
- * is the same content type and a strict equality check silently discards it.
+ * `application/fhir+json;charset=utf-8` is the same content type as `application/fhir+json`, and a
+ * strict equality check silently discards it.
+ * @param contentType the content type as the manifest declared it
+ * @returns the type and subtype, lower-cased
  */
-function isFhirJson(contentType: string | undefined): boolean {
-  return (contentType ?? '').split(';')[0].trim().toLowerCase() === FHIR_JSON;
+function baseContentType(contentType: string | undefined): string {
+  return (contentType ?? "").split(";", 1)[0].trim().toLowerCase();
+}
+
+/**
+ * Read the API access grant, when the manifest carried one.
+ *
+ * Everything here is a tolerance rule rather than a failure path. A grant is a capability, not
+ * content: a filler that cannot read one simply has no direct channel and returns the answers as
+ * a link instead, so an undecryptable or malformed grant file yields *no grant* and no warning
+ * (FR-020). A warning would be worse than silence - it would tell the person filling the form
+ * about a file they cannot act on, when the absence of the send affordance already says
+ * everything there is to say.
+ * @param files the manifest's files
+ * @param key the link key
+ * @returns the grant with the moment it was read, or undefined when there is none to have
+ */
+async function readManifestGrant(
+  files: ManifestFile[],
+  key: Uint8Array,
+): Promise<ReceivedGrant | undefined> {
+  for (const file of files) {
+    if (baseContentType(file.contentType) !== GRANT_CONTENT_TYPE) {
+      continue;
+    }
+
+    try {
+      const grant = parseGrant(await readManifestFile(file, key));
+      if (grant) {
+        return { grant, receivedAt: Date.now() };
+      }
+    } catch {
+      // A grant that will not decrypt is a grant this reader does not have. Nothing to say.
+    }
+  }
+
+  return undefined;
 }
 
 function describeError(cause: unknown): string {
@@ -209,29 +275,43 @@ function describeError(cause: unknown): string {
  * Read every FHIR file in a manifest and merge them into one Bundle.
  *
  * Failure policy is per-file: keep what decoded, note what did not, and throw only when *nothing*
- * did. One corrupt file in a five-file manifest must not hide the answers in the other four — but a
+ * did. One corrupt file in a five-file manifest must not hide the answers in the other four - but a
  * manifest where everything failed has to be an error, or the caller gets an empty Bundle and
  * reports "no answers" for what is really a broken link.
+ *
+ * The grant file is dispatched away from here by content type before anything is read. It is not
+ * a file "this app cannot render as a form" - it is not content at all - so counting it as
+ * skipped would report a healthy two-file manifest as partially unreadable, and feeding it to
+ * {@link bundleFromJson} would put a bearer token in the Bundle the form is built from.
+ * @param files
+ * @param key
  */
 async function readManifestBundle(
   files: ManifestFile[],
-  key: Uint8Array
+  key: Uint8Array,
 ): Promise<{ bundle: Bundle; warnings: string[] }> {
   const warnings: string[] = [];
+  const payload = files.filter(
+    (file) => baseContentType(file.contentType) !== GRANT_CONTENT_TYPE,
+  );
 
-  const skipped = files.filter((file) => !isFhirJson(file.contentType));
+  const skipped = payload.filter(
+    (file) => baseContentType(file.contentType) !== FHIR_JSON,
+  );
   if (skipped.length > 0) {
     warnings.push(
       `Ignored ${skipped.length} file(s) this app cannot render as a form: ` +
-        `${skipped.map((file) => file.contentType || 'unknown type').join(', ')}.`
+        `${skipped.map((file) => file.contentType || "unknown type").join(", ")}.`,
     );
   }
 
-  const fhirFiles = files.filter((file) => isFhirJson(file.contentType));
+  const fhirFiles = payload.filter(
+    (file) => baseContentType(file.contentType) === FHIR_JSON,
+  );
   if (fhirFiles.length === 0) {
-    const seen = files.map((file) => file.contentType).join(', ') || 'none';
+    const seen = payload.map((file) => file.contentType).join(", ") || "none";
     throw new Error(
-      `This link contains no FHIR content that can be rendered as a form (content types: ${seen}).`
+      `This link contains no FHIR content that can be rendered as a form (content types: ${seen}).`,
     );
   }
 
@@ -241,77 +321,52 @@ async function readManifestBundle(
   for (const [index, file] of fhirFiles.entries()) {
     try {
       bundles.push(bundleFromJson(await readManifestFile(file, key)));
-    } catch (cause) {
-      firstCause ??= cause;
-      warnings.push(`File ${index + 1} of ${fhirFiles.length} could not be read: ${describeError(cause)}`);
+    } catch (error) {
+      firstCause ??= error;
+      warnings.push(
+        `File ${index + 1} of ${fhirFiles.length} could not be read: ${describeError(error)}`,
+      );
     }
   }
 
   if (bundles.length === 0) {
-    throw new Error(`Nothing in this link could be read. ${describeError(firstCause)}`, {
-      cause: firstCause
-    });
+    throw new Error(
+      `Nothing in this link could be read. ${describeError(firstCause)}`,
+      {
+        cause: firstCause,
+      },
+    );
   }
 
   return { bundle: mergeBundles(bundles), warnings };
 }
 
 export const shlCodec: LinkCodec = {
-  id: 'shl',
+  id: "shl",
   prefix: PREFIX,
 
   canDecode(linkOrFragment: string): boolean {
     return extractFragment(linkOrFragment).startsWith(PREFIX);
   },
 
-  async encode(content: LinkContent, options: EncodeOptions): Promise<string> {
-    const { blobStore } = options;
-    if (!blobStore) {
-      throw new Error(
-        'Creating a SMART Health Link needs somewhere to host the encrypted payload. ' +
-          'Pass a BlobStore in EncodeOptions.'
-      );
-    }
-
-    const key = generateKey();
-    const jwe = await encryptJwe(encodeUtf8(JSON.stringify(content.bundle)), key);
-    const url = await blobStore.put(encodeUtf8(jwe), JOSE_CONTENT_TYPE);
-
-    const payload: ShlPayload = {
-      url,
-      key: keyToBase64Url(key),
-      // Single encrypted file retrieved by GET — no manifest server required.
-      flag: 'U',
-      v: SHL_VERSION
-    };
-
-    if (content.label) {
-      payload.label = content.label.slice(0, MAX_LABEL_LENGTH);
-    }
-
-    if (options.expiresAt !== undefined) {
-      payload.exp = options.expiresAt;
-    }
-
-    const encoded = toBase64Url(encodeUtf8(JSON.stringify(payload)));
-    const base = options.baseUrl.replace(/\/+$/, '');
-
-    return `${base}/view#${PREFIX}${encoded}`;
-  },
-
-  async decode(linkOrFragment: string, options: DecodeOptions = {}): Promise<LinkContent> {
+  async decode(
+    linkOrFragment: string,
+    options: DecodeOptions = {},
+  ): Promise<LinkContent> {
     const fragment = extractFragment(linkOrFragment);
     if (!fragment.startsWith(PREFIX)) {
-      throw new Error('Not a SMART Health Link.');
+      throw new Error("Not a SMART Health Link.");
     }
 
     const payload = decodePayload(fragment);
     const key = keyFromBase64Url(payload.key);
-    const flag = payload.flag ?? '';
+    const flag = payload.flag ?? "";
 
     // `U` means the url resolves straight to a single encrypted file; anything else means a manifest.
-    if (flag.includes('U')) {
-      const plaintext = decodeUtf8(await decryptJwe(await fetchJwe(payload.url), key));
+    if (flag.includes("U")) {
+      const plaintext = decodeUtf8(
+        await decryptJwe(await fetchJwe(payload.url), key),
+      );
       return { bundle: bundleFromJson(plaintext), label: payload.label };
     }
 
@@ -320,11 +375,23 @@ export const shlCodec: LinkCodec = {
      * failed attempt and lock the link permanently, so burning one of a patient's attempts to
      * discover a fact the payload already states would be inexcusable.
      */
-    if (flag.includes('P') && options.passcode === undefined) {
+    if (flag.includes("P") && options.passcode === undefined) {
       throw new PasscodeRequiredError({ wasAttempted: false });
     }
 
-    const { bundle, warnings } = await readManifestBundle(await fetchManifest(payload, options), key);
-    return { bundle, label: payload.label, warnings: warnings.length > 0 ? warnings : undefined };
-  }
+    /*
+     * One fetch, two readings. The manifest is retrieved once and both the payload and the grant
+     * are read out of the same file list: a second fetch would mint a second grant on the
+     * producer's side (`server/shl/manifest.ts` mints per fetch), leaving the filler holding a
+     * token the destination has no reason to honour more than once.
+     */
+    const files = await fetchManifest(payload, options);
+    const { bundle, warnings } = await readManifestBundle(files, key);
+    return {
+      bundle,
+      label: payload.label,
+      warnings: warnings.length > 0 ? warnings : undefined,
+      apiAccess: await readManifestGrant(files, key),
+    };
+  },
 };

@@ -1,76 +1,109 @@
-import type { SmartSession } from '@/auth/smartSession';
-
 /**
- * The one place a SMART access token is allowed to leave the browser.
+ * The one place a request is decided to be *the session's* rather than anonymous.
  *
- * This app is two halves with opposite trust postures, and the whole design rests on keeping them
- * apart. The requester half talks to an EHR and may hold credentials. The filler half — someone on
- * another device holding nothing but a link — has none by construction, which is the second claim the
- * README makes for the design. So authentication is opt-in per call site, not ambient: the forms
- * catalogue, the blob host and the one-shot write slot each keep their own plain `fetch`, and must.
+ * This file used to be the one place a SMART access token was allowed to leave the browser. It no
+ * longer is, because there is no longer a token in the browser to guard: the launch happens in the
+ * BFF, the access token stays there, and the SPA holds an opaque `HttpOnly` cookie it cannot read
+ * (FR-005). What survives is the *decision* the old file existed to make, and it still has to be
+ * made per call site rather than ambiently.
+ *
+ * The app is still two halves with opposite trust postures, and that is still what the design
+ * rests on. The requester half acts with a session's authority. The filler half - someone on
+ * another device holding nothing but a link - has none by construction. So authentication stays
+ * opt-in: the terminology server, a foreign write slot and a third party's manifest each keep
+ * their own plain `fetch`, and must.
+ *
+ * What changed is where the boundary sits. It used to be *origin of the target server*, because
+ * the risk was handing an EHR token to a host named by a downloaded Questionnaire. Now it is
+ * whether the request is addressed to our own proxy*, because that is the only address the
+ * session's authority can be spent at. A Questionnaire's `sdc-questionnaire-endpoint` extension
+ * can still name any server on the internet, and that server is still reached by plain `fetch`
+ * with no credentials - the same attack, refused for the same reason, one layer in.
  *
  * See `docs/smart-app-launch.md` for the boundary in full.
  */
 
+import type { SmartSession } from "@/auth/smartSession";
+
+import { FHIR_PROXY_BASE } from "@/lib/session";
+
 /**
- * Whether a URL belongs to the launched server, and may therefore be shown the token.
+ * Whether a URL addresses this app's own FHIR proxy, and may therefore be sent with the session
+ * cookie.
  *
- * Origin, not prefix. A prefix test on the base URL would accept
- * `https://ehr.example.org.attacker.test/fhir`, and comparing whole base paths would reject the
- * server's own absolute `Location` and pagination links, which are legitimate and common. Origin is
- * the boundary the token is actually scoped to.
+ * Path *and* origin, which is a change from the origin-only test this replaces. Origin alone was
+ * the right boundary when the credential was a bearer token scoped to one FHIR server; it is the
+ * wrong one now, because the proxy shares an origin with the whole SPA and with `/config.json`.
+ * Under the old test every same-origin request would have qualified.
  *
- * Both sides must be absolute. A relative URL is not resolved against the page origin, and is treated
- * as no match: everything reaching this function is built as `${serverUrl}/…`, so a relative one is
- * either a bug or a call that was never meant for the EHR. The cost of being wrong is an
- * unauthenticated request the caller already handles; the cost of resolving it optimistically would be
- * the token. Not touching `window` also keeps this testable outside a browser, which is where the
- * check that proves the negative cases actually runs.
+ * A relative URL is resolved against the page origin here, unlike the old absolute-only rule. That
+ * is safe now and was not before: the resolved target must still sit under the proxy's own path
+ * prefix, and the consequence of a match is a same-origin cookie the browser would have attached
+ * to that URL anyway.
+ * @param url the request target, absolute or relative
+ * @param proxyBase the absolute URL of the FHIR proxy base
+ * @returns true when the URL is inside the proxy
+ * @example
+ * isProxiedRequest("/api/fhir/Patient/123", "https://app.example.org/api/fhir"); // true
  */
-export function isLaunchedServer(url: string, serverUrl: string): boolean {
+export function isProxiedRequest(url: string, proxyBase: string): boolean {
+  let target: URL;
+  let base: URL;
   try {
-    return new URL(url).origin === new URL(serverUrl).origin;
+    base = new URL(proxyBase);
+    target = new URL(url, base);
   } catch {
     return false;
   }
+  if (target.origin !== base.origin) {
+    return false;
+  }
+  const prefix = base.pathname.replace(/\/+$/, "");
+  return target.pathname === prefix || target.pathname.startsWith(`${prefix}/`);
 }
 
 /**
- * `fetch`, with the session's bearer token attached **only** when the target is the launched server.
+ * The absolute URL of this app's FHIR proxy base.
  *
- * The gate is origin, not "is there a session", and the difference is a real vulnerability rather than
- * tidiness. `resolveDestinations` in `src/fhir/submit.ts` reads write targets from a downloaded
- * Questionnaire's `sdc-questionnaire-endpoint` extension, and those outrank configuration — so a
- * Questionnaire fetched from a public catalogue can name any server on the internet as the place its
- * responses go. Attaching the token to whatever that returns would hand an EHR access token to a host
- * chosen by whoever authored the form.
+ * Absolute because {@link SmartSession.serverUrl} is compared by origin in places that predate the
+ * proxy, and because a caller building `${serverUrl}/Patient` must produce something `fetch` can
+ * use from a worker as well as a document.
+ * @returns the proxy base, resolved against the current origin
+ */
+export function proxyBaseUrl(): string {
+  return new URL(FHIR_PROXY_BASE, globalThis.location.origin).href;
+}
+
+/**
+ * `fetch`, sending the session cookie **only** when the target is this app's own proxy.
  *
- * With no session, or a target that is not the launched server, this is exactly `fetch`. That is the
- * app's original behaviour and it stays the default: a launch is optional here.
+ * With no session, or a target outside the proxy, this is exactly `fetch` with credentials
+ * suppressed. That is the app's original anonymous behaviour and it stays the default for
+ * everything the filler does.
  *
- * An explicit `Authorization` in `init` is never overwritten. `src/link/writeSlot.ts` sets its own
- * one-shot write token, which is a different capability with a different meaning, and silently
- * replacing it would break the channel-D contract.
+ * The `session` argument is still taken, and is still what makes this a decision rather than a
+ * default, but it is now only consulted for *whether* there is a session - there is nothing in it
+ * to attach. An explicit `Authorization` in `init` is passed through untouched:
+ * `src/link/writeSlot.ts` sets a one-shot write token, which is a different capability with a
+ * different meaning, and the proxy strips its own inbound `Authorization` regardless.
+ * @param url the request target
+ * @param init the request options, if any
+ * @param session the launched session, or null when nobody is signed in
+ * @returns the response, whatever it is; this function does not interpret status
+ * @example
+ * const response = await authedFetch(`${session.serverUrl}/Patient/123`, undefined, session);
  */
 export async function authedFetch(
   url: string,
   init: RequestInit | undefined,
-  session: SmartSession | null
+  session: SmartSession | null,
 ): Promise<Response> {
-  if (!session || !isLaunchedServer(url, session.serverUrl)) {
-    return fetch(url, init);
+  if (session === null || !isProxiedRequest(url, session.serverUrl)) {
+    // `omit` rather than the default, so a same-origin request that is *not* the proxy - the
+    // config file, a manifest this deployment happens to host - does not carry the session cookie
+    // to a route that has no business seeing it.
+    return fetch(url, { ...init, credentials: "omit" });
   }
 
-  const headers = new Headers(init?.headers);
-  if (headers.has('Authorization')) {
-    return fetch(url, init);
-  }
-
-  const authorization = await session.authorizationHeader();
-  if (!authorization) {
-    return fetch(url, init);
-  }
-
-  headers.set('Authorization', authorization);
-  return fetch(url, { ...init, headers });
+  return fetch(url, { ...init, credentials: "same-origin" });
 }

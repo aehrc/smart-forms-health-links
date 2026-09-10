@@ -1,10 +1,10 @@
-import type { QuestionnaireResponse } from 'fhir/r4';
+import type { QuestionnaireResponse } from "fhir/r4";
 
 /**
  * Flatten a QuestionnaireResponse's answer tree into displayable rows.
  *
  * This is the last-resort reading of a response: what it says, without the Questionnaire that
- * defines how it should look. That case is ordinary rather than exceptional — a response cites
+ * defines how it should look. That case is ordinary rather than exceptional - a response cites
  * whatever canonical the app that wrote it used, and on a shared server that is frequently a form
  * this deployment's catalogue does not hold. Answers are the clinical content; the definition is
  * presentation, so losing the latter must not cost the former.
@@ -22,42 +22,67 @@ export interface AnswerRow {
   depth: number;
 }
 
-type Answer = NonNullable<NonNullable<QuestionnaireResponse['item']>[number]['answer']>[number];
+type Answer = NonNullable<
+  NonNullable<QuestionnaireResponse["item"]>[number]["answer"]
+>[number];
 
 /**
  * Reduce one answer to a printable string.
  *
  * The value is found by the `value[x]` naming convention rather than by "whatever field is left
  * over". An answer is a `BackboneElement`, so it may also carry `id`, `extension`,
- * `modifierExtension` and `item` — and a leftover-field search picks whichever of those the sending
+ * `modifierExtension` and `item` - and a leftover-field search picks whichever of those the sending
  * app happened to serialise first. That makes the rendered answer depend on a foreign app's JSON key
  * order, which fails intermittently rather than reproducibly.
  *
  * `valueCoding` is special-cased and read display-then-code: a coded answer rendered as
  * `[object Object]` is worse than useless to someone deciding whether to accept it into a record.
+ * @param answer
  */
 function answerValue(answer: Answer): string {
   if (answer.valueCoding) {
-    return answer.valueCoding.display ?? answer.valueCoding.code ?? '';
+    return answer.valueCoding.display ?? answer.valueCoding.code ?? "";
   }
 
-  const key = Object.keys(answer).find((candidate) => candidate.startsWith('value'));
-  const value = key === undefined ? undefined : (answer as Record<string, unknown>)[key];
+  const key = Object.keys(answer).find((candidate) =>
+    candidate.startsWith("value"),
+  );
+  const value =
+    key === undefined ? undefined : (answer as Record<string, unknown>)[key];
 
-  return typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '');
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
 }
 
+/**
+ *
+ * @param response
+ */
 export function flattenAnswers(response: QuestionnaireResponse): AnswerRow[] {
   const rows: AnswerRow[] = [];
 
-  function walk(items: NonNullable<QuestionnaireResponse['item']>, depth: number) {
+  function walk(
+    items: NonNullable<QuestionnaireResponse["item"]>,
+    depth: number,
+  ) {
     for (const item of items) {
       for (const answer of item.answer ?? []) {
         rows.push({
           linkId: item.linkId,
           text: item.text,
           value: answerValue(answer),
-          depth
+          depth,
         });
 
         if (answer.item) {
@@ -105,15 +130,17 @@ export interface PopulatedRow {
  * Shared by {@link populatedRows} and {@link pruneAnswers} rather than implemented twice, because the
  * two must agree exactly: a path the panel shows and the pruner does not recognise silently drops an
  * answer the clinician chose to keep.
+ * @param response
+ * @param visit
  */
 function answerPaths(
   response: QuestionnaireResponse,
-  visit: (row: Omit<PopulatedRow, 'value'> & { answer: Answer }) => void
+  visit: (row: Omit<PopulatedRow, "value"> & { answer: Answer }) => void,
 ): void {
   function walk(
-    items: NonNullable<QuestionnaireResponse['item']>,
+    items: NonNullable<QuestionnaireResponse["item"]>,
     prefix: string,
-    groups: string[]
+    groups: string[],
   ) {
     const occurrences = new Map<string, number>();
 
@@ -122,36 +149,48 @@ function answerPaths(
       occurrences.set(item.linkId, occurrence + 1);
       const path = `${prefix}${item.linkId}~${occurrence}`;
 
-      (item.answer ?? []).forEach((answer, index) => {
-        const hasValue = Object.keys(answer).some((key) => key.startsWith('value'));
+      for (const [index, answer] of (item.answer ?? []).entries()) {
+        const hasValue = Object.keys(answer).some((key) =>
+          key.startsWith("value"),
+        );
         if (hasValue) {
-          visit({ path: `${path}#${index}`, groups, linkId: item.linkId, text: item.text, answer });
+          visit({
+            path: `${path}#${index}`,
+            groups,
+            linkId: item.linkId,
+            text: item.text,
+            answer,
+          });
         }
 
         if (answer.item) {
           walk(answer.item, `${path}#${index}/`, groups);
         }
-      });
+      }
 
       if (item.item) {
         /*
          * A group heading is numbered only when it actually repeats. "Recorded problems 1" reads as a
          * distinction when there is nothing to distinguish it from.
          */
-        const repeats = items.filter((sibling) => sibling.linkId === item.linkId).length > 1;
+        const repeats =
+          items.filter((sibling) => sibling.linkId === item.linkId).length > 1;
         const heading = item.text ?? item.linkId;
         walk(item.item, `${path}/`, [
           ...groups,
-          repeats ? `${heading} ${occurrence + 1}` : heading
+          repeats ? `${heading} ${occurrence + 1}` : heading,
         ]);
       }
     }
   }
 
-  walk(response.item ?? [], '', []);
+  walk(response.item ?? [], "", []);
 }
 
-/** Every pre-filled answer in a populated response, flattened into tickable rows. */
+/**
+ * Every pre-filled answer in a populated response, flattened into tickable rows.
+ * @param response
+ */
 export function populatedRows(response: QuestionnaireResponse): PopulatedRow[] {
   const rows: PopulatedRow[] = [];
 
@@ -172,12 +211,14 @@ export function populatedRows(response: QuestionnaireResponse): PopulatedRow[] {
  *
  * Never mutates its input: `RequestForm` holds the populated response as query data, and a mutation
  * would prune it permanently the first time a box was unticked.
+ * @param response
+ * @param keep
  */
 export function pruneAnswers(
   response: QuestionnaireResponse,
-  keep: ReadonlySet<string>
+  keep: ReadonlySet<string>,
 ): QuestionnaireResponse {
-  type Item = NonNullable<QuestionnaireResponse['item']>[number];
+  type Item = NonNullable<QuestionnaireResponse["item"]>[number];
 
   function walk(items: Item[], prefix: string): Item[] {
     const occurrences = new Map<string, number>();
@@ -191,8 +232,12 @@ export function pruneAnswers(
       const answers = (item.answer ?? [])
         .map((answer, index) => ({ answer, index }))
         .filter(({ answer, index }) => {
-          const hasValue = Object.keys(answer).some((key) => key.startsWith('value'));
-          return hasValue ? keep.has(`${path}#${index}`) : answer.item !== undefined;
+          const hasValue = Object.keys(answer).some((key) =>
+            key.startsWith("value"),
+          );
+          return hasValue
+            ? keep.has(`${path}#${index}`)
+            : answer.item !== undefined;
         })
         .map(({ answer, index }) => {
           if (!answer.item) {
@@ -200,10 +245,14 @@ export function pruneAnswers(
           }
 
           const nested = walk(answer.item, `${path}#${index}/`);
-          return nested.length > 0 ? { ...answer, item: nested } : { ...answer, item: undefined };
+          return nested.length > 0
+            ? { ...answer, item: nested }
+            : { ...answer, item: undefined };
         })
         .filter((answer) => {
-          const hasValue = Object.keys(answer).some((key) => key.startsWith('value'));
+          const hasValue = Object.keys(answer).some((key) =>
+            key.startsWith("value"),
+          );
           return hasValue || (answer.item?.length ?? 0) > 0;
         });
 
@@ -216,13 +265,18 @@ export function pruneAnswers(
       kept.push({
         ...item,
         ...(answers.length > 0 ? { answer: answers } : { answer: undefined }),
-        ...(children && children.length > 0 ? { item: children } : { item: undefined })
+        ...(children && children.length > 0
+          ? { item: children }
+          : { item: undefined }),
       });
     }
 
     return kept;
   }
 
-  const items = walk(response.item ?? [], '');
-  return { ...response, ...(items.length > 0 ? { item: items } : { item: undefined }) };
+  const items = walk(response.item ?? [], "");
+  return {
+    ...response,
+    ...(items.length > 0 ? { item: items } : { item: undefined }),
+  };
 }

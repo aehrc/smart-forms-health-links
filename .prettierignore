@@ -1,0 +1,11 @@
+coverage
+dist
+dist-server
+package-lock.json
+report
+.claude
+
+# Go templates, not YAML: `{{ .Release.Name }}` in a value position is a syntax error to a YAML
+# parser, and reindenting a `{{- if }}` block would change what it renders. Chart.yaml,
+# values.yaml and the chart README are plain files, so they stay formatted.
+deploy/helm/*/templates

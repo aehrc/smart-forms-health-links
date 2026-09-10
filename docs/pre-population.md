@@ -39,14 +39,14 @@ offline filler exist at the same time.
 
 Measured against the default catalogue and the default sandbox record.
 
-| | |
-| --- | --- |
-| Forms declaring population machinery | **112 of 138** |
-| …declaring only item-level machinery, invisible at the root | 5 |
-| Forms declaring template-based extraction, for comparison | 25 |
-| GP Chronic Condition Management Plan, populated | 12 answers, 15 reads, ~250 ms |
-| Payload growth | **+2.2%** — 2.4 KB of seed on 109 KB of Questionnaire |
-| Link size | unchanged, ~260 bytes |
+|                                                             |                                                       |
+| ----------------------------------------------------------- | ----------------------------------------------------- |
+| Forms declaring population machinery                        | **112 of 138**                                        |
+| …declaring only item-level machinery, invisible at the root | 5                                                     |
+| Forms declaring template-based extraction, for comparison   | 25                                                    |
+| GP Chronic Condition Management Plan, populated             | 12 answers, 15 reads, ~250 ms                         |
+| Payload growth                                              | **+2.2%** — 2.4 KB of seed on 109 KB of Questionnaire |
+| Link size                                                   | unchanged, ~260 bytes                                 |
 
 Pre-population is the broadest SDC capability in that catalogue, and until now the app used none of it.
 
@@ -62,9 +62,9 @@ Bundle{ Questionnaire, QuestionnaireResponse{status: in-progress}, Task }
 
 The seed is normalised before sealing, and everything removed would otherwise mean the wrong thing on
 the far side. No `id` — identity on a server the filler cannot see. **No `author` and no `authored`** —
-an author naming the practitioner survives the round trip and lands on the answers the *patient*
+an author naming the practitioner survives the round trip and lands on the answers the _patient_
 returns. No `meta.security` — a seed is nobody's assertion yet. `subject` mirrors `Task.for`, and
-`Task.input` gains a `questionnaire-response` slot pointing at it, so the seed is *declared* rather
+`Task.input` gains a `questionnaire-response` slot pointing at it, so the seed is _declared_ rather
 than merely present.
 
 The tracking `Task` published to the EHR carries none of it: `asPublishedTask` drops `urn:uuid` inputs
@@ -72,7 +72,7 @@ along with `focus` and `extension`, because they name siblings inside the encryp
 
 ### The discriminator had to change
 
-`isRequestBundle` used to mean *a Questionnaire is present and a QuestionnaireResponse is **not***.
+`isRequestBundle` used to mean _a Questionnaire is present and a QuestionnaireResponse is **not**_.
 Both legs can now carry a QuestionnaireResponse, so the test is its **status**:
 
 ```
@@ -113,20 +113,20 @@ grants `user/*.*` and never exercises the gap.
 `PRE_POPULATE_SCOPES` closes it, requested only when the feature is on. The list was derived by reading
 every `x-fhir-query` in all 138 catalogue Questionnaires and counting the types they name:
 
-| type | forms | before |
-| --- | --- | --- |
-| `Observation` | 31 | `.cu` only |
-| `Condition` | 25 | `.cu` only |
-| `AllergyIntolerance` | 12 | `.cu` only |
-| `PractitionerRole` | 9 | not granted |
-| `MedicationStatement` | 9 | `.cu` only |
-| `QuestionnaireResponse` | 9 | already `.crs` |
-| `Immunization` | 7 | `.cu` only |
-| `Encounter` | 6 | `.cu` only |
-| `MedicationRequest` | 5 | not granted |
-| `Procedure` | 4 | `.cu` only |
-| `ServiceRequest` | 2 | not granted |
-| `Device`, `Organization` | 1 each | not granted |
+| type                     | forms  | before         |
+| ------------------------ | ------ | -------------- |
+| `Observation`            | 31     | `.cu` only     |
+| `Condition`              | 25     | `.cu` only     |
+| `AllergyIntolerance`     | 12     | `.cu` only     |
+| `PractitionerRole`       | 9      | not granted    |
+| `MedicationStatement`    | 9      | `.cu` only     |
+| `QuestionnaireResponse`  | 9      | already `.crs` |
+| `Immunization`           | 7      | `.cu` only     |
+| `Encounter`              | 6      | `.cu` only     |
+| `MedicationRequest`      | 5      | not granted    |
+| `Procedure`              | 4      | `.cu` only     |
+| `ServiceRequest`         | 2      | not granted    |
+| `Device`, `Organization` | 1 each | not granted    |
 
 `Patient` is absent because it arrives through `launchContext`, not through a query.
 
@@ -134,7 +134,7 @@ every `x-fhir-query` in all 138 catalogue Questionnaires and counting the types 
 once rather than `.cu` and `.rs` separately — two alternative statements of one permission that a
 server is free to answer inconsistently.
 
-This is a list about *this catalogue*. Another deployment's forms will want other types; that is what
+This is a list about _this catalogue_. Another deployment's forms will want other types; that is what
 `smartScopes` is for, and setting it takes over the list wholesale.
 
 ## Choosing what goes
@@ -160,16 +160,16 @@ Two things, and neither is solved.
 ### The payload stops being harmless
 
 A request used to carry a public Questionnaire — downloadable by anyone — plus a name. Its most
-sensitive fact was *that this person was asked to fill this in*. A pre-filled request carries an
+sensitive fact was _that this person was asked to fill this in_. A pre-filled request carries an
 extract from a chart.
 
 The cryptography does not change: a JWE on an untrusted `Binary`, with the key in the link fragment.
 What changes is what a leaked link costs. Links leak in ordinary ways — photographed over a shoulder,
-printed, texted, left in a browser history — and SHL's model is that the link *is* the credential.
+printed, texted, left in a browser history — and SHL's model is that the link _is_ the credential.
 That was an easy trade for a blank form and is a real decision for a chart extract.
 
 Note also that nothing deletes the `Binary` when a request is collected. `linkLifetimeDays` sets `exp`,
-which *readers* enforce; the host does not. An expired pre-filled request is still sitting there.
+which _readers_ enforce; the host does not. An expired pre-filled request is still sitting there.
 
 `enablePrePopulate` is therefore off in the fallback config, and on in the shipped one only because
 that points at a sandbox of synthetic patients where this is the demo. Two deliberate acts are still
@@ -195,9 +195,9 @@ Options that were considered and not built:
 - **A population `Provenance` in the request.** Truthful and cheap, and it does not survive the return
   leg by itself.
 - **Per-item `questionnaireresponse-author`.** The standard R4 extension for exactly this, and it
-  depends on the *filler* preserving it. Nothing obliges a third-party app to, and this app could not
+  depends on the _filler_ preserving it. Nothing obliges a third-party app to, and this app could not
   verify that it had.
-- **Keeping the seed and diffing on return.** The only option producing a *verified* claim rather than
+- **Keeping the seed and diffing on return.** The only option producing a _verified_ claim rather than
   a reported one, since the requester already holds what it sent. It needs nothing from the filler,
   and it would hand `templateExtract.ts` the baseline it currently declines to use.
 
@@ -205,12 +205,12 @@ The third is the one to build next.
 
 ## Files
 
-| | |
-| --- | --- |
-| `src/fhir/populate.ts` | the operation, and the callback that keeps the token off foreign hosts |
-| `src/lib/answerRows.ts` | `populatedRows` / `pruneAnswers` — the tickable rows and the pruning |
-| `src/components/PrePopulatePanel.tsx` | the tick list |
-| `src/routes/RequestForm.tsx` | the toggle, the preview, the mint |
-| `src/link/exchange.ts` | the seed on the wire, and `isRequestBundle` |
-| `src/components/FillFromRequest.tsx` | the filler's side, and the notice |
-| `scripts/e2ePopulate.ts` | `npm run check:populate` |
+|                                       |                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------- |
+| `src/fhir/populate.ts`                | the operation, and the callback that keeps the token off foreign hosts |
+| `src/lib/answerRows.ts`               | `populatedRows` / `pruneAnswers` — the tickable rows and the pruning   |
+| `src/components/PrePopulatePanel.tsx` | the tick list                                                          |
+| `src/routes/RequestForm.tsx`          | the toggle, the preview, the mint                                      |
+| `src/link/exchange.ts`                | the seed on the wire, and `isRequestBundle`                            |
+| `src/components/FillFromRequest.tsx`  | the filler's side, and the notice                                      |
+| `scripts/e2ePopulate.ts`              | `npm run check:populate`                                               |

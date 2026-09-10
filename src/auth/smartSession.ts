@@ -1,35 +1,52 @@
-import FHIR from 'fhirclient';
-import type Client from 'fhirclient/lib/Client';
-import type { AppConfig } from '@/lib/config';
-import { buildScopes } from './scopes';
-
-/**
- * SMART App Launch — the OAuth half, and the only module that knows `fhirclient` exists.
- *
- * The library runs the flow and holds the launch context. It deliberately does **not** carry the FHIR
- * traffic: `client.request()` would replace the five hand-written `fetchFhir` helpers, each of which
- * carries behaviour that is load-bearing and easy to lose — `Cache-Control: no-cache` revalidation
- * against the caching proxy (`src/fhir/ehrServer.ts`), `If-Match` on a one-shot slot
- * (`src/link/writeSlot.ts`), and reading created ids from the response *body* because the servers
- * report unusable `Location` headers (`src/fhir/blobStore.ts`). So this file yields a bearer token and
- * a server URL, and `src/fhir/authedFetch.ts` decides where they may be sent.
- *
- * A session is optional at this layer, and stays so on purpose. Reading the EHR works without one, and
- * the filler's half of the app has no account to log into at all — someone holding nothing but a link
- * never will. So every consumer here takes `SmartSession | null` and has to mean something sensible for
- * `null`; the refusal to *write* without one lives a layer up, at the requester's own call sites. See
- * `canWriteToRecord` in `src/lib/config.ts` for why it is there and not here.
- */
-
 /**
  * What the rest of the app is allowed to know about a launch.
  *
- * Narrow on purpose. Nothing outside this file should import `fhirclient`, so that replacing it stays
- * a one-file change and so that no caller can reach past this into `client.request()`.
+ * The launch itself no longer happens here. It happens in the BFF - `server/smart/launch.ts` runs
+ * the authorization code flow, and the access token, the refresh token and the client secret all
+ * stay on that side of the wire (FR-005). This file is what is left in the browser once the
+ * credential is gone: a **view** of the session, derived from `GET /api/session`, shaped so that
+ * every caller written against the old client-side launch keeps working.
+ *
+ * That shape is deliberate rather than sentimental. `SmartSession` names the four things the app
+ * actually does with a launch - where to send FHIR traffic, who is in context, who is acting, and
+ * what they were granted - and none of those changed when the credential moved. What changed is
+ * that {@link SmartSession.authorizationHeader} now has nothing to return, which is the whole
+ * point: the browser cannot attach the session's authority to a request even if it wanted to, and
+ * `src/fhir/authedFetch.ts` spends it by addressing the proxy instead.
+ *
+ * A session stays optional at this layer. The filler's half of the app has no account to log into
+ * and never will, so every consumer takes `SmartSession | null` and has to mean something sensible
+ * for `null`. The refusal to *write* without one lives a layer up - see `canWriteToRecord` in
+ * `src/lib/config.ts` for why it is there and not here.
+ * @author John Grimes
+ */
+
+import type { Session } from "@/lib/session";
+
+import { proxyBaseUrl } from "@/fhir/authedFetch";
+
+/**
+ * A launched session, as the app uses one.
+ *
+ * Narrow on purpose. Nothing outside this file should know that the session arrived as JSON from
+ * `/api/session`, so that the transport stays a one-file change.
  */
 export interface SmartSession {
-  /** The launched FHIR server. Both the EHR base *and* the allowlist for the token — see `authedFetch`. */
+  /**
+   * Where FHIR traffic goes: this app's own proxy, not the launched server.
+   *
+   * Callers build `${serverUrl}/Patient?…` exactly as they did when this was an EHR base URL, and
+   * the proxy forwards it to the issuer with the session's token attached. The substitution is why
+   * `src/fhir/ehrServer.ts`, `submit.ts`, `populate.ts` and `writeBundle.ts` needed no changes
+   * when the launch moved to the server.
+   */
   readonly serverUrl: string;
+
+  /** The launched server's FHIR base. For display and provenance, never fetched directly. */
+  readonly issuer: string;
+
+  /** The launched server's human-readable name, from the deployment's issuer registry. */
+  readonly issuerLabel: string;
 
   /** Patient in context, when the launch supplied one. Null on a standalone launch that declined to. */
   readonly patientId: string | null;
@@ -37,152 +54,81 @@ export interface SmartSession {
   /** The user, as a FHIR reference such as `Practitioner/123`. Null when `fhirUser` was not granted. */
   readonly fhirUser: string | null;
 
-  /** Scopes the server actually granted, which may be narrower than those asked for. */
+  /** The user's name, when the launch or a lookup disclosed one. For display and `Task.requester.display`. */
+  readonly userDisplay: string | null;
+
+  /** Scopes the server actually granted. The empty string when it declined to say. */
   readonly grantedScopes: string;
 
-  /**
-   * Scopes this launch asked for, so the two can be compared.
-   *
-   * Read from the client's own state rather than recomputed, because `buildScopes` produces a
-   * different string for the two launch patterns and nothing else here records which one happened. It
-   * also survives a session restored from `sessionStorage`, where the config in memory may since have
-   * changed.
-   */
+  /** Scopes this deployment asked for, so a narrowed grant can be spotted. */
   readonly requestedScopes: string;
 
+  /** Access token expiry in epoch seconds. Advisory: the BFF enforces it. */
+  readonly expiresAt: number;
+
   /**
-   * The `Authorization` header value, refreshing the token first if it is close to expiry.
+   * Historically the `Authorization` header value. Now always null, and that is not a stub.
    *
-   * Async because the refresh is. Returns null if the session has no usable token, which callers must
-   * treat as "send this request unauthenticated" rather than as an error — an anonymous read against a
-   * public server is exactly what this app did before launches existed.
+   * The token is on the server, so there is no header for the browser to build. Callers already
+   * had to treat null as "send this request without the session's authority", because an anonymous
+   * read against a public server is exactly what this app did before launches existed. Keeping the
+   * method rather than deleting it is what lets `authedFetch` keep one signature across both
+   * architectures; keeping it *async* is what lets a future deployment reintroduce a
+   * browser-visible credential without touching every call site.
    */
   authorizationHeader(): Promise<string | null>;
-
-  /** Discard the session. The token is forgotten locally; no revocation is attempted. */
-  signOut(): void;
 }
 
 /**
- * `sessionStorage`, not `localStorage`, and the distinction matters twice over.
+ * Build the app's view of a session from what `/api/session` said.
  *
- * It is per-tab, so two tabs launched from different patients do not silently share a context. And it
- * keeps tokens out of `localStorage`, which already holds channel-C reply keys
- * (`src/lib/requestStore.ts`) that must survive a tab closing — precisely the opposite lifetime to
- * what an access token should have.
- *
- * This is `fhirclient`'s own default; it is set explicitly because relying on it silently would make a
- * future default change a security regression rather than a visible one.
+ * Total: every field of {@link Session} maps onto one of {@link SmartSession}, except that
+ * `serverUrl` is *substituted* rather than copied. The session names the issuer; the app addresses
+ * the proxy. Conflating the two is the one mistake this function exists to prevent, which is why
+ * both are carried and named for what they are.
+ * @param session the session as read from the BFF
+ * @returns the session as the app uses it
+ * @example
+ * const smart = toSmartSession(await fetchSession());
  */
-FHIR.oauth2.settings.fullSessionStorageSupport = true;
-
-/** Strip the fragment and query so a redirect target cannot smuggle either back into the flow. */
-function redirectUri(path: string): string {
-  return new URL(path, window.location.origin).toString();
-}
-
-/**
- * Begin a launch by redirecting to the authorisation server. Does not return on success.
- *
- * `iss` is the server that initiated an EHR launch, and it arrives in a query string a stranger can
- * write. It is checked against the configured issuer rather than trusted, because following an
- * arbitrary `iss` would send this app's client id — and the user's consent — to a server of the
- * attacker's choosing. `issMatch` makes `fhirclient` do that check; passing `smartIssuerUrl` as `iss`
- * when none was supplied is what makes the same function serve a standalone launch.
- *
- * PKCE is `required`, not the library default of `ifSupported`. A public client has no secret, so PKCE
- * is the only thing binding the authorisation code to this app; silently proceeding without it against
- * a server that does not advertise S256 would leave the code interceptable.
- */
-export async function startLaunch(
-  config: AppConfig,
-  options: { iss?: string | null; launch?: string | null; callbackPath: string }
-): Promise<void> {
-  if (config.smartIssuerUrl === null || config.smartClientId === null) {
-    throw new Error(
-      'SMART App Launch is not configured. Set `smartIssuerUrl` and `smartClientId` in config.json.'
-    );
-  }
-
-  const standalone = !options.launch;
-
-  await FHIR.oauth2.authorize({
-    iss: options.iss ?? config.smartIssuerUrl,
-    issMatch: config.smartIssuerUrl,
-    launch: options.launch ?? undefined,
-    clientId: config.smartClientId,
-    scope: buildScopes(config, standalone),
-    redirectUri: redirectUri(options.callbackPath),
-    pkceMode: 'required'
-  });
-}
-
-/** Wrap a live `fhirclient` client in the narrow interface the rest of the app sees. */
-function toSession(client: Client): SmartSession {
+export function toSmartSession(session: Session): SmartSession {
   return {
-    serverUrl: client.getState('serverUrl') as string,
-    patientId: client.getPatientId(),
-    fhirUser: client.getFhirUser(),
-    grantedScopes: (client.getState('tokenResponse.scope') as string | undefined) ?? '',
-    requestedScopes: (client.getState('scope') as string | undefined) ?? '',
-
-    async authorizationHeader() {
-      /*
-       * Refresh before reading the header rather than retrying on a 401. The app's write path creates
-       * several resources in sequence (`submitResponse` posts a QuestionnaireResponse, then a Task,
-       * then a Provenance), and a token expiring midway would half-write the set. A no-op when the
-       * token is still good.
-       */
-      try {
-        await client.refreshIfNeeded();
-      } catch {
-        // An expired session that cannot refresh is not fatal here: the caller falls back to an
-        // unauthenticated request, which either succeeds on an open server or fails with the
-        // server's own message. Throwing would turn a read into a crash.
-      }
-
-      return client.getAuthorizationHeader();
-    },
-
-    signOut() {
-      /*
-       * `fhirclient` offers no teardown, so the session key it wrote is cleared directly. Clearing all
-       * of `sessionStorage` would be wrong — it is not ours alone.
-       */
-      const key = window.sessionStorage.getItem('SMART_KEY');
-      if (key) {
-        window.sessionStorage.removeItem(JSON.parse(key) as string);
-        window.sessionStorage.removeItem('SMART_KEY');
-      }
-    }
+    serverUrl: proxyBaseUrl(),
+    issuer: session.issuer,
+    issuerLabel: session.issuerLabel,
+    patientId: session.patientId,
+    fhirUser: session.fhirUser,
+    userDisplay: session.userDisplay,
+    grantedScopes: session.grantedScopes ?? "",
+    requestedScopes: session.requestedScopes ?? "",
+    expiresAt: session.expiresAt,
+    authorizationHeader: () => Promise.resolve(null),
   };
 }
 
 /**
- * Complete a launch on the callback page, exchanging the authorisation code for a token.
+ * How to refer to whoever is acting, preferring the reference over the name.
  *
- * Throws if the URL carries no completable flow, which is the normal outcome of someone opening
- * `/callback` directly and should be reported as such rather than as a failure of the launch.
+ * `Provenance.agent.who` and `Task.requester` both take a `Reference`, and a reference that names a
+ * resource on the launched server is worth more than one that carries only a display string: the
+ * first can be resolved by anyone reading the record later, the second is an assertion about a
+ * person who may not be identifiable at all. So `fhirUser` wins when it was granted, and the
+ * display name is the fallback rather than the default.
+ * @param session the launched session, or null when nobody is signed in
+ * @returns a FHIR `Reference` naming the actor, or undefined when nothing is known about them
+ * @example
+ * const who = actorReference(session); // { reference: "Practitioner/123", display: "Dr Chen" }
  */
-export async function completeLaunch(): Promise<SmartSession> {
-  return toSession(await FHIR.oauth2.ready());
-}
-
-/**
- * Recover a session already established in this tab, or null if there is none.
- *
- * Called on every page load. Returning null is the overwhelmingly common case — the app is usable
- * without a launch — so this must stay quiet rather than warn.
- */
-export async function restoreSession(): Promise<SmartSession | null> {
-  const key = window.sessionStorage.getItem('SMART_KEY');
-  if (!key) {
-    return null;
+export function actorReference(
+  session: SmartSession | null,
+): { reference?: string; display?: string } | undefined {
+  if (session === null) {
+    return undefined;
   }
-
-  try {
-    return toSession(await FHIR.oauth2.ready());
-  } catch {
-    return null;
+  const reference = session.fhirUser ?? undefined;
+  const display = session.userDisplay ?? undefined;
+  if (reference === undefined && display === undefined) {
+    return undefined;
   }
+  return { ...(reference && { reference }), ...(display && { display }) };
 }

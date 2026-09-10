@@ -1,4 +1,4 @@
-import type { Patient } from 'fhir/r4';
+import type { Patient } from "fhir/r4";
 
 /**
  * Building a Patient from what a reviewer typed.
@@ -28,7 +28,7 @@ export interface NewPatientDetails {
   given?: string;
   /** `YYYY-MM-DD`. */
   birthDate?: string;
-  gender?: Patient['gender'];
+  gender?: Patient["gender"];
 }
 
 /**
@@ -40,15 +40,19 @@ export interface NewPatientDetails {
  * point for a human to correct, never a conclusion.
  *
  * A single token becomes the family name, since that is the field that must not be empty.
+ * @param display
  */
 export function splitName(display: string): { given: string; family: string } {
   const parts = display.trim().split(/\s+/).filter(Boolean);
 
   if (parts.length === 0) {
-    return { given: '', family: '' };
+    return { given: "", family: "" };
   }
 
-  return { given: parts.slice(0, -1).join(' '), family: parts[parts.length - 1] };
+  return {
+    given: parts.slice(0, -1).join(" "),
+    family: parts.at(-1) ?? "",
+  };
 }
 
 /**
@@ -66,17 +70,18 @@ export function splitName(display: string): { given: string; family: string } {
  * Blank optional fields are **omitted rather than sent empty**. A cleared `<input type="date">` yields
  * `''`, which is not a FHIR `date`, and `gender` has a required binding — either would be rejected by
  * a validating server, and silently stored by a lenient one.
+ * @param details
  */
 export function buildPatient(details: NewPatientDetails): Patient {
   const family = details.family.trim();
-  const given = (details.given ?? '').trim().split(/\s+/).filter(Boolean);
-  const birthDate = (details.birthDate ?? '').trim();
+  const given = (details.given ?? "").trim().split(/\s+/).filter(Boolean);
+  const birthDate = (details.birthDate ?? "").trim();
   const gender = details.gender;
 
   return {
-    resourceType: 'Patient',
+    resourceType: "Patient",
     name: [{ family, ...(given.length > 0 ? { given } : {}) }],
-    ...(birthDate !== '' ? { birthDate } : {}),
-    ...(gender ? { gender } : {})
+    ...(birthDate === "" ? {} : { birthDate }),
+    ...(gender ? { gender } : {}),
   };
 }

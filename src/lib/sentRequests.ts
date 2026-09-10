@@ -1,52 +1,61 @@
-import type { Task } from 'fhir/r4';
-import { taskCorrelationId } from '@/link/exchange';
-import { isExpired, type OutstandingRequest } from '@/lib/requestStore';
+import type { Task } from "fhir/r4";
+
+import { RESPONSE_OUTPUT_TYPE } from "@/fhir/taskCompletion";
+import { taskCorrelationId } from "@/link/exchange";
 
 /**
- * One view over two half-answers to "what have I sent?".
+ * What "what have I sent?" is answered from: the request Tasks on the launched server.
  *
- * Neither source is sufficient alone, and the reason is structural rather than incidental:
+ * One source, and that is the whole design. Minting is a server operation (FR-011), answers land on
+ * the launched server by both return routes - a direct send with a grant, or a scanned link the
+ * requester accepts - and each route completes the request's own Task through
+ * `src/fhir/taskCompletion.ts`. So the Task *is* the state of the request, and everybody signed in
+ * to that server sees the same thing.
  *
- *  - **The EHR knows every request**, because each one publishes a `Task` — but deliberately not the
- *    reply slot or the key, so a listed Task cannot be collected from.
- *  - **This browser knows the keys**, because a reply key is generated at mint time and stored nowhere
- *    else — but only for requests *it* created.
+ * This used to be a union of those Tasks with a browser-local store, because the requester once
+ * held a channel C reply key that was generated at mint time and existed nowhere else. That made a
+ * request sent from a colleague's machine visible but not collectable, and the list had to say so.
+ * The reply channel is no longer minted here, so the key, the store, the export/import between
+ * browsers and the polling all went with it. What remains of channel C is the *filler* half - this
+ * app still honours a reply descriptor another producer offers, see
+ * `docs/shl-form-reply-channel.md`.
  *
- * So a request sent from a colleague's machine is visible here and not collectable here, and saying so
- * plainly is better than either hiding it or offering a Check button that could never work.
- *
- * `Task.identifier` is the join. It is the one correlation key that survives everywhere: `urn:uuid`
- * references inside a Bundle do not, and the two copies of the Task have different server ids.
+ * Pure, so the derivation can be asserted without a server or a browser.
  */
 
-export type SentRequestOrigin =
-  /** Local record and published Task agree — the normal case. */
-  | 'tracked'
-  /** Created here but never published, so it is invisible to any other browser. */
-  | 'local-only'
-  /** Published, but this browser has no key for it. Visible, not collectable. */
-  | 'server-only';
+/** What state a sent request is in, as its Task reports it. */
+export type SentRequestState =
+  /** Nobody has answered yet, and the request is still open. */
+  | "awaiting"
+  /** Answers have landed and the Task names them. */
+  | "answered"
+  /** Somebody closed the request without answers: cancelled, rejected, failed, in error. */
+  | "closed";
 
+/** One row of `/requests`, derived entirely from one published Task. */
 export interface SentRequest {
-  /** Correlation id — `Task.identifier` value, shared by both copies. */
+  /** Correlation id - `Task.identifier` - the key that survives the round trip. */
   id: string;
+  /** Server-assigned id of the Task, for naming the resource a row came from. */
+  taskId?: string;
   label: string;
-  origin: SentRequestOrigin;
-  /** ISO instant, from whichever source has one. */
+  state: SentRequestState;
+  /** The Task's own status, shown for the states that need naming rather than paraphrasing. */
+  status: Task["status"];
   createdAt?: string;
   subjectDisplay?: string;
+  subjectReference?: string;
   requesterDisplay?: string;
-  expiresAt?: number;
-  /** Present when this browser holds the request, and therefore possibly its reply key. */
-  local?: OutstandingRequest;
-  /** Present when the request was published to the EHR. */
-  serverTask?: Task;
-  /** Whether a reply can actually be collected here. */
-  collectable: boolean;
+  /** Reference to the answers, present once the Task has been completed with them. */
+  responseReference?: string;
 }
 
-/** Best label for a published Task, which has no `label` field of its own. */
-function labelFromTask(task: Task): string {
+/**
+ * Best label for a published Task, which has no `label` field of its own.
+ * @param task the published Task
+ * @returns the form's title where it can be recovered, else something true about the request
+ */
+export function labelFromTask(task: Task): string {
   const description = task.description;
   if (description) {
     // `buildRequestBundle` writes `Complete "<title>"`; recover the title rather than showing the
@@ -56,114 +65,101 @@ function labelFromTask(task: Task): string {
   }
 
   const canonical =
-    task.input?.find((input) => input.valueCanonical)?.valueCanonical ?? task.focus?.reference;
+    task.input?.find((input) => input.valueCanonical)?.valueCanonical ??
+    task.focus?.reference;
   if (canonical) {
-    return canonical.split('|')[0].split('/').filter(Boolean).pop() ?? canonical;
+    return canonical.split("|", 1)[0].split("/").findLast(Boolean) ?? canonical;
   }
 
-  return 'Requested form';
+  return "Requested form";
 }
 
 /**
- * Merge local records with published Tasks into one list, newest first.
+ * Statuses that end a request without answers.
  *
- * Pure, so `check:roundtrip` can assert the join without a server or a browser.
+ * `src/fhir/taskCompletion.ts` treats these as final alongside `completed`, and for a *writer*
+ * that is the right grouping: none of them may be overwritten. For a reader it is not, because
+ * `completed` is the only one that means answers arrived - so these four are named separately here
+ * rather than borrowing `isFinishedTaskStatus`, which would report a cancelled request as answered.
  */
-export function mergeSentRequests(
-  local: OutstandingRequest[],
-  serverTasks: Task[]
-): SentRequest[] {
-  const byId = new Map<string, SentRequest>();
+const CLOSED_WITHOUT_ANSWERS: Partial<Record<Task["status"], true>> = {
+  cancelled: true,
+  rejected: true,
+  failed: true,
+  "entered-in-error": true,
+};
 
-  for (const request of local) {
-    byId.set(request.id, {
-      id: request.id,
-      label: request.label,
-      origin: 'local-only',
-      createdAt: request.createdAt,
-      subjectDisplay: request.subjectDisplay,
-      expiresAt: request.expiresAt,
-      local: request,
-      collectable:
-        (request.reply !== undefined || request.write !== undefined) && !isExpired(request)
-    });
+/**
+ * Which of the three states a Task's status means for a requester.
+ *
+ * Three rather than eleven, because the eleven FHIR statuses collapse to the only three questions a
+ * requester asks of a sent request: is it answered, is it still open, or is it over.
+ * @param status the Task's status as the server holds it
+ * @returns the state to show
+ */
+export function requestState(status: Task["status"]): SentRequestState {
+  if (status === "completed") {
+    return "answered";
   }
 
-  for (const task of serverTasks) {
-    const id = taskCorrelationId(task);
-    if (!id) {
-      // Without an identifier there is nothing to join on, and nothing useful to say about it.
-      continue;
-    }
+  return CLOSED_WITHOUT_ANSWERS[status] === true ? "closed" : "awaiting";
+}
 
-    const existing = byId.get(id);
-    if (existing) {
-      byId.set(id, {
-        ...existing,
-        origin: 'tracked',
-        serverTask: task,
-        // Prefer what the server recorded for display fields the local copy may not have.
-        subjectDisplay: existing.subjectDisplay ?? task.for?.display,
-        requesterDisplay: task.requester?.display
-      });
-      continue;
-    }
+/**
+ * The reference to the answers a completed Task carries.
+ *
+ * Matched on the output type both completion paths write, then falling back to the first output
+ * that references anything: a Task completed by some other client is still a request of ours that
+ * has been answered, and refusing to show its answers because the slot was typed differently would
+ * be a worse answer than showing them.
+ * @param task the published Task
+ * @returns the reference, or undefined when the Task names no answers
+ */
+function responseReferenceOf(task: Task): string | undefined {
+  const outputs = task.output ?? [];
+  const typed = outputs.find(
+    (output) => output.type?.text === RESPONSE_OUTPUT_TYPE.text,
+  );
 
-    byId.set(id, {
-      id,
-      label: labelFromTask(task),
-      origin: 'server-only',
-      createdAt: task.authoredOn,
-      subjectDisplay: task.for?.display,
-      requesterDisplay: task.requester?.display,
-      serverTask: task,
-      collectable: false
-    });
-  }
-
-  return [...byId.values()].sort((left, right) =>
-    (right.createdAt ?? '').localeCompare(left.createdAt ?? '')
+  return (
+    (typed ?? outputs.find((output) => output.valueReference?.reference))
+      ?.valueReference?.reference ?? undefined
   );
 }
 
-/** One-line explanation of why a row cannot be collected from, or undefined when it can. */
-export function whyNotCollectable(request: SentRequest): string | undefined {
-  if (request.collectable) {
-    return undefined;
-  }
-
-  if (request.origin === 'server-only') {
-    return 'Sent from another browser. Its reply key is held there — import it to collect the answers here.';
-  }
-
-  if (!request.local?.reply && !request.local?.write) {
-    // Not a fault: with both slot channels off, this is what every request looks like, and the
-    // answers come back as a link to scan rather than into a slot to poll.
-    return 'Answers to this request come back as a link. Scan or paste it to review them.';
-  }
-
-  return 'This request has expired, so its slot no longer accepts answers.';
-}
-
 /**
- * Find the local record a returned Task belongs to, so scanned answers can be tied to the request
- * that asked for them.
+ * Turn the published Tasks into rows, newest first.
  *
- * The join is `Task.identifier`, the same key {@link mergeSentRequests} uses and the only one that
- * survives the round trip — `urn:uuid` references are relative to a Bundle that no longer exists by
- * the time answers come back, and the two copies of the Task have different server ids.
- *
- * No match is an ordinary outcome, not an error: a link from someone this browser never wrote to is
- * still perfectly reviewable. Pure, so `check:roundtrip` can assert it without a browser.
+ * A Task with no `identifier` is dropped rather than shown: the identifier is what a returning
+ * filler names, so a Task without one can never be matched to answers and there is nothing useful
+ * to say about it in a list of sent requests.
+ * @param tasks the Tasks as the server returned them
+ * @returns one row per identifiable Task, newest first
  */
-export function findRequestForTask(
-  requests: OutstandingRequest[],
-  task: Task | undefined
-): OutstandingRequest | undefined {
-  const id = taskCorrelationId(task);
-  if (!id) {
-    return undefined;
-  }
+export function describeSentRequests(tasks: Task[]): SentRequest[] {
+  return tasks
+    .flatMap((task) => {
+      const id = taskCorrelationId(task);
+      if (!id) {
+        return [];
+      }
 
-  return requests.find((request) => request.id === id);
+      return [
+        {
+          id,
+          taskId: task.id,
+          label: labelFromTask(task),
+          state: requestState(task.status),
+          status: task.status,
+          createdAt: task.authoredOn,
+          subjectDisplay: task.for?.display,
+          subjectReference: task.for?.reference,
+          requesterDisplay: task.requester?.display,
+          responseReference: responseReferenceOf(task),
+        },
+      ];
+    })
+    .toSorted((left, right) =>
+      (right.createdAt ?? "").localeCompare(left.createdAt ?? ""),
+    );
 }

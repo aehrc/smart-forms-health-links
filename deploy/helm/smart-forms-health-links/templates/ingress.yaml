@@ -1,0 +1,37 @@
+{{- $app := .Values.smartFormsHealthLinks }}
+{{- if $app.ingress.enabled }}
+{{- $host := required "smartFormsHealthLinks.ingress.host is not set. Set it to the host the app is published on, or set smartFormsHealthLinks.ingress.enabled to false." $app.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingress
+  labels:
+    app: {{ .Release.Name }}
+  annotations: {{ toJson $app.ingress.annotations }}
+spec:
+  {{- with $app.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- if $app.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      {{- with $app.ingress.tls.secretName }}
+      secretName: {{ . | quote }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # One rule for the whole host. The SPA, /api, /shl and /.well-known/jwks.json all
+          # share a single origin, because the session cookie has to be same-site with the API
+          # and because APP_ORIGIN names one origin, not several.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-service
+                port:
+                  name: http
+{{- end }}

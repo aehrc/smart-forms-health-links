@@ -1,13 +1,14 @@
-import { useEffect } from 'react';
-import { QueryClientProvider } from '@tanstack/react-query';
-import type { Questionnaire, QuestionnaireResponse } from 'fhir/r4';
 import {
   BaseRenderer,
   RendererThemeProvider,
   destroyForm,
   useBuildForm,
-  useRendererQueryClient
-} from '@aehrc/smart-forms-renderer';
+  useRendererQueryClient,
+} from "@aehrc/smart-forms-renderer";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { useEffect } from "react";
+
+import type { Questionnaire, QuestionnaireResponse } from "fhir/r4";
 
 export interface FormRendererProps {
   questionnaire: Questionnaire;
@@ -23,16 +24,22 @@ export interface FormRendererProps {
  * `useBuildForm` + `RendererThemeProvider` + `BaseRenderer`, which is what this does.
  *
  * The renderer's questionnaire and response stores are module-level singletons, so the form must be
- * torn down on unmount — otherwise answers from the previous form leak into the next one.
+ * torn down on unmount - otherwise answers from the previous form leak into the next one.
+ * @param props
  */
 export default function FormRenderer(props: FormRendererProps) {
-  const { questionnaire, questionnaireResponse, terminologyServerUrl, readOnly } = props;
+  const {
+    questionnaire,
+    questionnaireResponse,
+    terminologyServerUrl,
+    readOnly,
+  } = props;
 
   const isBuilding = useBuildForm({
     questionnaire,
     questionnaireResponse,
     readOnly,
-    terminologyServerUrl
+    terminologyServerUrl,
   });
 
   const queryClient = useRendererQueryClient();
@@ -40,7 +47,11 @@ export default function FormRenderer(props: FormRendererProps) {
   useEffect(() => destroyForm, []);
 
   if (isBuilding) {
-    return <p className="p-6 text-sm text-slate-500">Building form…</p>;
+    return (
+      <p className="p-6 text-sm text-slate-500 dark:text-slate-400">
+        Building form…
+      </p>
+    );
   }
 
   return (
