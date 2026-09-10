@@ -114,7 +114,15 @@ op run --env-file .env -- npm run setup:aidbox
 
 That writes both client registrations - the confidential launch client and the Backend Services
 client - along with their access policies and some demonstration data. It is safe to re-run: the
-second application changes nothing. The full walkthrough against the validation instance, including
+second application changes nothing.
+
+One Aidbox instance can carry several environments, because a `Client` holds exactly one
+`redirect_uri`. Each environment registers its own pair, suffixed by `CLIENT_ID_SUFFIX`, which
+defaults to `-local` for a loopback `APP_ORIGIN` and to nothing otherwise - so a local checkout
+gets `smart-forms-health-links-local` without being told to, and a deployment keeps the
+unsuffixed ids. Whatever it resolves to has to match the `clientId` values in the registry.
+`docs/aidbox-validation.md` has the table and the two safeguards against taking another
+environment's registration over. The full walkthrough against the validation instance, including
 what to check on the server afterwards, is in
 [`docs/aidbox-validation.md`](docs/aidbox-validation.md).
 
@@ -688,12 +696,12 @@ template and the authoritative shape:
     "issuer": "https://sczsqtqcgi.aidbox.app/fhir",
     "label": "Aidbox demo",
     "launchClient": {
-      "clientId": "smart-forms-health-links",
+      "clientId": "smart-forms-health-links-local",
       "clientSecret": "env:LAUNCH_CLIENT_SECRET",
       "scopes": "openid fhirUser launch launch/patient online_access user/*.cruds"
     },
     "backendClient": {
-      "clientId": "smart-forms-health-links-backend",
+      "clientId": "smart-forms-health-links-backend-local",
       "privateKeyJwk": "env:BACKEND_PRIVATE_JWK",
       "scopes": "system/QuestionnaireResponse.c system/Provenance.c system/Task.r system/Task.u"
     },

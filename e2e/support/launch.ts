@@ -27,7 +27,7 @@
  * @author John Grimes
  */
 
-import { LAUNCH_CLIENT_ID } from "../../ops/aidboxSetup";
+import { resolveClientIds } from "../../ops/aidboxSetup";
 import { SESSION_COOKIE_NAME } from "../../server/sessionCookie";
 
 /** How many redirects and form submissions one launch may take before it is called broken. */
@@ -44,6 +44,14 @@ export interface LaunchEnvironment {
   readonly issuer: string;
   /** The Aidbox root, which is where `/rpc` and the authorisation endpoints live. */
   readonly aidboxBaseUrl: string;
+  /**
+   * The confidential launch client registered for `appOrigin`.
+   *
+   * Derived from the origin rather than fixed, because one Aidbox instance now carries a client
+   * per environment: pointing the suite at a different `APP_ORIGIN` has to drive that origin's
+   * client, or the RPC mints a launch URI aimed at somebody else's app.
+   */
+  readonly launchClientId: string;
   /** Operator API credentials, used for the RPC and for asserting server-side end state. */
   readonly operator: {
     readonly clientId: string;
@@ -124,10 +132,13 @@ export function readLaunchEnvironment(
     /\/+$/,
     "",
   );
+  const appOrigin = requiredEnvironment("APP_ORIGIN", env).replace(/\/+$/, "");
+
   return {
-    appOrigin: requiredEnvironment("APP_ORIGIN", env).replace(/\/+$/, ""),
+    appOrigin,
     issuer: (env.E2E_ISSUER ?? `${aidboxBaseUrl}/fhir`).replace(/\/+$/, ""),
     aidboxBaseUrl,
+    launchClientId: resolveClientIds({ appOrigin, env }).launchClient,
     operator: {
       clientId: requiredEnvironment("AIDBOX_CLIENT_ID", env),
       clientSecret: requiredEnvironment("AIDBOX_CLIENT_SECRET", env),
@@ -176,7 +187,7 @@ export async function mintEhrLaunchUri(options: {
       params: {
         user: environment.user.id,
         iss: environment.issuer,
-        client: options.clientId ?? LAUNCH_CLIENT_ID,
+        client: options.clientId ?? environment.launchClientId,
         ctx: { patient: options.patientId },
       },
     }),
