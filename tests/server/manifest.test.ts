@@ -10,8 +10,9 @@
  *  2. **The grant is minted per fetch, never stored.** Two fetches of the same link produce two
  *     different tokens. That is what keeps the window short without shortening the link's life
  *     (research.md, "Token minting timing").
- *  3. **No existence oracle.** An unknown id and an expired one answer identically, byte for
- *     byte. Anything else would let a scanner enumerate which links had ever been minted.
+ *  3. **No existence oracle.** An unknown id, an expired invitation and a deleted row all
+ *     answer identically, byte for byte. Anything else would let a scanner enumerate which
+ *     links had ever been minted.
  *  4. **A mint failure degrades, it does not fail.** The invitation is still worth serving; the
  *     filler simply has no direct channel and falls back to returning a link (FR-017). The
  *     failure is counted and logged - without the request body, and without token material
@@ -157,6 +158,7 @@ describe("the SHL manifest", () => {
         overrides.patientId === undefined ? "pt-1" : overrides.patientId,
       requestIdentifier: "urn:uuid:3f2504e0-4f89-11d3-9a0c-0305e82c3301",
       publishedTaskUrl: `${ISSUER}/Task/task-1`,
+      questionnaireCanonical: "http://example.org/Questionnaire/ccm",
     }).id;
   }
 
@@ -276,6 +278,7 @@ describe("the SHL manifest", () => {
         access_token: "minted-token-1",
         token_type: "Bearer",
         expires_in: 3600,
+        scope: "system/QuestionnaireResponse.c system/Task.r system/Task.u",
         aud: ISSUER,
         patient: "pt-1",
       });
@@ -360,6 +363,30 @@ describe("the SHL manifest", () => {
       expect(expiredResponse.body).toBe(unknownResponse.body);
     });
 
+    /*
+     * The third case, and the only one no route can produce today: a row that was minted and
+     * is now gone. Nothing deletes an invitation, so this pins the answer before there is
+     * anything to break it - the moment an expiry sweep arrives, or an operator removes a row
+     * by hand, the answer has to stay this one. Platypus depends on it: a 404 before the link's
+     * own `exp` reads as "not available right now", and the channel retires on `exp`, on a
+     * delete on the device, or on a delivery, never on a status
+     * (aehrc/smart-forms-health-links#16).
+     */
+    it("answers a deleted invitation exactly as it answers an unknown one", async () => {
+      const deleted = await storeInvitation();
+      const removed = harness.db
+        .prepare("DELETE FROM invitations WHERE id = ?")
+        .run(deleted);
+      // Proves the id was real, so the identical answer below is about deletion and not a typo.
+      expect(removed.changes).toBe(1);
+
+      const deletedResponse = await fetchManifest(deleted);
+      const unknownResponse = await fetchManifest("never-existed");
+
+      expect(deletedResponse.statusCode).toBe(unknownResponse.statusCode);
+      expect(deletedResponse.body).toBe(unknownResponse.body);
+    });
+
     it("mints nothing for a refused fetch", async () => {
       await fetchManifest("never-existed");
 
@@ -439,6 +466,7 @@ describe("the SHL manifest", () => {
         patientId: null,
         requestIdentifier: "urn:uuid:3f2504e0-4f89-11d3-9a0c-0305e82c3302",
         publishedTaskUrl: "http://ehr.example.org/fhir/Task/task-2",
+        questionnaireCanonical: "http://example.org/Questionnaire/ccm",
       }).id;
       mint.mockResolvedValue({
         access_token: "would-travel-in-the-clear",

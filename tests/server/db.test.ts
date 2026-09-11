@@ -53,6 +53,7 @@ function invitationInput(
     patientId: "pt-1",
     requestIdentifier: "urn:uuid:7f1a2f0e-6e0b-4c2a-9c1f-2f4c9e0b7a11",
     publishedTaskUrl: "https://ehr.example.org/fhir/Task/task-1",
+    questionnaireCanonical: "http://example.org/Questionnaire/ccm",
     ...overrides,
   };
 }

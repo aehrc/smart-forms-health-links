@@ -49,16 +49,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS sessions_state
   ON sessions (state) WHERE state IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS invitations (
-  id                TEXT PRIMARY KEY,
-  linkKey           TEXT NOT NULL,
-  payloadCiphertext TEXT NOT NULL,
-  label             TEXT NOT NULL,
-  expiresAt         INTEGER,
-  issuer            TEXT NOT NULL,
-  patientId         TEXT,
-  requestIdentifier TEXT NOT NULL,
-  publishedTaskUrl  TEXT NOT NULL,
-  createdAt         INTEGER NOT NULL
+  id                     TEXT PRIMARY KEY,
+  linkKey                TEXT NOT NULL,
+  payloadCiphertext      TEXT NOT NULL,
+  label                  TEXT NOT NULL,
+  expiresAt              INTEGER,
+  issuer                 TEXT NOT NULL,
+  patientId              TEXT,
+  requestIdentifier      TEXT NOT NULL,
+  publishedTaskUrl       TEXT NOT NULL,
+  questionnaireCanonical TEXT,
+  respondedAt            INTEGER,
+  responseReference      TEXT,
+  createdAt              INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS invitations_expiresAt ON invitations (expiresAt);
@@ -88,6 +91,9 @@ CREATE INDEX IF NOT EXISTS writeSlots_expiresAt ON writeSlots (expiresAt);
 const ADDED_COLUMNS: readonly string[] = [
   "ALTER TABLE sessions ADD COLUMN fhirUser TEXT",
   "ALTER TABLE sessions ADD COLUMN grantedScopes TEXT",
+  "ALTER TABLE invitations ADD COLUMN questionnaireCanonical TEXT",
+  "ALTER TABLE invitations ADD COLUMN respondedAt INTEGER",
+  "ALTER TABLE invitations ADD COLUMN responseReference TEXT",
 ];
 
 /**
