@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import type { Questionnaire, Task } from "fhir/r4";
+import type { Questionnaire, QuestionnaireResponse, Task } from "fhir/r4";
 
 import FormRenderer from "@/components/FormRenderer";
 import ShareLinkPanel from "@/components/ShareLinkPanel";
@@ -25,6 +25,14 @@ import { parseReturnChannels } from "@/link/replyDescriptor";
 export interface FillFromRequestProps {
   questionnaire: Questionnaire;
   task: Task;
+  /**
+   * Answers the requester read off the record and kept, when the invitation carried any.
+   *
+   * Handed to the renderer as the response to build the form around, so the fields open filled
+   * in rather than blank. It is a starting point and nothing more: the filler can change every
+   * one of them, and what comes back is whatever the store holds at send time.
+   */
+  prePopulated?: QuestionnaireResponse;
   label?: string;
   /**
    * Whether the surface above is already offering to write the answers to the named server.
@@ -70,6 +78,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
   const {
     questionnaire,
     task,
+    prePopulated,
     label,
     directSendOffered = false,
     scanBackPromoted = false,
@@ -339,6 +348,7 @@ export default function FillFromRequest(props: FillFromRequestProps) {
       <div className="form-surface">
         <FormRenderer
           questionnaire={questionnaire}
+          questionnaireResponse={prePopulated}
           terminologyServerUrl={config.terminologyServerUrl}
         />
       </div>

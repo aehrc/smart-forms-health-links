@@ -89,6 +89,15 @@ type Opened = { warnings?: string[]; label?: string } & (
       mode: "request";
       questionnaire: Questionnaire;
       task: Task;
+      /**
+       * Answers the requester filled in from the record before sending, when there are any.
+       *
+       * Carried through to the renderer so the form opens with them already in it. Dropping it
+       * here is invisible on the wire - the seed still travels, still round-trips, still passes
+       * the payload checks - and shows up only as a blank form, which is why it is named on this
+       * type rather than pulled out of the Bundle again further down.
+       */
+      prePopulated?: QuestionnaireResponse;
       /** The grant the manifest carried, when it carried a readable one. */
       apiAccess?: ReceivedGrant;
     }
@@ -117,11 +126,14 @@ async function openLink(
 
   if (isRequestBundle(content.bundle)) {
     // A request embeds its Questionnaire, so nothing needs resolving.
-    const { questionnaire, task } = parseRequestBundle(content.bundle);
+    const { questionnaire, task, prePopulated } = parseRequestBundle(
+      content.bundle,
+    );
     return {
       mode: "request",
       questionnaire,
       task,
+      prePopulated,
       label: content.label,
       warnings: content.warnings,
       /*
@@ -311,6 +323,7 @@ export default function ViewLink() {
           key={fragment}
           questionnaire={opened.questionnaire}
           task={opened.task}
+          prePopulated={opened.prePopulated}
           apiAccess={opened.apiAccess}
           label={opened.label}
         />
@@ -337,6 +350,7 @@ export default function ViewLink() {
  * @param props the form, the request, the grant it arrived with, and the label to show
  * @param props.questionnaire
  * @param props.task
+ * @param props.prePopulated
  * @param props.apiAccess
  * @param props.label
  * @returns the direct-send surface above the form
@@ -344,10 +358,11 @@ export default function ViewLink() {
 function OpenedRequest(props: {
   readonly questionnaire: Questionnaire;
   readonly task: Task;
+  readonly prePopulated?: QuestionnaireResponse;
   readonly apiAccess?: ReceivedGrant;
   readonly label?: string;
 }) {
-  const { questionnaire, task, apiAccess, label } = props;
+  const { questionnaire, task, prePopulated, apiAccess, label } = props;
 
   const target = directSendTarget({ task, apiAccess });
   const { status, send } = useDirectSend(target);
@@ -384,6 +399,7 @@ function OpenedRequest(props: {
         <FillFromRequest
           questionnaire={questionnaire}
           task={task}
+          prePopulated={prePopulated}
           label={label}
           /*
            * Suppresses the "this request also names a server, and this app does not write there"
