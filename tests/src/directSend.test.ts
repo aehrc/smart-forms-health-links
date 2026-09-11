@@ -200,15 +200,30 @@ describe("the direct send", () => {
     });
 
     /*
-     * The Task pre-read is the one other place the token is presented, and it is skipped when
-     * the published Task is not on the grant's origin - so a send with an off-origin Task URL
-     * makes exactly one request, to the destination.
+     * The Task pre-read is the one other place the token is presented, and its address is derived
+     * from `aud` rather than taken from the invitation - so an invitation naming a Task on some
+     * other origin still makes both requests, and makes both of them to the destination.
      */
-    it("issues exactly one request when the published task is on another origin", async () => {
+    it("presents the token only to the destination, for both requests", async () => {
       fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
 
       const status = await send({
         serverTaskUrl: "https://elsewhere.example.org/fhir/Task/task-1",
+      });
+
+      expect(status.state).toBe("sent");
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+        `${AUD}/Task/task-1`,
+        AUD,
+      ]);
+    });
+
+    // Nothing addressable means no read at all, and the answers still go.
+    it("issues exactly one request when the invitation names no usable task id", async () => {
+      fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+
+      const status = await send({
+        serverTaskUrl: "https://ehr.example.org/fhir/Task/..",
       });
 
       expect(status.state).toBe("sent");

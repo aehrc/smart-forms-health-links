@@ -17,6 +17,13 @@
  * being short (research.md, "Token minting timing"). Two fetches therefore produce two
  * different tokens, which is a property the tests assert rather than an accident.
  *
+ * **The token is a capability for this invitation, and `aud` is the facade.** The practice's
+ * system credential never leaves this server. What the filler is handed is signed here, names one
+ * invitation, and is only accepted by `/shl/:id/fhir` - so a leaked link no longer exposes the
+ * practice's FHIR base to whoever holds it. The upstream credential is still minted on this path,
+ * because that is what discovers a dead issuer before somebody fills a form in, and because it
+ * warms the cache for the write that usually follows.
+ *
  * **Unknown and expired are the same answer.** `findInvitation` collapses them, and this route
  * keeps them collapsed: identical status, identical body. Distinguishing them would turn the
  * route into an oracle for which links had ever been minted.
@@ -33,12 +40,18 @@
  * @author John Grimes
  */
 
-import { buildGrant, GRANT_CONTENT_TYPE } from "../../src/link/apiAccess";
+import {
+  buildGrant,
+  GRANT_CONTENT_TYPE,
+  SUBMISSION_SCOPES,
+} from "../../src/link/apiAccess";
 import { encodeUtf8 } from "../../src/link/binary";
 import { encryptJwe, keyFromBase64Url } from "../../src/link/jwe";
 import { findIssuerRegistration } from "../config";
+import { facadeAud } from "./facade";
+import { deriveGrantTokenKey, mintGrantToken } from "./grantToken";
 import { findInvitation } from "../shl/invitationStore";
-import { mintAccessToken } from "../smart/backendServices";
+import { cachedAccessToken } from "../smart/backendServices";
 import { discoverSmartConfiguration } from "../smart/discovery";
 
 import type { FastifyPluginCallback } from "fastify";
@@ -99,6 +112,7 @@ export const manifestRoutes: FastifyPluginCallback = (
   done,
 ) => {
   const { appConfig: config } = fastify;
+  const grantKey = deriveGrantTokenKey(config.cookieSecret);
 
   fastify.removeAllContentTypeParsers();
   fastify.addContentTypeParser(
@@ -136,24 +150,56 @@ export const manifestRoutes: FastifyPluginCallback = (
             `${invitation.issuer} is no longer a registered issuer`,
           );
         }
+        /*
+         * The practice's own credential is still minted here, and it is still what a failure to
+         * mint degrades on - but it is no longer what the filler is given. Minting it now warms
+         * the cache for the write that is about to follow and, more importantly, keeps this the
+         * moment a dead issuer is discovered: a grant handed out for a destination that cannot
+         * be reached would be found out only after somebody had filled the form in.
+         */
         const smart = await discoverSmartConfiguration(invitation.issuer);
-        const token = await mintAccessToken({
+        const upstream = await cachedAccessToken({
           registration,
           tokenEndpoint: smart.tokenEndpoint,
         });
+        /*
+         * `buildGrant` used to refuse a token this app could not present as a Bearer, and that
+         * refusal is what degraded the manifest to one file. The grant's own token is now always
+         * a Bearer because this app signs it, so the check has to be made here instead - the
+         * facade presents the *practice's* token in an `Authorization: Bearer` header, and a
+         * destination issuing anything else is one no write would succeed against.
+         */
+        if (upstream.token_type.trim().toLowerCase() !== "bearer") {
+          throw new Error(
+            `${invitation.issuer} issued a ${upstream.token_type} token, which cannot be ` +
+              "presented as a Bearer",
+          );
+        }
+
+        const ttl = registration.grantTtlSeconds;
         const grant = buildGrant({
-          accessToken: token.access_token,
-          tokenType: token.token_type,
-          expiresIn: token.expires_in,
           /*
-           * What the authorisation server said it granted, falling back to what was asked
-           * for. The two differ when a server narrows a grant silently, and in that case the
-           * filler should be told what it actually holds rather than what we wanted.
+           * A capability token for this invitation, not the practice's system credential. The
+           * window is ours to state now, because the token is ours to sign - the upstream
+           * credential's own lifetime no longer has anything to do with what the filler holds.
            */
-          scope: token.scope ?? registration.backendClient.scopes,
-          aud: invitation.issuer,
+          accessToken: mintGrantToken({
+            key: grantKey,
+            invitationId: invitation.id,
+            expiresAt: Math.floor(Date.now() / 1000) + ttl,
+          }),
+          tokenType: "Bearer",
+          expiresIn: ttl,
+          /*
+           * What the *facade* permits, which is narrower than what the backend client is
+           * registered for. The registered scopes describe the system's authority; these four
+           * describe the one submission this link is for, which is what a consumer deciding
+           * whether to use the grant actually needs to know.
+           */
+          scope: SUBMISSION_SCOPES.join(" "),
+          aud: facadeAud(config.appOrigin, invitation.id),
           patientId: invitation.patientId,
-          grantTtlSeconds: registration.grantTtlSeconds,
+          grantTtlSeconds: ttl,
         });
         if (grant === undefined) {
           throw new Error(

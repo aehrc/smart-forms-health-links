@@ -222,6 +222,7 @@ One Fastify process serves all of this from one origin.
 | `ALL /api/fhir/*`            | yes      | Proxy to the session's FHIR base, with the access token attached server-side                     |
 | `POST /api/invitations`      | yes      | Mint an invitation: publish the task, encrypt and store the payload                              |
 | `POST /shl/:id`              | no       | The SHL manifest. Mints a fresh grant per fetch                                                  |
+| `ALL /shl/:id/fhir/*`        | no       | The facade a grant points at. Bearer token bound to that one invitation                          |
 | `GET /.well-known/jwks.json` | no       | The Backend Services client's public JWKS, registered as its `jwks_uri`                          |
 | `GET /health`                | no       | Liveness and readiness. Says nothing about configuration                                         |
 | `GET /*`                     | no       | The built SPA, with a rewrite to `index.html` for client-side routes                             |
@@ -286,9 +287,16 @@ defines any submission, upload or writeback channel, and neither mentions questi
 for data at all. Nothing here changes that: nothing is ever uploaded to a link.
 
 What the link carries instead is a **credential**, and the filler uses it to perform an entirely
-ordinary FHIR write against the clinic's own server. The return leg is therefore not an SHL feature
-at all - it is SMART Backend Services and a FHIR transaction, delivered through an SHL manifest
-because that is already an encrypted channel from the requester to whoever holds the link.
+ordinary FHIR write. The return leg is therefore not an SHL feature at all - it is a FHIR
+transaction, delivered through an SHL manifest because that is already an encrypted channel from the
+requester to whoever holds the link.
+
+The write no longer goes straight to the clinic. It goes to a **facade on this app**
+(`/shl/:id/fhir`), which holds the practice's Backend Services credential, stamps the request with
+the invitation's own patient and identifier, and forwards one canonical transaction upstream. That is
+what makes the credential in a link useless for anything but the one request it travelled in - and
+it is a real trade, stated in [the facade reads every
+answer](#the-facade-reads-every-answer-it-forwards).
 
 |                           | Direct send                                       | One-shot write slot (channel D)                   | Scan-back                                     |
 | ------------------------- | ------------------------------------------------- | ------------------------------------------------- | --------------------------------------------- |
@@ -296,9 +304,9 @@ because that is already an encrypted channel from the requester to whoever holds
 | Needs from the filler     | nothing                                           | nothing; a `PUT` and no crypto                    | nothing; the answers travel inside the link   |
 | Needs from the requester  | nothing beyond the registration                   | nothing; the BFF hosts the slot                   | somebody able to scan or paste                |
 | Reviewed before it lands? | no - the patient's own answers, labelled as such  | **yes** - the slot is staged off the record       | yes                                           |
-| Who performs the write    | the filler, with a scoped short-lived token       | the filler, into a pre-allocated resource         | the requester, with their session authority   |
-| Answers protected?        | encrypted in the manifest, TLS to the destination | TLS to the slot; the slot holds plaintext         | **no** - deflated into the URL, not encrypted |
-| Guaranteed once?          | no - idempotent by conditional create             | **yes** - `If-Match`, refused on the second write | n/a                                           |
+| Who performs the write    | the filler, with a token good for one invitation  | the filler, into a pre-allocated resource         | the requester, with their session authority   |
+| Answers protected?        | TLS to the facade; the facade reads them in clear | TLS to the slot; the slot holds plaintext         | **no** - deflated into the URL, not encrypted |
+| Guaranteed once?          | **yes** - refused after the first delivery        | **yes** - `If-Match`, refused on the second write | n/a                                           |
 | Default                   | **primary**                                       | offered alongside                                 | fallback                                      |
 
 **The direct send is primary**, and it is the channel [Platypus](https://github.com/aehrc/platypus)
@@ -822,6 +830,8 @@ server/                  the BFF: Fastify, one origin, every secret
   shl/
     invitationStore.ts   the hosted payload behind a shlink: URL
     manifest.ts          POST /shl/:id, and the per-fetch grant
+    grantToken.ts        the capability token a grant carries
+    facade.ts            ALL /shl/:id/fhir/*, the write target
 src/                     the SPA
   App.tsx                routes, the session gate, the root-fragment forward
   routes/                Connect, FormList, RequestForm, Requests, ResponseList,
@@ -878,49 +888,58 @@ docs/
 
 ## Known limitations
 
-### A minted token is not bound to its invitation
+### The facade reads every answer it forwards
 
-This is the accepted risk of the whole design, and it is worth stating first because it is the one
-that would matter in a real deployment.
+This is the trade the facade makes, and it is worth stating first because it is the one a deployment
+has to decide it can live with.
 
-The grant carries a SMART Backend Services token whose authority is the _system's_, narrowed by
-scope. Within that scope and that lifetime it could create a response for some other invitation, or
-update some other task, on the same destination. Nothing in the token says which invitation it
-travelled in.
+The direct send used to be TLS from the filler straight to the clinic, and this app never saw an
+answer. It now goes through `/shl/:id/fhir`, where the transaction is rebuilt before it is forwarded
 
-Four things bound it, none of which eliminates it:
+- so **this app holds every submitted answer in the clear, in memory, on the way through**. Nothing
+  is written to disk, but "we cannot read your answers" stopped being true of the primary channel.
 
-- **The scope is the minimum the writeback needs** - create a response, create a provenance, read and
-  update a task. It cannot read patients, cannot read other responses and cannot touch anything else.
-- **The lifetime is short and configurable**, defaulting to one hour.
-- **Minting is per fetch**, so the window starts when the link is opened rather than when it was
-  minted, and a link that is never opened never produces a token at all.
-- **Every mint is at the authorisation server**, so there is an audit trail of exactly which
-  credentials were issued and when.
+What was bought with it is the whole of the section this replaced. The credential in a link is no
+longer the practice's system authority: it is a signature naming one invitation, accepted only by
+this app, and worthless anywhere else. A bystander who photographs a wall QR can still open the link
+and read the questionnaire and the patient's name, but the credential they get can only answer _that
+one request, once_ - it cannot create a response for another patient, cannot touch another task, and
+does not name the practice's FHIR base at all.
 
-Invitation-bound tokens - a token the destination will only accept for one request identifier - are
-out of scope here. They need something on the server side that this app cannot assume.
+That is the same choice channel D already made, and the comparison table now says so for both. A
+deployment that cannot accept an intermediary reading answers has the scan-back channel, where the
+requester's own session performs the write and this app carries only ciphertext.
 
-### Anyone who photographs a link can mint tokens from it
+### Anyone who photographs a link can still open it
 
 An invitation is usually a QR code, so a bystander who photographs it holds the key and the manifest
-URL, and can fetch that manifest and obtain a token, repeatedly, until the link expires. They can
-also read the questionnaire and the patient's name.
+URL, and can fetch that manifest repeatedly until the link expires. They can read the questionnaire
+and the patient's name, and they can submit answers to the request - once.
 
-That is the same exposure any `U`-flag SHL has for its payload, extended to the credential. It is the
-reason the token lifetime is short and independent of the link lifetime, and the reason a deployment
-that cannot accept it should set `grantTtlSeconds` low and `linkLifetimeDays` lower.
+That is the same exposure any `U`-flag SHL has for its payload. It is the reason the token lifetime
+is short and independent of the link lifetime, and the reason a deployment that cannot accept it
+should set `grantTtlSeconds` low and `linkLifetimeDays` lower. What has changed is the ceiling on
+the damage: the worst a photographed link now does is answer its own request with wrong answers,
+which a reviewer sees labelled as patient-asserted, rather than hand out a writable credential for
+the practice's server.
 
-### A replayed send leaves two provenances
+### A replayed send no longer reaches the destination at all
 
-Send the same answers twice and the destination ends up with one response and one completed task -
-both are keyed - but **two `Provenance` resources**.
+Send the same answers twice and the second send never leaves this app. The facade takes a claim on
+the invitation before it forwards anything, and a send that does not get the claim is answered from
+what the first one stored - so there is now one response, one completed task and **one
+`Provenance`**.
 
-The response is a conditional create on the request identifier and the task is a versioned `PUT`, so
-both are idempotent. The provenance is a plain `POST`, because the wire contract defines no
-conditional-create key for it, and inventing one here would produce a transaction the Platypus
-direct-send implementation does not expect. Interoperability won: two provenances describing the same
-assertion are untidy, and a contract that only one implementation follows is worse.
+That closes a wart this section used to describe. The provenance is a plain `POST` with no
+conditional-create key, because the wire contract defines none and inventing one would produce a
+transaction the Platypus direct-send implementation does not expect. Before the facade, a replayed
+send therefore left two provenances describing the same assertion. The rule now lives on the server
+both fillers write through, which is the only place it could live: two fillers stamp two different
+identifier systems, so neither of them can hold it.
+
+The one case that still reaches the destination twice is a send that fails upstream. The claim is
+released when a forward does not land, because one bad gateway must not burn an invitation
+permanently - so a retry is a fresh forward, and the conditional create is what absorbs it.
 
 ### Single replica only
 

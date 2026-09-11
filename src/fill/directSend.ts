@@ -8,7 +8,7 @@
  *
  * ## Four responsibilities, deliberately separate
  *
- * {@link buildSubmissionTransaction} is pure: answers plus grant in, Bundle out. Every rule the
+ * {@link buildSubmissionTransaction} is pure: answers plus patient in, Bundle out. Every rule the
  * contract states about the shape is decided here and nowhere else, so a rule can be read off a
  * single function rather than reconstructed from a request pipeline.
  *
@@ -31,13 +31,17 @@
  * puts in a browser. `redirect: "manual"` on both requests is what keeps it from travelling: a
  * destination that answers with a redirect has told the browser to present the request somewhere
  * else, and following that would hand the credential to whoever controls the target while
- * reporting the answers as delivered. So a redirect is a failure with no delivery claimed, and a
- * published Task URL that is not on the grant's own origin is not fetched at all - not even to
- * see whether it would have worked.
+ * reporting the answers as delivered. So a redirect is a failure with no delivery claimed.
+ *
+ * The Task read used to be the awkward half of that rule, because the invitation names the Task
+ * on the practice's server and the token belongs to `aud`. It is no longer a comparison: the
+ * address is *built* from `aud` and the only thing taken from the invitation is the Task's `id`
+ * ({@link destinationTaskUrl}). There is nothing left that could pass a same-origin check and
+ * still be somewhere the token has no business going.
  *
  * ## Optimism about the Task, never about the answers
  *
- * Everything about the Task leg degrades: off-origin, unreadable, unversioned, or already
+ * Everything about the Task leg degrades: unaddressable, unreadable, unversioned, or already
  * finished all mean "no Task entry", and the answers go anyway (FR-022). Losing the status flip
  * costs the requester a tidy list; losing the answers costs a patient the time they spent typing
  * them.
@@ -96,8 +100,16 @@ export interface DestinationTask {
 export interface SubmissionTransactionOptions {
   /** The completed answers, as the renderer produced them. */
   readonly response: QuestionnaireResponse;
-  /** The grant: the destination, its token, and the patient the answers are about. */
-  readonly grant: ApiAccessGrant;
+  /**
+   * The patient the answers are about, as a bare FHIR id, or undefined when the request named
+   * none.
+   *
+   * The id rather than the grant it usually comes from, because the facade builds this same
+   * transaction server-side and has no grant to hand - it holds the invitation row instead. One
+   * builder for both callers is the point: the wire shape is decided here, so a rule cannot hold
+   * on one path and not the other.
+   */
+  readonly patient?: string;
   /** The invitation's durable business identifier, e.g. `urn:uuid:…`. */
   readonly requestIdentifier: string;
   /** The patient's name, as the invitation gave it. */
@@ -141,6 +153,14 @@ export interface DirectSendOptions {
   readonly patientDisplay?: string;
   /** Epoch milliseconds to judge the grant's window against; defaults to now. */
   readonly now?: number;
+  /**
+   * The host to name in what the filler is told, when it is not the grant's own destination.
+   *
+   * Defaults to the destination, which is right for a grant that points at a practice. Under the
+   * facade the caller passes the practice, so an outcome reads "the clinic accepted the answers"
+   * rather than naming the relay that carried them.
+   */
+  readonly host?: string;
 }
 
 /**
@@ -158,18 +178,80 @@ function httpsOrigin(value: string): string | undefined {
 }
 
 /**
- * Whether a URL is somewhere the grant's token may be presented.
+ * A FHIR resource id, as the `id` datatype defines it.
  *
- * Both halves must be `https` origins *and* they must be the same one. Comparing the results of
- * {@link httpsOrigin} without the presence check would make two unusable URLs "the same origin",
- * which is the sort of equality that ends with a token on the wrong host.
- * @param candidate the URL a request is about to be made to
- * @param aud the grant's destination
- * @returns true only when the candidate is on the destination's own `https` origin
+ * The grammar permits `.`, so `.` and `..` are both valid ids *and* path traversal. They are
+ * refused separately in {@link destinationTaskUrl} rather than by narrowing this pattern, because
+ * the pattern is the FHIR rule and the traversal is a URL rule.
  */
-function isOnDestinationOrigin(candidate: string, aud: string): boolean {
-  const origin = httpsOrigin(candidate);
-  return origin !== undefined && origin === httpsOrigin(aud);
+const RESOURCE_ID_PATTERN = /^[\w\-.]{1,64}$/;
+
+/** Path segments that would move the address rather than name a resource. */
+const TRAVERSAL_SEGMENTS = new Set([".", ".."]);
+
+/**
+ * The practice's host, read off the Task the invitation published on it.
+ *
+ * The invitation is the only thing that still names the practice once `aud` points at the facade,
+ * and this is the part of it a person can read. Deliberately *not* a new member on the grant: a
+ * grant file is a SMART token response, which is the whole argument for `scope` belonging in it
+ * and for a private member of ours not.
+ * @param serverTaskUrl the published Task's absolute URL, when the invitation named one
+ * @returns the host, or undefined when there is no usable `https` URL to read it from
+ * @example
+ * practiceHost("https://ehr.example.org/fhir/Task/t-1"); // "ehr.example.org"
+ */
+function practiceHost(serverTaskUrl: string | undefined): string | undefined {
+  if (serverTaskUrl === undefined) {
+    return undefined;
+  }
+  try {
+    const url = new URL(serverTaskUrl);
+    return url.protocol === "https:" ? url.host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Where to read the invitation's published Task, given a grant.
+ *
+ * The invitation names the Task on the *practice's* server, and since the write target became
+ * this app's facade that is no longer where the token may be presented. So only the id is taken
+ * from what the invitation said, and the address is built from `aud` - which is the grant's own
+ * statement about where its token belongs.
+ *
+ * Derivation rather than comparison is what makes the origin rule structural. There is no longer
+ * a URL from the invitation that could pass a check and still be somewhere else; the only thing
+ * the invitation contributes is 64 characters of `id`, matched against the FHIR `id` grammar so
+ * that a traversal or an absolute URL cannot arrive through it.
+ *
+ * A grant pointing at a practice's FHIR base rather than a facade - a link minted by a deployment
+ * that has not moved yet - resolves to exactly the URL the invitation named, because a Task lives
+ * at `{base}/Task/{id}` on any conformant server.
+ * @param serverTaskUrl the published Task's absolute URL, as the invitation gave it
+ * @param aud the grant's destination
+ * @returns the URL to read, or undefined when either half is unusable
+ * @example
+ * destinationTaskUrl("https://ehr/fhir/Task/t-1", "https://links/shl/inv-1/fhir");
+ * // "https://links/shl/inv-1/fhir/Task/t-1"
+ */
+function destinationTaskUrl(
+  serverTaskUrl: string,
+  aud: string,
+): string | undefined {
+  if (httpsOrigin(aud) === undefined) {
+    return undefined;
+  }
+  const id = serverTaskUrl.split("/").pop();
+  if (
+    id === undefined ||
+    !RESOURCE_ID_PATTERN.test(id) ||
+    TRAVERSAL_SEGMENTS.has(id)
+  ) {
+    return undefined;
+  }
+  return `${aud.replace(/\/+$/, "")}/Task/${id}`;
 }
 
 /**
@@ -199,17 +281,23 @@ function isRedirected(response: Response): boolean {
  * `subject` and the Provenance's author are the grant's patient or nothing at all. The
  * invitation's `Task.for.reference` is a reference on the *requester's* server that a filler
  * never resolved, so echoing it would be asserting a resolution that did not happen.
- * @param options the answers, the grant, the request identifier and the Task read
+ * @param options the answers, the patient, the request identifier and the Task read
  * @returns the transaction Bundle
  * @throws {Error} when the answers do not name the questionnaire they were given against
  * @example
- * const bundle = buildSubmissionTransaction({ response, grant, requestIdentifier });
+ * const bundle = buildSubmissionTransaction({ response, patient, requestIdentifier });
  */
 export function buildSubmissionTransaction(
   options: SubmissionTransactionOptions,
 ): Bundle {
-  const { response, grant, requestIdentifier, patientDisplay, task, recorded } =
-    options;
+  const {
+    response,
+    patient: patientId,
+    requestIdentifier,
+    patientDisplay,
+    task,
+    recorded,
+  } = options;
 
   const canonical = response.questionnaire;
   if (canonical === undefined || canonical.trim() === "") {
@@ -220,10 +308,10 @@ export function buildSubmissionTransaction(
   }
 
   const patient: Reference | undefined =
-    grant.patient === undefined
+    patientId === undefined
       ? undefined
       : {
-          reference: `Patient/${grant.patient}`,
+          reference: `Patient/${patientId}`,
           ...(patientDisplay ? { display: patientDisplay } : {}),
         };
 
@@ -257,7 +345,7 @@ export function buildSubmissionTransaction(
   delete submitted.id;
   delete submitted.author;
   delete submitted.source;
-  // `subject` is the grant's patient or nothing: whatever the filler's own store said is not it.
+  // `subject` is the named patient or nothing: whatever the filler's own store said is not it.
   delete submitted.subject;
   if (patient) {
     submitted.subject = patient;
@@ -350,13 +438,14 @@ async function fetchPublishedTask(options: {
 }): Promise<FetchedTask | undefined> {
   const { grant, serverTaskUrl } = options;
 
-  if (!isOnDestinationOrigin(serverTaskUrl, grant.aud)) {
+  const target = destinationTaskUrl(serverTaskUrl, grant.aud);
+  if (target === undefined) {
     return undefined;
   }
 
   let response: Response;
   try {
-    response = await fetch(serverTaskUrl, {
+    response = await fetch(target, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${grant.access_token}`,
@@ -404,9 +493,9 @@ async function fetchPublishedTask(options: {
 /**
  * Read the invitation's published Task from the destination, immediately before the send.
  *
- * Every path out of here that is not a live, versioned, unfinished Task on the grant's own origin
- * returns undefined, and undefined means "send the answers without a Task entry". Nothing about
- * the Task is worth failing a send over.
+ * Every path out of here that is not a live, versioned, unfinished Task at the grant's own
+ * destination returns undefined, and undefined means "send the answers without a Task entry".
+ * Nothing about the Task is worth failing a send over.
  * @param options the grant and the published Task URL the invitation named
  * @param options.grant
  * @param options.serverTaskUrl
@@ -533,8 +622,8 @@ export function checksPriorSubmission(
   }
 
   return (
-    isOnDestinationOrigin(target.serverTaskUrl, target.received.grant.aud) &&
-    !isGrantExpired(target.received, now)
+    destinationTaskUrl(target.serverTaskUrl, target.received.grant.aud) !==
+      undefined && !isGrantExpired(target.received, now)
   );
 }
 
@@ -571,6 +660,8 @@ export interface SendStatusOptions {
   readonly attempted?: SendStatus;
   /** Epoch milliseconds to judge the window against; defaults to the current time. */
   readonly now?: number;
+  /** The host to name, as {@link DirectSendOptions.host}. */
+  readonly host?: string;
 }
 
 /**
@@ -617,8 +708,8 @@ export function currentSendStatus(options: SendStatusOptions): SendStatus {
   return {
     state: "expired",
     detail:
-      `The window for sending answers straight to ${destinationHost(received.grant)} ` +
-      "has closed.",
+      "The window for sending answers straight to " +
+      `${options.host ?? destinationHost(received.grant)} has closed.`,
   };
 }
 
@@ -691,7 +782,7 @@ export async function sendDirect(
   } = options;
   const now = options.now ?? Date.now();
   const { grant } = received;
-  const host = destinationHost(grant);
+  const host = options.host ?? destinationHost(grant);
 
   /*
    * Before anything else, and before anything is built. The send is reachable from a state that
@@ -717,7 +808,7 @@ export async function sendDirect(
 
   const bundle = buildSubmissionTransaction({
     response,
-    grant,
+    ...(grant.patient === undefined ? {} : { patient: grant.patient }),
     requestIdentifier,
     patientDisplay,
     task,
@@ -781,8 +872,23 @@ export async function sendDirect(
 export interface DirectSendTarget {
   /** The grant, with the moment it was received. */
   readonly received: ReceivedGrant;
-  /** The destination's host, for everything the filler is told. */
+  /**
+   * The practice's host, for everything the filler is told.
+   *
+   * Sourced from the published Task the invitation names, not from `aud`. Since the write target
+   * became this app's facade, `aud` is *our* host, and telling a patient their answers go to a
+   * party they have never heard of is the outcome FR-020 exists to prevent. A grant pointing
+   * straight at a practice - a link minted before the facade - names the same host either way.
+   */
   readonly host: string;
+  /**
+   * The host the answers pass *through*, when that is not the practice itself.
+   *
+   * Present only when the grant's destination differs from the practice, which is exactly when
+   * there is an intermediary to disclose. Undefined means the answers go straight there and
+   * there is nothing extra to say.
+   */
+  readonly relayHost?: string;
   /** The invitation's durable business identifier. */
   readonly requestIdentifier: string;
   /** The published Task's absolute URL, when the invitation named one. */
@@ -823,11 +929,16 @@ export function directSendTarget(options: {
     return undefined;
   }
 
+  const serverTaskUrl = parseServerTaskUrl(task);
+  const relayHost = destinationHost(apiAccess.grant);
+  const host = practiceHost(serverTaskUrl) ?? relayHost;
+
   return {
     received: apiAccess,
-    host: destinationHost(apiAccess.grant),
+    host,
+    ...(host === relayHost ? {} : { relayHost }),
     requestIdentifier,
-    serverTaskUrl: parseServerTaskUrl(task),
+    serverTaskUrl,
     patientDisplay: task.for?.display,
   };
 }

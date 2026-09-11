@@ -330,18 +330,29 @@ describe("reading whether the destination already holds these answers", () => {
   });
 
   /*
-   * The origin rule applies to this read exactly as it applies to the pre-send one: the token is
-   * presented to the destination or to nowhere.
+   * The address rule applies to this read exactly as it applies to the pre-send one: the token
+   * goes to the grant's destination, whatever origin the invitation happened to name.
    */
-  it("presents the token to no origin but the destination's", async () => {
+  it("presents the token to no destination but the grant's", async () => {
+    fetchMock.mockResolvedValue(
+      fhirResponse(publishedTask("completed", [RESPONSE_OUTPUT])),
+    );
+
+    await priorSubmission({
+      serverTaskUrl: "https://elsewhere.example.org/fhir/Task/task-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://ehr.example.org/fhir/Task/task-1",
+    );
+  });
+
+  // Nothing usable to address means no request, rather than a request to a guessed URL.
+  it("issues no read when the invitation's URL ends in no usable id", async () => {
     expect(
       await priorSubmission({
-        serverTaskUrl: "https://elsewhere.example.org/fhir/Task/task-1",
-      }),
-    ).toBe(false);
-    expect(
-      await priorSubmission({
-        serverTaskUrl: "http://ehr.example.org/fhir/Task/task-1",
+        serverTaskUrl: "https://ehr.example.org/fhir/Task/..",
       }),
     ).toBe(false);
 

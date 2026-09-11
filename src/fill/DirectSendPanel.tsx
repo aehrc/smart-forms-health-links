@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 /**
  * The direct-return surface, from disclosure to outcome.
  *
- * Everything this panel says names the destination host, because that is the only part of a
+ * Everything this panel says names the practice's host, because that is the only part of a
  * `https://sczsqtqcgi.aidbox.app/fhir` a person can weigh (FR-020). The wording of each
  * outcome comes from {@link SendStatus.detail} rather than from here: the state machine already
  * has to be precise about what a 2xx, a 401 and a dropped connection each mean, and restating it
@@ -21,6 +21,14 @@ import { Button } from "@/components/ui/button";
  * read when the page loaded is not necessarily the one in front of them twenty minutes later when
  * they finish typing, so the destination is named again at the moment of the decision (FR-021).
  *
+ * ## Why the relay is named too
+ *
+ * The answers no longer go straight to the practice: they pass through this app's facade, which
+ * holds them in the clear on the way. That is a real change in who can read them, and the honest
+ * place to say so is the same two places the destination is named. The alternative - naming the
+ * facade *as* the destination - would be accurate about the next hop and useless to the person
+ * deciding, who has never heard of it.
+ *
  * ## Why an absent grant renders nothing
  *
  * Not a disabled button, not an explanation - nothing. A manifest with no grant, or with one this
@@ -31,8 +39,16 @@ import { Button } from "@/components/ui/button";
  */
 
 export interface DirectSendPanelProps {
-  /** The destination's host, named in every message this panel shows. */
+  /** The practice's host, named in every message this panel shows. */
   readonly host: string;
+  /**
+   * The host the answers pass through on the way, when it is not the practice.
+   *
+   * Undefined means they go straight there and there is nothing extra to disclose. When it is
+   * set, the two places a patient makes a decision say so - and say that the intermediary can
+   * read the answers, which is the part that cannot be left to inference.
+   */
+  readonly relayHost?: string;
   /** Where the send is up to, or undefined when there is no usable grant. */
   readonly status: SendStatus | undefined;
   /** Start the send. Called once, when the person filling the form confirms. */
@@ -45,7 +61,7 @@ export interface DirectSendPanelProps {
  * @returns the panel, or nothing when there is no direct channel to disclose
  */
 export default function DirectSendPanel(props: DirectSendPanelProps) {
-  const { host, status, onSend } = props;
+  const { host, relayHost, status, onSend } = props;
   const [confirming, setConfirming] = useState(false);
 
   if (!status) {
@@ -140,6 +156,12 @@ export default function DirectSendPanel(props: DirectSendPanelProps) {
         <Alert tone="warning" title={`Send these answers to ${host}?`}>
           They will be written into the record at {host} as soon as you confirm,
           and cannot be taken back from here.
+          {relayHost === undefined ? null : (
+            <>
+              {" "}
+              They travel through {relayHost}, which can read them on the way.
+            </>
+          )}
         </Alert>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -161,10 +183,23 @@ export default function DirectSendPanel(props: DirectSendPanelProps) {
 
   return (
     <div className="space-y-3">
-      <Alert title={`Answers go straight to ${host}`}>
+      <Alert
+        title={
+          relayHost === undefined
+            ? `Answers go straight to ${host}`
+            : `Answers go to ${host}`
+        }
+      >
         This request can take the completed answers directly. They are written
         into the record at {host}, which is where the request came from, so
         nothing has to be scanned back.
+        {relayHost === undefined ? null : (
+          <>
+            {" "}
+            They are sent by way of {relayHost}, which passes them on and can
+            read them as they go.
+          </>
+        )}
       </Alert>
       <Button onClick={() => setConfirming(true)}>
         <Send className="h-4 w-4" aria-hidden />

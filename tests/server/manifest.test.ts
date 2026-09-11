@@ -23,7 +23,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  APP_ORIGIN,
   AWKWARD_ISSUER,
+  COOKIE_SECRET,
   ISSUER,
   SMART_CONFIGURATION,
   closeHarness,
@@ -31,12 +33,16 @@ import {
   jsonResponse,
   urlOf,
 } from "./support/testHarness";
+import {
+  deriveGrantTokenKey,
+  verifyGrantToken,
+} from "../../server/shl/grantToken";
 import { insertInvitation } from "../../server/shl/invitationStore";
 import {
   INVITATION_CONTENT_TYPE,
   grantMintFailureCount,
 } from "../../server/shl/manifest";
-import { mintAccessToken } from "../../server/smart/backendServices";
+import { cachedAccessToken } from "../../server/smart/backendServices";
 import { decodeUtf8, encodeUtf8, fromBase64Url } from "../../src/link/binary";
 import {
   decryptJwe,
@@ -51,7 +57,7 @@ import type { Mock } from "vitest";
 vi.mock("../../server/smart/backendServices", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../server/smart/backendServices")>();
-  return { ...actual, mintAccessToken: vi.fn() };
+  return { ...actual, cachedAccessToken: vi.fn() };
 });
 
 /** The invitation Bundle sealed into the stored payload. */
@@ -93,7 +99,7 @@ function headerOf(compact: string): Record<string, string> {
 describe("the SHL manifest", () => {
   let harness: TestHarness;
   let linkKey: Uint8Array;
-  let mint: Mock<typeof mintAccessToken>;
+  let mint: Mock<typeof cachedAccessToken>;
   /** How many tokens have been minted in this test, so each one is distinguishable. */
   let minted: number;
 
@@ -101,7 +107,7 @@ describe("the SHL manifest", () => {
     harness = createHarness();
     linkKey = generateKey();
     minted = 0;
-    mint = vi.mocked(mintAccessToken);
+    mint = vi.mocked(cachedAccessToken);
     mint.mockReset();
     mint.mockImplementation(() => {
       minted += 1;
@@ -268,20 +274,51 @@ describe("the SHL manifest", () => {
   });
 
   describe("the grant", () => {
-    it("names the launched server as the destination and the invitation's patient", async () => {
+    /*
+     * The three members the facade changed. `aud` is this app, because the practice's credential
+     * no longer leaves the server; `scope` is what the facade permits rather than what the backend
+     * client is registered for; and `access_token` is a capability for this invitation, which is
+     * why it is asserted by verifying it rather than by comparing it to a fixture.
+     */
+    it("names the facade as the destination and the invitation's patient", async () => {
       const id = await storeInvitation();
 
       const files = await manifestFiles(id);
       const grant = JSON.parse(await open(files[1])) as Grant;
 
-      expect(grant).toEqual({
-        access_token: "minted-token-1",
+      expect(grant).toMatchObject({
         token_type: "Bearer",
         expires_in: 3600,
-        scope: "system/QuestionnaireResponse.c system/Task.r system/Task.u",
-        aud: ISSUER,
+        scope:
+          "system/QuestionnaireResponse.c system/Provenance.c " +
+          "system/Task.r system/Task.u",
+        aud: `${APP_ORIGIN}/shl/${id}/fhir`,
         patient: "pt-1",
       });
+      expect(
+        verifyGrantToken({
+          key: deriveGrantTokenKey(COOKIE_SECRET),
+          invitationId: id,
+          token: grant.access_token,
+        }),
+      ).toBe(true);
+    });
+
+    // The token names one invitation. Presented against any other, it authorises nothing.
+    it("mints a token that verifies for no other invitation", async () => {
+      const id = await storeInvitation();
+      const other = await storeInvitation();
+
+      const files = await manifestFiles(id);
+      const grant = JSON.parse(await open(files[1])) as Grant;
+
+      expect(
+        verifyGrantToken({
+          key: deriveGrantTokenKey(COOKIE_SECRET),
+          invitationId: other,
+          token: grant.access_token,
+        }),
+      ).toBe(false);
     });
 
     // `patient` is present iff the request named one; an empty string would not be "absent".
@@ -298,7 +335,14 @@ describe("the SHL manifest", () => {
      * The deployment's configured lifetime is a ceiling, not a claim: stating longer than the
      * authorisation server granted would send a filler to a destination that will refuse it.
      */
-    it("never states a longer lifetime than the token actually has", async () => {
+    /*
+     * The upstream credential's lifetime used to be the ceiling, because it *was* the token in
+     * the grant. It no longer is: the token is ours, so the window is the deployment's to state
+     * and a practice handing out five-minute tokens no longer shortens what a filler is offered.
+     * The facade mints upstream per write, so a short-lived credential is refreshed rather than
+     * inherited.
+     */
+    it("states the deployment's lifetime whatever the practice's token says", async () => {
       const id = await storeInvitation();
       mint.mockResolvedValue({
         access_token: "short-lived",
@@ -308,7 +352,7 @@ describe("the SHL manifest", () => {
 
       const files = await manifestFiles(id);
 
-      expect((JSON.parse(await open(files[1])) as Grant).expires_in).toBe(300);
+      expect((JSON.parse(await open(files[1])) as Grant).expires_in).toBe(3600);
     });
 
     // Nor longer than the deployment configured, which is the other half of FR-016.
@@ -327,18 +371,50 @@ describe("the SHL manifest", () => {
     });
 
     // The whole point of minting at fetch time rather than at mint time.
-    it("mints a fresh token on every fetch", async () => {
+    /*
+     * Still the whole point of minting at fetch time rather than at mint time, but the property is
+     * now about the *window* rather than about the bytes. A capability token is a signature over
+     * an invitation and an expiry, so two fetches in the same second legitimately produce the same
+     * token - they mean the same thing. Two fetches an hour apart state two different windows, and
+     * that is what lets a link live for thirty days while what it carries lasts an hour.
+     */
+    it("states a window from the moment of each fetch", async () => {
+      // `Date` alone: faking the timer functions too would stall the harness's own async work.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const id = await storeInvitation();
+
+        const first = await manifestFiles(id);
+        vi.setSystemTime(Date.now() + 30 * 60 * 1000);
+        const second = await manifestFiles(id);
+
+        const firstGrant = JSON.parse(await open(first[1])) as Grant;
+        const secondGrant = JSON.parse(await open(second[1])) as Grant;
+
+        expect(secondGrant.access_token).not.toBe(firstGrant.access_token);
+        // Both are for this invitation, half an hour apart.
+        for (const grant of [firstGrant, secondGrant]) {
+          expect(
+            verifyGrantToken({
+              key: deriveGrantTokenKey(COOKIE_SECRET),
+              invitationId: id,
+              token: grant.access_token,
+            }),
+          ).toBe(true);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // The practice is still consulted on every fetch, which is what makes a dead issuer degrade.
+    it("checks the practice's credential on every fetch", async () => {
       const id = await storeInvitation();
 
-      const first = await manifestFiles(id);
-      const second = await manifestFiles(id);
-      const firstGrant = JSON.parse(await open(first[1])) as Grant;
-      const secondGrant = JSON.parse(await open(second[1])) as Grant;
+      await manifestFiles(id);
+      await manifestFiles(id);
 
       expect(mint).toHaveBeenCalledTimes(2);
-      expect(firstGrant.access_token).toBe("minted-token-1");
-      expect(secondGrant.access_token).toBe("minted-token-2");
-      expect(secondGrant.access_token).not.toBe(firstGrant.access_token);
     });
   });
 

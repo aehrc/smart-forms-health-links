@@ -30,6 +30,14 @@ export const APP_ORIGIN = "https://app.example.org";
 /** The redirect URI every authorize request and code exchange must use. */
 export const REDIRECT_URI = "https://app.example.org/auth/callback";
 
+/**
+ * The session cookie secret the test configuration uses.
+ *
+ * Exported because grant tokens are signed with a key derived from it, so a test that wants to
+ * verify one has to derive the same key rather than guess at it.
+ */
+export const COOKIE_SECRET = "0123456789abcdef0123456789abcdef";
+
 /** The primary registered issuer. */
 export const ISSUER = "https://ehr.example.org/fhir";
 
@@ -116,7 +124,7 @@ export function testConfig(sqlitePath: string): ServerConfig {
     appOrigin: APP_ORIGIN,
     sqlitePath,
     issuerRegistryPath: "/dev/null",
-    cookieSecret: "0123456789abcdef0123456789abcdef",
+    cookieSecret: COOKIE_SECRET,
     port: 3000,
     issuers: [
       {
