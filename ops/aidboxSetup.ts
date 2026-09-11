@@ -10,7 +10,7 @@
  *
  * ## Idempotence
  *
- * Every resource is written with `PUT` at a fixed id, but only after the stored copy is read
+ * Every resource is written with `PUT` at a known id, but only after the stored copy is read
  * and compared. A stored resource that already contains every field we intend to write is left
  * alone, so `meta.versionId` is stable across runs. Fields Aidbox will not echo back - a
  * client secret, a user password - are excluded from that comparison and therefore only
@@ -47,17 +47,34 @@ import { fileURLToPath } from "node:url";
 import type { Patient, Practitioner, Questionnaire } from "fhir/r4";
 import type { JWK } from "jose";
 
-/** Fixed id of the confidential launch client (contract section 1). */
-export const LAUNCH_CLIENT_ID = "smart-forms-health-links";
+/**
+ * Stem every registered id is built from (contract sections 1-3).
+ *
+ * The ids themselves are no longer constants, because one Aidbox instance serves more than one
+ * environment: see {@link resolveClientIds}.
+ */
+export const CLIENT_ID_BASE = "smart-forms-health-links";
 
-/** Fixed id of the SMART Backend Services client (contract section 2). */
-export const BACKEND_CLIENT_ID = "smart-forms-health-links-backend";
+/** Suffix given to a deployment served from a loopback host, when none is configured. */
+export const LOCAL_CLIENT_ID_SUFFIX = "-local";
 
-/** Fixed id of the launch client's AccessPolicy (contract section 3). */
-export const LAUNCH_POLICY_ID = "smart-forms-health-links-policy";
+/**
+ * What an Aidbox resource id may look like: FHIR's `[A-Za-z0-9-.]{1,64}`, opening on a
+ * letter or digit so a suffix cannot begin an id with punctuation.
+ */
+const RESOURCE_ID_PATTERN = /^[A-Za-z0-9][\d.A-Za-z-]{0,63}$/;
 
-/** Fixed id of the backend client's AccessPolicy (contract section 3). */
-export const BACKEND_POLICY_ID = "smart-forms-health-links-backend-policy";
+/** The four ids one environment registers under. */
+export interface ClientIds {
+  /** Confidential launch client. */
+  readonly launchClient: string;
+  /** SMART Backend Services client. */
+  readonly backendClient: string;
+  /** The launch client's AccessPolicy. */
+  readonly launchPolicy: string;
+  /** The backend client's AccessPolicy. */
+  readonly backendPolicy: string;
+}
 
 /** Fixed id of the demo patient (contract section 5). */
 export const DEMO_PATIENT_ID = "pt-demo";
@@ -128,6 +145,14 @@ export interface PlannedResource {
   body: AidboxResource;
   /** Top-level fields Aidbox will not echo back, excluded from change detection. */
   opaqueFields: readonly string[];
+  /**
+   * Origin this resource is being registered against, when it records one.
+   *
+   * Set only on the two clients. `applyToServer` refuses to write over a stored copy that names
+   * a different origin, which is what stops one environment's run from taking another's
+   * registration over - see {@link assertOriginUnclaimed}.
+   */
+  expectedOrigin?: string;
 }
 
 /** An RS384 signing key pair, split into the halves that go to different places. */
@@ -142,6 +167,8 @@ export interface BackendKeyPair {
 export interface SetupOptions {
   /** Origin the app is served from, for example `https://links.example.org`. */
   appOrigin: string;
+  /** The ids this environment registers under, from {@link resolveClientIds}. */
+  clientIds: ClientIds;
   /**
    * Grant lifetime in seconds. Reaches Aidbox verbatim as `access_token_expiration`, which
    * this build interprets in seconds - see `buildLaunchClient`.
@@ -302,6 +329,173 @@ function isLoopbackOrigin(appOrigin: string): boolean {
 }
 
 /**
+ * Work out which four ids this run registers under.
+ *
+ * One Aidbox instance serves more than one environment - a developer's `http://localhost:3000`
+ * and a deployed demo - and a `Client` holds exactly one `redirect_uri` and one key location. So
+ * the environments cannot share a registration: whichever ran `setup:aidbox` last would own it,
+ * and the other's launch would fail at the authorize step with no diagnostic beyond a redirect
+ * mismatch. Giving each environment its own ids is what makes them independent.
+ *
+ * **The default comes from the origin, not from the environment.** Requiring a variable to be set
+ * for safety gets it exactly backwards: the person who forgets is the person on a laptop, and the
+ * registration they would take over is the deployed one. A loopback origin therefore defaults to
+ * {@link LOCAL_CLIENT_ID_SUFFIX} and everything else to no suffix, so the deployment keeps the
+ * unsuffixed ids it already holds and nobody has to remember anything to leave it alone.
+ *
+ * `CLIENT_ID_SUFFIX` overrides that, and *unset* is deliberately distinguished from *set to
+ * empty*. `.env.deploy` is sourced with `set -a; . ./.env.deploy` into the current shell, so a
+ * shell that earlier sourced `.env` still carries `-local`; the deploy file clears it by setting
+ * the variable empty, which is only meaningful if an explicit empty value is honoured. Doing so
+ * on a loopback origin is a contradiction - it asks for the deployed identity from a developer's
+ * machine - and is refused rather than obeyed.
+ *
+ * A suffix cannot buy access to another environment's resources by construction, but it can
+ * collide by accident: `-backend` turns the launch client id into the *backend* client's. Every
+ * resulting id is individually legal and the four stay distinct, so nothing here catches it. The
+ * origin check in {@link assertOriginUnclaimed} does.
+ * @param options the origin being registered and the environment to read the override from
+ * @param options.appOrigin origin the app is served from
+ * @param options.env the environment to read `CLIENT_ID_SUFFIX` from
+ * @returns the launch client, backend client and their two policy ids
+ * @throws {Error} when the suffix is explicitly empty on a loopback origin, or when any resulting
+ *   id is not a legal Aidbox resource id
+ * @example
+ * resolveClientIds({ appOrigin: "http://localhost:3000", env: process.env });
+ * // -> { launchClient: "smart-forms-health-links-local", ... }
+ */
+export function resolveClientIds(options: {
+  appOrigin: string;
+  env: Record<string, string | undefined>;
+}): ClientIds {
+  const configured = options.env.CLIENT_ID_SUFFIX;
+  const loopback = isLoopbackOrigin(options.appOrigin);
+
+  if (configured !== undefined && configured.trim().length === 0 && loopback) {
+    throw new Error(
+      "CLIENT_ID_SUFFIX is set to an empty value, which asks for the deployed client ids, but " +
+        `APP_ORIGIN is ${options.appOrigin}. Registering the deployed ids against a loopback ` +
+        "origin would take the deployment's registration over. Unset the variable to get " +
+        `"${LOCAL_CLIENT_ID_SUFFIX}", or give this environment a suffix of its own.`,
+    );
+  }
+
+  const suffix = configured ?? (loopback ? LOCAL_CLIENT_ID_SUFFIX : "");
+  const launchClient = `${CLIENT_ID_BASE}${suffix}`;
+  const backendClient = `${CLIENT_ID_BASE}-backend${suffix}`;
+
+  /*
+   * Policy ids are derived from their client's rather than suffixed independently, so a client
+   * and the policy that names it cannot drift apart. They do drift silently: a policy linking to
+   * a client id nobody registered is a 403 at request time with nothing to point at.
+   */
+  const ids: ClientIds = {
+    launchClient,
+    backendClient,
+    launchPolicy: `${launchClient}-policy`,
+    backendPolicy: `${backendClient}-policy`,
+  };
+
+  const named: readonly (readonly [keyof ClientIds, string])[] = [
+    ["launchClient", ids.launchClient],
+    ["backendClient", ids.backendClient],
+    ["launchPolicy", ids.launchPolicy],
+    ["backendPolicy", ids.backendPolicy],
+  ];
+  for (const [field, id] of named) {
+    if (!RESOURCE_ID_PATTERN.test(id)) {
+      throw new Error(
+        `CLIENT_ID_SUFFIX "${suffix}" makes the ${field} id "${id}", which is not a legal ` +
+          "Aidbox resource id: letters, digits, hyphens and dots only, opening on a letter or " +
+          "digit, and at most 64 characters.",
+      );
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * Refuse to write a client that another environment already registered.
+ *
+ * The failure this prevents is silent and remote: writing a `Client` at an id some other origin
+ * holds repoints that deployment's `redirect_uri`, and nothing reports it until somebody tries to
+ * sign in there and gets a redirect mismatch. It is the failure that prompted per-environment ids
+ * in the first place, so relying on the ids alone to prevent it would be circular - the ids are
+ * exactly what a mistyped suffix gets wrong.
+ *
+ * The check reads the origin already stored on the resource: `smart.launch_uri` for a launch
+ * client, `jwks_uri` for a backend client registered against a non-loopback origin. A backend
+ * client on a loopback origin carries its key inline and so records no origin at all, which is
+ * why nothing is asserted about it - the launch client is written in the same run and by the same
+ * suffix, so guarding one guards the pair.
+ * @param existing the resource as Aidbox currently holds it, or undefined when there is none
+ * @param resourcePath the path about to be written, for the message
+ * @param appOrigin the origin this run would register
+ * @throws {Error} when the stored resource names a different origin
+ * @example
+ * assertOriginUnclaimed(existing, "/Client/smart-forms-health-links", "http://localhost:3000");
+ */
+export function assertOriginUnclaimed(
+  existing: AidboxResource | undefined,
+  resourcePath: string,
+  appOrigin: string,
+): void {
+  const claimed = claimedOrigin(existing);
+  if (claimed === undefined || claimed === appOrigin) {
+    return;
+  }
+
+  throw new Error(
+    `Refusing to write ${resourcePath}: it is registered to ${claimed}, and this run would ` +
+      `register it to ${appOrigin}. That would take over another environment's client and ` +
+      "break its sign-in. Set CLIENT_ID_SUFFIX to give this environment its own ids, or pass " +
+      "--force to take it over deliberately.",
+  );
+}
+
+/**
+ * The origin a stored client is registered against, if it records one.
+ * @param existing a resource read back from Aidbox
+ * @returns the origin, or undefined when the resource records none
+ */
+function claimedOrigin(
+  existing: AidboxResource | undefined,
+): string | undefined {
+  if (existing === undefined) {
+    return undefined;
+  }
+
+  const smart = existing.smart;
+  const launchUri =
+    typeof smart === "object" && smart !== null
+      ? (smart as Record<string, unknown>).launch_uri
+      : undefined;
+  /*
+   * A launch client records its origin in `smart.launch_uri`; a backend client registered
+   * against a non-loopback origin records it in `jwks_uri`. A backend client on a loopback
+   * origin carries its key inline and records neither, so it claims nothing.
+   */
+  let candidate: string | undefined;
+  if (typeof launchUri === "string") {
+    candidate = launchUri;
+  } else if (typeof existing.jwks_uri === "string") {
+    candidate = existing.jwks_uri;
+  }
+
+  if (candidate === undefined) {
+    return undefined;
+  }
+
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    // A stored value that is not a URL tells us nothing about ownership, so it blocks nothing.
+    return undefined;
+  }
+}
+
+/**
  * Build the confidential launch client registration (contract section 1).
  *
  * `access_token_expiration` carries the grant TTL **in seconds**, not the milliseconds
@@ -313,12 +507,13 @@ function isLoopbackOrigin(appOrigin: string): boolean {
  * @param options.appOrigin origin the app is served from
  * @param options.secret the client secret Aidbox will match on the token request
  * @param options.grantTtlSeconds grant lifetime, carried verbatim in seconds
- * @returns the `Client` body to `PUT` at `/Client/smart-forms-health-links`
+ * @returns the `Client` body to `PUT` at `/Client/<launch client id>`
  * @example
  * buildLaunchClient({ appOrigin, secret, grantTtlSeconds: 3600 });
  */
 export function buildLaunchClient(options: {
   appOrigin: string;
+  clientId: string;
   secret: string;
   grantTtlSeconds: number;
 }): AidboxResource {
@@ -326,7 +521,7 @@ export function buildLaunchClient(options: {
 
   return {
     resourceType: "Client",
-    id: LAUNCH_CLIENT_ID,
+    id: options.clientId,
     type: "smart-app",
     grant_types: ["code"],
     secret: options.secret,
@@ -356,12 +551,13 @@ export function buildLaunchClient(options: {
  * @param options.appOrigin origin the app is served from
  * @param options.grantTtlSeconds grant lifetime, carried verbatim in seconds
  * @param options.publicJwk the RS384 verification key
- * @returns the `Client` body to `PUT` at `/Client/smart-forms-health-links-backend`
+ * @returns the `Client` body to `PUT` at `/Client/<backend client id>`
  * @example
  * buildBackendClient({ appOrigin, grantTtlSeconds: 3600, publicJwk });
  */
 export function buildBackendClient(options: {
   appOrigin: string;
+  clientId: string;
   grantTtlSeconds: number;
   publicJwk: JWK;
 }): AidboxResource {
@@ -372,7 +568,7 @@ export function buildBackendClient(options: {
 
   return {
     resourceType: "Client",
-    id: BACKEND_CLIENT_ID,
+    id: options.clientId,
     type: "bulk-api-client",
     grant_types: ["client_credentials"],
     ...keyLocation,
@@ -403,23 +599,26 @@ export function buildBackendClient(options: {
  * `jwt.sub` is the user identity in a v2 token - Aidbox sets it to the `User` id - so it says
  * the same thing the `user` key was meant to say, and `jwt.scope` additionally requires the
  * token to have been issued through an authorisation flow that granted scopes.
- * @returns the `AccessPolicy` body to `PUT` at `/AccessPolicy/smart-forms-health-links-policy`
+ * @returns the `AccessPolicy` body to `PUT` at `/AccessPolicy/<launch policy id>`
  * @example
  * buildLaunchPolicy();
  */
-export function buildLaunchPolicy(): AidboxResource {
+export function buildLaunchPolicy(options: {
+  clientId: string;
+  policyId: string;
+}): AidboxResource {
   return {
     resourceType: "AccessPolicy",
-    id: LAUNCH_POLICY_ID,
+    id: options.policyId,
     description:
       "FHIR API access for a signed-in user of the smart-forms-health-links launch client.",
     engine: "matcho",
     matcho: {
-      client: { id: LAUNCH_CLIENT_ID },
+      client: { id: options.clientId },
       jwt: { sub: "present?", scope: "present?" },
       uri: "#^/fhir(/.*)?$",
     },
-    link: [{ resourceType: "Client", id: LAUNCH_CLIENT_ID }],
+    link: [{ resourceType: "Client", id: options.clientId }],
   };
 }
 
@@ -440,42 +639,45 @@ export function buildLaunchPolicy(): AidboxResource {
  * send). The provenance is not an optional extra - FR-021 requires it - so both creates are
  * part of what a grant has to be able to do.
  * @returns the `AccessPolicy` body to `PUT` at
- *   `/AccessPolicy/smart-forms-health-links-backend-policy`
+ *   `/AccessPolicy/<backend policy id>`
  * @example
  * buildBackendPolicy();
  */
-export function buildBackendPolicy(): AidboxResource {
+export function buildBackendPolicy(options: {
+  clientId: string;
+  policyId: string;
+}): AidboxResource {
   return {
     resourceType: "AccessPolicy",
-    id: BACKEND_POLICY_ID,
+    id: options.policyId,
     description:
       "Transaction POST and Task read/update for the smart-forms-health-links backend client.",
     engine: "matcho",
     matcho: {
       "$one-of": [
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: options.clientId },
           "request-method": "post",
           uri: "/fhir",
         },
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: options.clientId },
           "request-method": "post",
           uri: "/fhir/QuestionnaireResponse",
         },
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: options.clientId },
           "request-method": "post",
           uri: "/fhir/Provenance",
         },
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: options.clientId },
           "request-method": { $enum: ["get", "put"] },
           uri: "#^/fhir/Task/[^/]+$",
         },
       ],
     },
-    link: [{ resourceType: "Client", id: BACKEND_CLIENT_ID }],
+    link: [{ resourceType: "Client", id: options.clientId }],
   };
 }
 
@@ -592,34 +794,49 @@ export function planSetup(options: SetupOptions): PlannedResource[] {
   return [
     {
       label: "launch client",
-      path: `/Client/${LAUNCH_CLIENT_ID}`,
+      path: `/Client/${options.clientIds.launchClient}`,
       body: buildLaunchClient({
         appOrigin: options.appOrigin,
+        clientId: options.clientIds.launchClient,
         secret: options.launchClientSecret,
         grantTtlSeconds: options.grantTtlSeconds,
       }),
       opaqueFields: ["secret"],
+      /*
+       * The one entry that is origin-checked before it is written. A launch client records the
+       * origin it belongs to, so it is the resource that can say "another environment holds
+       * this" - see `assertOriginUnclaimed`.
+       */
+      expectedOrigin: options.appOrigin,
     },
     {
       label: "backend services client",
-      path: `/Client/${BACKEND_CLIENT_ID}`,
+      path: `/Client/${options.clientIds.backendClient}`,
       body: buildBackendClient({
         appOrigin: options.appOrigin,
+        clientId: options.clientIds.backendClient,
         grantTtlSeconds: options.grantTtlSeconds,
         publicJwk: options.backendPublicJwk,
       }),
       opaqueFields: [],
+      expectedOrigin: options.appOrigin,
     },
     {
       label: "launch client policy",
-      path: `/AccessPolicy/${LAUNCH_POLICY_ID}`,
-      body: buildLaunchPolicy(),
+      path: `/AccessPolicy/${options.clientIds.launchPolicy}`,
+      body: buildLaunchPolicy({
+        clientId: options.clientIds.launchClient,
+        policyId: options.clientIds.launchPolicy,
+      }),
       opaqueFields: [],
     },
     {
       label: "backend client policy",
-      path: `/AccessPolicy/${BACKEND_POLICY_ID}`,
-      body: buildBackendPolicy(),
+      path: `/AccessPolicy/${options.clientIds.backendPolicy}`,
+      body: buildBackendPolicy({
+        clientId: options.clientIds.backendClient,
+        policyId: options.clientIds.backendPolicy,
+      }),
       opaqueFields: [],
     },
     ...questionnaires,
@@ -816,6 +1033,16 @@ export async function applyToServer(
 
   for (const planned of options.planned) {
     const existing = await readExisting(options, planned.path);
+
+    /*
+     * Before anything is written, and before the up-to-date shortcut: a resource that belongs to
+     * another environment must stop the run whether or not this run would have changed it.
+     * `--force` is the deliberate override, which is also what a genuine re-registration uses.
+     */
+    if (!options.force && planned.expectedOrigin !== undefined) {
+      assertOriginUnclaimed(existing, planned.path, planned.expectedOrigin);
+    }
+
     if (
       !options.force &&
       isUpToDate(existing, planned.body, planned.opaqueFields)
@@ -1114,8 +1341,11 @@ export async function runSetup(
     "../fixtures/questionnaires",
   );
 
+  const clientIds = resolveClientIds({ appOrigin, env });
+
   const planned = planSetup({
     appOrigin,
+    clientIds,
     grantTtlSeconds,
     launchClientSecret: credentials.launchClientSecret,
     backendPublicJwk: credentials.publicJwk,
@@ -1131,6 +1361,8 @@ export async function runSetup(
   // reach Aidbox, and a secret cannot be read back to prove that it did. So generating one
   // forces the writes. A run given both credentials in the environment compares and skips.
   log(`Applying ${String(planned.length)} resources to ${baseUrl}`);
+  log(`  origin  ${appOrigin}`);
+  log(`  clients ${clientIds.launchClient}, ${clientIds.backendClient}`);
   const outcomes = await applyToServer({
     baseUrl,
     authorization,

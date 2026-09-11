@@ -22,13 +22,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  BACKEND_CLIENT_ID,
-  BACKEND_POLICY_ID,
+  CLIENT_ID_BASE,
   DEMO_PATIENT_ID,
   DEMO_PRACTITIONER_ID,
-  LAUNCH_CLIENT_ID,
-  LAUNCH_POLICY_ID,
+  LOCAL_CLIENT_ID_SUFFIX,
   applyToServer,
+  assertOriginUnclaimed,
   buildBackendClient,
   buildBackendPolicy,
   buildDemoPatient,
@@ -38,6 +37,7 @@ import {
   buildLaunchPolicy,
   checkCors,
   describeCorsFinding,
+  resolveClientIds,
   formatOperatorSecrets,
   generateBackendKeyPair,
   generateClientSecret,
@@ -80,12 +80,29 @@ const QUESTIONNAIRES: Questionnaire[] = [
 ];
 
 /**
+ * The four ids a deployed (non-loopback) origin registers under.
+ *
+ * Resolved rather than written out, so the planning tests exercise the same derivation the
+ * script uses. The literal values those ids must have are pinned separately, in "the ids one
+ * environment registers under" - deriving expectations *and* assertions from the same function
+ * would pass no matter what the ids became.
+ */
+const IDS = resolveClientIds({ appOrigin: APP_ORIGIN, env: {} });
+
+/** The same, for a developer's machine. */
+const LOCAL_IDS = resolveClientIds({
+  appOrigin: "http://localhost:3000",
+  env: {},
+});
+
+/**
  * Build the options every planning test shares.
  * @returns setup options pointing at a public app origin
  */
 function setupOptions() {
   return {
     appOrigin: APP_ORIGIN,
+    clientIds: IDS,
     grantTtlSeconds: GRANT_TTL_SECONDS,
     launchClientSecret: SECRET,
     backendPublicJwk: PUBLIC_JWK,
@@ -125,19 +142,325 @@ function preflight(headers: Record<string, string>): Response {
   return new Response(null, { status: 200, headers });
 }
 
+describe("the ids one environment registers under", () => {
+  /*
+   * The literal strings, asserted once and on purpose.
+   *
+   * Every other test here derives its expectations from `resolveClientIds`, which means they
+   * would pass no matter what the ids became. These four values are the ones already registered
+   * on the shared Aidbox instance for the deployed demo, and a refactor that changed them would
+   * silently orphan that registration - the deployment would keep pointing at ids nothing writes
+   * any more, and its sign-in would break with no failing test to say why. This is the pin.
+   */
+  it("gives a deployed origin exactly the ids already registered for it", () => {
+    expect(
+      resolveClientIds({ appOrigin: "https://links.example.org", env: {} }),
+    ).toEqual({
+      launchClient: "smart-forms-health-links",
+      backendClient: "smart-forms-health-links-backend",
+      launchPolicy: "smart-forms-health-links-policy",
+      backendPolicy: "smart-forms-health-links-backend-policy",
+    });
+  });
+
+  /*
+   * The default is what actually protects the deployment. Requiring a variable to be set for
+   * safety gets it backwards: the person who forgets is on a laptop, and the registration they
+   * would take over is the deployed one. So a loopback origin has to be safe with an empty
+   * environment.
+   */
+  it("gives a loopback origin its own ids with nothing configured", () => {
+    expect(
+      resolveClientIds({ appOrigin: "http://localhost:3000", env: {} }),
+    ).toEqual({
+      launchClient: "smart-forms-health-links-local",
+      backendClient: "smart-forms-health-links-backend-local",
+      launchPolicy: "smart-forms-health-links-local-policy",
+      backendPolicy: "smart-forms-health-links-backend-local-policy",
+    });
+  });
+
+  it.each(["127.0.0.1", "[::1]"])("treats %s as loopback too", (host) => {
+    const ids = resolveClientIds({
+      appOrigin: `http://${host}:3000`,
+      env: {},
+    });
+
+    expect(ids.launchClient).toBe(`${CLIENT_ID_BASE}${LOCAL_CLIENT_ID_SUFFIX}`);
+  });
+
+  it("uses a configured suffix verbatim, on either kind of origin", () => {
+    const ids = resolveClientIds({
+      appOrigin: "https://staging.example.org",
+      env: { CLIENT_ID_SUFFIX: "-staging" },
+    });
+
+    expect(ids).toEqual({
+      launchClient: "smart-forms-health-links-staging",
+      backendClient: "smart-forms-health-links-backend-staging",
+      launchPolicy: "smart-forms-health-links-staging-policy",
+      backendPolicy: "smart-forms-health-links-backend-staging-policy",
+    });
+  });
+
+  /*
+   * `.env.deploy` is sourced with `set -a; . ./.env.deploy` into the current shell, so a shell
+   * that earlier sourced `.env` still carries `-local`. Clearing it there is what stops the
+   * leak, and that only works if an explicit empty value is honoured rather than treated as
+   * unset.
+   */
+  it("honours an explicitly empty suffix on a deployed origin", () => {
+    const ids = resolveClientIds({
+      appOrigin: "https://links.example.org",
+      env: { CLIENT_ID_SUFFIX: "" },
+    });
+
+    expect(ids.launchClient).toBe(CLIENT_ID_BASE);
+  });
+
+  // ...but asking for the deployed identity from a developer's machine is a contradiction.
+  it("refuses an explicitly empty suffix on a loopback origin", () => {
+    expect(() =>
+      resolveClientIds({
+        appOrigin: "http://localhost:3000",
+        env: { CLIENT_ID_SUFFIX: "" },
+      }),
+    ).toThrow(/empty value/i);
+  });
+
+  // The resolved ids are validated, not the suffix, so a bad base is caught by the same check.
+  it.each([" spaces ", "-has/slash", "-oops!"])(
+    "rejects the suffix %j, which would make an illegal resource id",
+    (suffix) => {
+      expect(() =>
+        resolveClientIds({
+          appOrigin: "https://links.example.org",
+          env: { CLIENT_ID_SUFFIX: suffix },
+        }),
+      ).toThrow(/legal Aidbox resource id/);
+    },
+  );
+
+  it("rejects a suffix that pushes an id past 64 characters", () => {
+    expect(() =>
+      resolveClientIds({
+        appOrigin: "https://links.example.org",
+        env: { CLIENT_ID_SUFFIX: `-${"x".repeat(60)}` },
+      }),
+    ).toThrow(/legal Aidbox resource id/);
+  });
+
+  // A policy that names a client id nobody registered is a 403 with nothing to point at, so the
+  // two are derived together rather than suffixed independently.
+  it("derives each policy id from its own client id", () => {
+    const ids = resolveClientIds({
+      appOrigin: "http://localhost:3000",
+      env: {},
+    });
+
+    expect(ids.launchPolicy).toBe(`${ids.launchClient}-policy`);
+    expect(ids.backendPolicy).toBe(`${ids.backendClient}-policy`);
+  });
+});
+
+describe("what a deployed run would write", () => {
+  /*
+   * The deployed demo is already registered on the shared instance, and this refactor must be a
+   * no-op for it. Per-environment ids protect the *paths*, but nothing protects the *bodies*: a
+   * changed policy description or a reordered field would make the stored copy compare as stale
+   * and be rewritten from whichever machine ran setup next. AccessPolicies carry no origin, so
+   * the ownership guard cannot catch that.
+   *
+   * So the four bodies are pinned whole. If a future change to a builder alters what a deployed
+   * run would send, this fails and says so before anything reaches the server.
+   */
+  const deployed = planSetup({
+    ...setupOptions(),
+    appOrigin: "https://formlinks.example.net",
+    clientIds: resolveClientIds({
+      appOrigin: "https://formlinks.example.net",
+      env: {},
+    }),
+  });
+
+  /**
+   * One planned resource, by path.
+   * @param path the path to find
+   * @returns the planned resource
+   */
+  function at(path: string) {
+    const found = deployed.find((resource) => resource.path === path);
+    if (!found) {
+      throw new Error(
+        `No planned resource at ${path}. Planned: ${deployed.map((r) => r.path).join(", ")}`,
+      );
+    }
+    return found;
+  }
+
+  it("writes the launch client at the unsuffixed path", () => {
+    expect(at("/Client/smart-forms-health-links").body).toMatchObject({
+      id: "smart-forms-health-links",
+      smart: { launch_uri: "https://formlinks.example.net/launch" },
+    });
+  });
+
+  it("writes the backend client at the unsuffixed path", () => {
+    expect(at("/Client/smart-forms-health-links-backend").body).toMatchObject({
+      id: "smart-forms-health-links-backend",
+      jwks_uri: "https://formlinks.example.net/.well-known/jwks.json",
+    });
+  });
+
+  // The descriptions are pinned because they are the fields most likely to be "improved" into
+  // a body change that silently rewrites a deployed policy.
+  it("leaves the launch policy exactly as it stands today", () => {
+    expect(at("/AccessPolicy/smart-forms-health-links-policy").body).toEqual({
+      resourceType: "AccessPolicy",
+      id: "smart-forms-health-links-policy",
+      description:
+        "FHIR API access for a signed-in user of the smart-forms-health-links launch client.",
+      engine: "matcho",
+      matcho: {
+        client: { id: "smart-forms-health-links" },
+        jwt: { sub: "present?", scope: "present?" },
+        uri: "#^/fhir(/.*)?$",
+      },
+      link: [{ resourceType: "Client", id: "smart-forms-health-links" }],
+    });
+  });
+
+  it("leaves the backend policy's description and links exactly as they stand today", () => {
+    const body = at(
+      "/AccessPolicy/smart-forms-health-links-backend-policy",
+    ).body;
+
+    expect(body.description).toBe(
+      "Transaction POST and Task read/update for the smart-forms-health-links backend client.",
+    );
+    expect(body.link).toEqual([
+      { resourceType: "Client", id: "smart-forms-health-links-backend" },
+    ]);
+  });
+
+  // Only the two clients are origin-checked; the policies and demo data record no origin.
+  it("origin-checks the two clients and nothing else", () => {
+    expect(
+      deployed
+        .filter((resource) => resource.expectedOrigin !== undefined)
+        .map((resource) => resource.path),
+    ).toEqual([
+      "/Client/smart-forms-health-links",
+      "/Client/smart-forms-health-links-backend",
+    ]);
+  });
+});
+
+describe("refusing another environment's client", () => {
+  /** A stored launch client, as Aidbox holds it for the deployed demo. */
+  const DEPLOYED = {
+    resourceType: "Client",
+    id: "smart-forms-health-links",
+    smart: { launch_uri: "https://formlinks.example.net/launch" },
+  };
+
+  /*
+   * The failure this prevents is silent and remote: the run succeeds, and the *other*
+   * deployment's sign-in breaks. Nothing reports it until somebody tries to use it.
+   */
+  it("refuses to write over a client registered to another origin", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        DEPLOYED,
+        "/Client/smart-forms-health-links",
+        "http://localhost:3000",
+      ),
+    ).toThrow(/registered to https:\/\/formlinks\.example\.net/);
+  });
+
+  // The message has to name both origins, or it says nothing a person can act on.
+  it("names both origins and the way out", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        DEPLOYED,
+        "/Client/smart-forms-health-links",
+        "http://localhost:3000",
+      ),
+    ).toThrow(/CLIENT_ID_SUFFIX/);
+  });
+
+  it("allows a write to the client this origin already owns", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        DEPLOYED,
+        "/Client/smart-forms-health-links",
+        "https://formlinks.example.net",
+      ),
+    ).not.toThrow();
+  });
+
+  it("allows a create, where there is nothing to take over", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        undefined,
+        "/Client/smart-forms-health-links-local",
+        "http://localhost:3000",
+      ),
+    ).not.toThrow();
+  });
+
+  // A backend client on a loopback origin carries its key inline and records no origin at all.
+  it("allows a stored resource that records no origin", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        { resourceType: "Client", id: "x", jwks: [] },
+        "/Client/x",
+        "http://localhost:3000",
+      ),
+    ).not.toThrow();
+  });
+
+  // A non-loopback backend client records its origin in `jwks_uri` instead of `smart`.
+  it("reads the origin from jwks_uri when there is no launch_uri", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        {
+          resourceType: "Client",
+          id: "x",
+          jwks_uri: "https://formlinks.example.net/.well-known/jwks.json",
+        },
+        "/Client/x",
+        "http://localhost:3000",
+      ),
+    ).toThrow(/formlinks\.example\.net/);
+  });
+
+  // A stored value that is not a URL tells us nothing about ownership, so it blocks nothing.
+  it("does not block on an unparseable stored origin", () => {
+    expect(() =>
+      assertOriginUnclaimed(
+        { resourceType: "Client", id: "x", smart: { launch_uri: "not a url" } },
+        "/Client/x",
+        "http://localhost:3000",
+      ),
+    ).not.toThrow();
+  });
+});
+
 describe("launch client body", () => {
   // Contract section 1. Every field is pinned: the redirect and launch URIs are what Aidbox
   // matches the app against, and the auth block is what makes the client confidential.
   it("matches the contract, with the TTL carried in seconds", () => {
     const client = buildLaunchClient({
       appOrigin: APP_ORIGIN,
+      clientId: IDS.launchClient,
       secret: SECRET,
       grantTtlSeconds: GRANT_TTL_SECONDS,
     });
 
     expect(client).toEqual({
       resourceType: "Client",
-      id: LAUNCH_CLIENT_ID,
+      id: IDS.launchClient,
       type: "smart-app",
       grant_types: ["code"],
       secret: SECRET,
@@ -170,6 +493,7 @@ describe("launch client body", () => {
   it("mirrors a non-default grant TTL", () => {
     const client = buildLaunchClient({
       appOrigin: APP_ORIGIN,
+      clientId: IDS.launchClient,
       secret: SECRET,
       grantTtlSeconds: 60,
     });
@@ -186,6 +510,7 @@ describe("launch client body", () => {
   it("tolerates a trailing slash on the app origin", () => {
     const client = buildLaunchClient({
       appOrigin: `${APP_ORIGIN}/`,
+      clientId: IDS.launchClient,
       secret: SECRET,
       grantTtlSeconds: GRANT_TTL_SECONDS,
     });
@@ -200,13 +525,14 @@ describe("backend services client body", () => {
   it("matches the contract for a publicly reachable app origin", () => {
     const client = buildBackendClient({
       appOrigin: APP_ORIGIN,
+      clientId: IDS.backendClient,
       grantTtlSeconds: GRANT_TTL_SECONDS,
       publicJwk: PUBLIC_JWK,
     });
 
     expect(client).toEqual({
       resourceType: "Client",
-      id: BACKEND_CLIENT_ID,
+      id: IDS.backendClient,
       type: "bulk-api-client",
       grant_types: ["client_credentials"],
       jwks_uri: `${APP_ORIGIN}/.well-known/jwks.json`,
@@ -235,6 +561,7 @@ describe("backend services client body", () => {
   it("inlines the public key when the app origin is loopback", () => {
     const client = buildBackendClient({
       appOrigin: "http://localhost:3000",
+      clientId: LOCAL_IDS.backendClient,
       grantTtlSeconds: GRANT_TTL_SECONDS,
       publicJwk: PUBLIC_JWK,
     });
@@ -248,6 +575,7 @@ describe("backend services client body", () => {
   it("never carries private key material", () => {
     const client = buildBackendClient({
       appOrigin: "http://127.0.0.1:3000",
+      clientId: LOCAL_IDS.backendClient,
       grantTtlSeconds: GRANT_TTL_SECONDS,
       publicJwk: { ...PUBLIC_JWK, d: "private" },
     });
@@ -260,15 +588,18 @@ describe("access policies", () => {
   // Contract section 3. `engine: allow` is prohibited by the research decision, and the
   // policy must be linked so it is only evaluated for its own client.
   it("scopes the launch policy to a signed-in user of the launch client", () => {
-    const policy = buildLaunchPolicy();
+    const policy = buildLaunchPolicy({
+      clientId: IDS.launchClient,
+      policyId: IDS.launchPolicy,
+    });
 
-    expect(policy.id).toBe(LAUNCH_POLICY_ID);
+    expect(policy.id).toBe(IDS.launchPolicy);
     expect(policy.engine).toBe("matcho");
     expect(policy.link).toEqual([
-      { resourceType: "Client", id: LAUNCH_CLIENT_ID },
+      { resourceType: "Client", id: IDS.launchClient },
     ]);
     expect(policy.matcho).toEqual({
-      client: { id: LAUNCH_CLIENT_ID },
+      client: { id: IDS.launchClient },
       jwt: { sub: "present?", scope: "present?" },
       uri: "#^/fhir(/.*)?$",
     });
@@ -280,7 +611,10 @@ describe("access policies", () => {
   // and the whole FHIR API stays forbidden. The session assertion has to be made on the
   // claims instead, which is what `jwt.sub` does.
   it("asserts the signed-in user through the token claims, never through `user`", () => {
-    const matcho = buildLaunchPolicy().matcho as Record<string, unknown>;
+    const matcho = buildLaunchPolicy({
+      clientId: IDS.launchClient,
+      policyId: IDS.launchPolicy,
+    }).matcho as Record<string, unknown>;
 
     expect(matcho.user).toBeUndefined();
     expect(matcho.jwt).toEqual({ sub: "present?", scope: "present?" });
@@ -297,32 +631,35 @@ describe("access policies", () => {
    * provenance rejects every send.
    */
   it("limits the backend policy to the transaction, its two creates and Task instances", () => {
-    const policy = buildBackendPolicy();
+    const policy = buildBackendPolicy({
+      clientId: IDS.backendClient,
+      policyId: IDS.backendPolicy,
+    });
 
-    expect(policy.id).toBe(BACKEND_POLICY_ID);
+    expect(policy.id).toBe(IDS.backendPolicy);
     expect(policy.engine).toBe("matcho");
     expect(policy.link).toEqual([
-      { resourceType: "Client", id: BACKEND_CLIENT_ID },
+      { resourceType: "Client", id: IDS.backendClient },
     ]);
     expect(policy.matcho).toEqual({
       "$one-of": [
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: IDS.backendClient },
           "request-method": "post",
           uri: "/fhir",
         },
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: IDS.backendClient },
           "request-method": "post",
           uri: "/fhir/QuestionnaireResponse",
         },
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: IDS.backendClient },
           "request-method": "post",
           uri: "/fhir/Provenance",
         },
         {
-          client: { id: BACKEND_CLIENT_ID },
+          client: { id: IDS.backendClient },
           "request-method": { $enum: ["get", "put"] },
           uri: "#^/fhir/Task/[^/]+$",
         },
@@ -333,7 +670,12 @@ describe("access policies", () => {
   // Anything the policy does not name must stay refused: a Patient read, an Observation
   // write and a Task delete are all outside it (proven against the live instance).
   it("names no rule that would admit a Patient, an Observation or a delete", () => {
-    const alternatives = JSON.stringify(buildBackendPolicy().matcho);
+    const alternatives = JSON.stringify(
+      buildBackendPolicy({
+        clientId: IDS.backendClient,
+        policyId: IDS.backendPolicy,
+      }).matcho,
+    );
 
     expect(alternatives).not.toContain("Patient");
     expect(alternatives).not.toContain("Observation");
@@ -341,8 +683,18 @@ describe("access policies", () => {
   });
 
   it("never uses the allow engine", () => {
-    expect(buildLaunchPolicy().engine).not.toBe("allow");
-    expect(buildBackendPolicy().engine).not.toBe("allow");
+    expect(
+      buildLaunchPolicy({
+        clientId: IDS.launchClient,
+        policyId: IDS.launchPolicy,
+      }).engine,
+    ).not.toBe("allow");
+    expect(
+      buildBackendPolicy({
+        clientId: IDS.backendClient,
+        policyId: IDS.backendPolicy,
+      }).engine,
+    ).not.toBe("allow");
   });
 });
 
@@ -403,10 +755,10 @@ describe("setup plan", () => {
     const paths = planned.map((entry) => entry.path);
 
     expect(paths).toEqual([
-      `/Client/${LAUNCH_CLIENT_ID}`,
-      `/Client/${BACKEND_CLIENT_ID}`,
-      `/AccessPolicy/${LAUNCH_POLICY_ID}`,
-      `/AccessPolicy/${BACKEND_POLICY_ID}`,
+      `/Client/${IDS.launchClient}`,
+      `/Client/${IDS.backendClient}`,
+      `/AccessPolicy/${IDS.launchPolicy}`,
+      `/AccessPolicy/${IDS.backendPolicy}`,
       "/fhir/Questionnaire/AdultSepsisScreening",
       "/fhir/Questionnaire/GPChronicConditionManagementPlan",
       `/fhir/Patient/${DEMO_PATIENT_ID}`,
@@ -430,11 +782,11 @@ describe("setup plan", () => {
     const planned = planSetup(setupOptions());
     const byPath = new Map(planned.map((entry) => [entry.path, entry]));
 
-    expect(byPath.get(`/Client/${LAUNCH_CLIENT_ID}`)?.opaqueFields).toEqual([
+    expect(byPath.get(`/Client/${IDS.launchClient}`)?.opaqueFields).toEqual([
       "secret",
     ]);
     expect(byPath.get("/User/e2e-demo")?.opaqueFields).toEqual(["password"]);
-    expect(byPath.get(`/Client/${BACKEND_CLIENT_ID}`)?.opaqueFields).toEqual(
+    expect(byPath.get(`/Client/${IDS.backendClient}`)?.opaqueFields).toEqual(
       [],
     );
   });
@@ -528,6 +880,25 @@ describe("change detection", () => {
   });
 });
 
+/**
+ * A fetch returning the deployed launch client for every read.
+ *
+ * A fresh `Response` per call: a body can only be read once, and the forced path reads two.
+ * @returns the mocked fetch
+ */
+function deployedClientFetch() {
+  return vi.fn<typeof fetch>().mockImplementation(() =>
+    Promise.resolve(
+      jsonResponse(200, {
+        resourceType: "Client",
+        id: "smart-forms-health-links",
+        smart: { launch_uri: "https://formlinks.example.net/launch" },
+        meta: { versionId: "153" },
+      }),
+    ),
+  );
+}
+
 describe("applying the plan", () => {
   const planned: PlannedResource[] = [
     {
@@ -537,6 +908,63 @@ describe("applying the plan", () => {
       opaqueFields: ["secret"],
     },
   ];
+
+  /*
+   * The guard, in the path that actually writes. Asserting on `assertOriginUnclaimed` alone
+   * would not prove it is wired in, and being wired in is the whole point: an unguarded
+   * `applyToServer` fails silently and remotely.
+   */
+  describe("when the stored client belongs to another origin", () => {
+    const claimed: PlannedResource[] = [
+      {
+        label: "launch client",
+        path: "/Client/smart-forms-health-links",
+        body: {
+          resourceType: "Client",
+          id: "smart-forms-health-links",
+          smart: { launch_uri: "http://localhost:3000/launch" },
+        },
+        opaqueFields: [],
+        expectedOrigin: "http://localhost:3000",
+      },
+    ];
+
+    it("refuses, and writes nothing at all", async () => {
+      const fetchImpl = deployedClientFetch();
+
+      await expect(
+        applyToServer({
+          baseUrl: "https://aidbox.example",
+          authorization: "Basic redacted",
+          planned: claimed,
+          fetchImpl,
+          log: () => {},
+        }),
+      ).rejects.toThrow(/registered to https:\/\/formlinks\.example\.net/);
+
+      // The read happened; nothing else did.
+      expect(
+        fetchImpl.mock.calls.map((call) => call[1]?.method ?? "GET"),
+      ).toEqual(["GET"]);
+    });
+
+    // `--force` is the deliberate override, and is also how a genuine re-registration works.
+    it("proceeds under --force", async () => {
+      const fetchImpl = deployedClientFetch();
+
+      const outcomes = await applyToServer({
+        baseUrl: "https://aidbox.example",
+        authorization: "Basic redacted",
+        planned: claimed,
+        fetchImpl,
+        log: () => {},
+        force: true,
+      });
+
+      expect(outcomes[0]?.action).toBe("updated");
+      expect(fetchImpl.mock.calls[1]?.[1]?.method).toBe("PUT");
+    });
+  });
 
   // First run: nothing is there, so the resource is created and the new version recorded.
   it("creates a resource that does not exist", async () => {
@@ -749,6 +1177,7 @@ describe("secret hygiene", () => {
       authorization: "Basic redacted",
       planned: planSetup({
         appOrigin: APP_ORIGIN,
+        clientIds: IDS,
         grantTtlSeconds: GRANT_TTL_SECONDS,
         launchClientSecret: secret,
         backendPublicJwk: keys.publicJwk,

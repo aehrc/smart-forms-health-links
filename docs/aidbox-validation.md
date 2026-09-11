@@ -140,13 +140,13 @@ set -a; . ./.env; set +a       # or: op run --env-file .env --
 npm run setup:aidbox
 ```
 
-`ops/aidboxSetup.ts` writes, by `PUT` on a fixed id, so it is idempotent - safe to re-run, and the
-right thing to run after wiping the instance. It registers:
+`ops/aidboxSetup.ts` writes by `PUT`, only after reading and comparing, so it is idempotent - safe
+to re-run, and the right thing to run after wiping the instance. It registers:
 
-- the confidential launch client `smart-forms-health-links` (authorization code, PKCE, secret
-  required, `launch/patient` in scope);
-- the Backend Services client `smart-forms-health-links-backend` (signed client assertion against
-  the app's own JWKS, scoped to `system/QuestionnaireResponse.c`, `system/Task.r`,
+- the confidential launch client `smart-forms-health-links<suffix>` (authorization code, PKCE,
+  secret required, `launch/patient` in scope);
+- the Backend Services client `smart-forms-health-links-backend<suffix>` (signed client assertion
+  against the app's own JWKS, scoped to `system/QuestionnaireResponse.c`, `system/Task.r`,
   `system/Task.u`);
 - an `AccessPolicy` for each, as narrow as Aidbox's `matcho` engine allows;
 - the demo Questionnaires `AdultSepsisScreening` and `GPChronicConditionManagementPlan`, read from
@@ -177,9 +177,36 @@ npm run build
 op run --env-file .env -- npx tsx server/index.ts
 ```
 
-Either way the app is at `http://localhost:3000`, which is not negotiable for the demo: it is the
-origin the launch client's `redirect_uri` and `launch_uri` are registered against. Pointing the app
-somewhere else means re-running setup with a different `APP_ORIGIN`.
+Either way the app is at `http://localhost:3000`. That origin is what the _local_ launch client's
+`redirect_uri` and `launch_uri` are registered against, so pointing the app somewhere else means
+registering that origin too.
+
+### One instance, two environments
+
+A `Client` holds exactly one `redirect_uri` and one key location, so a local checkout and the
+deployed demo cannot share a registration - whichever ran setup last would own it, and everybody
+else's sign-in would fail at the authorize step with nothing but a redirect mismatch to go on. Each
+environment therefore registers its own pair, distinguished by a suffix on the id:
+
+| Environment   | `APP_ORIGIN`                    | Launch client                    | Backend client                           |
+| ------------- | ------------------------------- | -------------------------------- | ---------------------------------------- |
+| local         | `http://localhost:3000`         | `smart-forms-health-links-local` | `smart-forms-health-links-backend-local` |
+| deployed demo | `https://formlinks.fhirapp.net` | `smart-forms-health-links`       | `smart-forms-health-links-backend`       |
+
+Each policy is named after its client, so `…-local` gets `smart-forms-health-links-local-policy`
+and so on. Everything else on the instance is shared and written identically by either run: the two
+demo Questionnaires, `pt-demo`, `prac-demo` and the `e2e-demo` user.
+
+**You do not have to configure this.** `CLIENT_ID_SUFFIX` defaults to `-local` for a loopback
+`APP_ORIGIN` and to nothing otherwise, because the person who forgets is the one on a laptop and
+the registration they would take over is the deployed one. Set the variable only for a third
+environment.
+
+Two things stop an accidental takeover. Setting `CLIENT_ID_SUFFIX` to an empty value asks for the
+deployed ids and is refused outright on a loopback origin. And setup reads each client before
+writing it: if the stored copy names a different origin, the run stops and names both, rather than
+repointing somebody else's deployment. `--force` overrides that, which is also how a deliberate
+re-registration works.
 
 Check it is up and knows the issuer:
 
@@ -386,7 +413,7 @@ op run --env-file .env -- sh -c '
     -d "{\"method\": \"aidbox.smart/get-launch-uri\",
          \"params\": {\"user\": \"$AIDBOX_E2E_USER_ID\",
                       \"iss\": \"$AIDBOX_BASE_URL/fhir\",
-                      \"client\": \"smart-forms-health-links\",
+                      \"client\": \"smart-forms-health-links-local\",
                       \"ctx\": {\"patient\": \"pt-demo\"}}}" \
   | jq -r .result.uri'
 ```
@@ -477,7 +504,7 @@ deregister the Backend Services client, so the manifest can no longer mint a gra
 ```bash
 op run --env-file .env -- sh -c '
   curl -s -X DELETE -u "$AIDBOX_CLIENT_ID:$AIDBOX_CLIENT_SECRET" \
-    "$AIDBOX_BASE_URL/Client/smart-forms-health-links-backend" -o /dev/null -w "%{http_code}\n"'
+    "$AIDBOX_BASE_URL/Client/smart-forms-health-links-backend-local" -o /dev/null -w "%{http_code}\n"'
 ```
 
 Mint a link and open it.
@@ -496,7 +523,7 @@ should answer `200`:
 ```bash
 op run --env-file .env -- sh -c '
   curl -s -o /dev/null -w "%{http_code}\n" -u "$AIDBOX_CLIENT_ID:$AIDBOX_CLIENT_SECRET" \
-    "$AIDBOX_BASE_URL/Client/smart-forms-health-links-backend"'
+    "$AIDBOX_BASE_URL/Client/smart-forms-health-links-backend-local"'
 ```
 
 ## Scenario 6 - an unregistered issuer
