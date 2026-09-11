@@ -44,6 +44,11 @@
  * only for a send that is genuinely in flight - a *replayed* send answers `200` from what was
  * stored the first time, because a filler has no honest copy for being told its delivered
  * answers are a conflict.
+ *
+ * What the filler is told never includes why the *practice* refused, because it can act on none of
+ * it. The operator is told, in a log line carrying the status and the practice's own issue codes -
+ * a fixed FHIR vocabulary, never its prose (FR-018). Without that, one failed forward looks like
+ * every other, which is how a trailing slash on the upstream URL went unexplained.
  * @author John Grimes
  */
 
@@ -68,8 +73,17 @@ import type { IssuerRegistration } from "../config";
 import type { AppDatabase } from "../db";
 import type { Invitation } from "./invitationStore";
 import type { MintOptions } from "../smart/backendServices";
-import type { FastifyPluginCallback, FastifyReply } from "fastify";
-import type { Bundle, QuestionnaireResponse, Task } from "fhir/r4";
+import type {
+  FastifyBaseLogger,
+  FastifyPluginCallback,
+  FastifyReply,
+} from "fastify";
+import type {
+  Bundle,
+  OperationOutcome,
+  QuestionnaireResponse,
+  Task,
+} from "fhir/r4";
 
 /** Content type the facade speaks, in both directions. */
 const FHIR_JSON = "application/fhir+json";
@@ -151,17 +165,21 @@ interface Upstream {
   readonly base: string;
   /** What `cachedAccessToken` and `invalidateAccessToken` are keyed by. */
   readonly mint: MintOptions;
+  /** Where a refusal is reported, so an operator can see what the practice said. */
+  readonly log: FastifyBaseLogger;
 }
 
 /**
  * Resolve the upstream leg for an invitation, or say why it cannot be resolved.
  * @param issuers the loaded issuer registry
  * @param invitation the invitation being written against
+ * @param log where a refusal is reported
  * @returns the upstream leg, or undefined when the issuer is no longer usable
  */
 async function resolveUpstream(
   issuers: readonly IssuerRegistration[],
   invitation: Invitation,
+  log: FastifyBaseLogger,
 ): Promise<Upstream | undefined> {
   const registration = findIssuerRegistration(issuers, invitation.issuer);
   if (registration === undefined) {
@@ -172,6 +190,7 @@ async function resolveUpstream(
     return {
       base: invitation.issuer.replace(/\/+$/, ""),
       mint: { registration, tokenEndpoint: smart.tokenEndpoint },
+      log,
     };
   } catch {
     return undefined;
@@ -202,7 +221,14 @@ async function callUpstream(
     readonly ifMatch?: string;
   },
 ): Promise<Response> {
-  const target = `${upstream.base}/${request.path}`;
+  /*
+   * A transaction is addressed to the FHIR base *itself*, so an empty path must not leave a
+   * trailing slash behind. Aidbox reads `{base}/` as a different endpoint from `{base}`, which is
+   * how this arrived: the filler used to post straight to `aud` with no slash, and the facade
+   * rebuilding the URL put one there.
+   */
+  const target =
+    request.path === "" ? upstream.base : `${upstream.base}/${request.path}`;
 
   const attempt = async (accessToken: string): Promise<Response> =>
     fetch(target, {
@@ -331,6 +357,30 @@ async function taskLeg(
     resource: body as unknown as Task,
     ifMatch,
   };
+}
+
+/**
+ * The issue codes an `OperationOutcome` carries, for a log line.
+ *
+ * Severity and code are fixed FHIR vocabularies, so repeating them cannot smuggle a server's prose
+ * into our logs. `diagnostics` is deliberately dropped for exactly that reason - it is free text
+ * chosen by the other end.
+ * @param response the refusing response
+ * @returns the codes, or an empty list when the body is not an OperationOutcome
+ */
+async function issueCodes(response: Response): Promise<string[]> {
+  let body: unknown;
+  try {
+    body = await response.clone().json();
+  } catch {
+    return [];
+  }
+  if (!isJsonObject(body) || body.resourceType !== "OperationOutcome") {
+    return [];
+  }
+  return ((body as unknown as OperationOutcome).issue ?? [])
+    .map((issue) => `${issue.severity}/${issue.code}`)
+    .filter((code) => /^[\w-]+\/[\w-]+$/.test(code));
 }
 
 /** What a write produced, ready to be shaped for whichever route was called. */
@@ -512,12 +562,14 @@ function patientDisplayFrom(
  * @param context the database, registry and key
  * @param invitation the invitation being written against
  * @param body the parsed request body, in either accepted shape
+ * @param log where a refusal is reported
  * @returns what to answer with
  */
 async function forward(
   context: FacadeContext,
   invitation: Invitation,
   body: unknown,
+  log: FastifyBaseLogger,
 ): Promise<WriteOutcome> {
   const answers = answersFrom(body);
   if (answers === undefined) {
@@ -535,7 +587,7 @@ async function forward(
     return { status: 400, error: "wrong-questionnaire" };
   }
 
-  const upstream = await resolveUpstream(context.issuers, invitation);
+  const upstream = await resolveUpstream(context.issuers, invitation, log);
   if (upstream === undefined) {
     return { status: 502, error: "destination-unavailable" };
   }
@@ -581,9 +633,24 @@ async function forward(
 
   if (!response.ok) {
     releaseInvitationResponseClaim(context.db, invitation.id);
+    /*
+     * The filler is told only that the write did not happen, because it can act on nothing else.
+     * The operator is told the status and the practice's own issue codes - a fixed FHIR vocabulary,
+     * never its prose (FR-018) - because without them one failed forward is indistinguishable from
+     * every other, which is exactly how a trailing slash in this URL went unexplained.
+     */
+    log.error(
+      {
+        issuer: invitation.issuer,
+        status: response.status,
+        issues: await issueCodes(response),
+      },
+      "the destination did not accept the forwarded transaction",
+    );
+    const refused = response.status === 401 || response.status === 403;
     return {
-      status: response.status === 401 || response.status === 403 ? 403 : 502,
-      error: "destination-refused",
+      status: refused ? 403 : 502,
+      error: refused ? "destination-refused" : "destination-rejected",
     };
   }
 
@@ -736,7 +803,7 @@ export const facadeRoutes: FastifyPluginCallback = (
       }
       return sendWrite(
         reply,
-        await forward(context, invitation, request.body),
+        await forward(context, invitation, request.body, request.log),
         shape,
       );
     });
@@ -771,7 +838,11 @@ export const facadeRoutes: FastifyPluginCallback = (
           return reply.code(400).send({ error: "not-this-task" });
         }
 
-        const upstream = await resolveUpstream(context.issuers, invitation);
+        const upstream = await resolveUpstream(
+          context.issuers,
+          invitation,
+          request.log,
+        );
         if (upstream === undefined) {
           return reply.code(502).send({ error: "destination-unavailable" });
         }

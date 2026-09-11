@@ -630,6 +630,46 @@ describe("the facade", () => {
     });
   });
 
+  describe("where the forward is addressed", () => {
+    /*
+     * A transaction is addressed to the FHIR base itself. The filler used to post straight to
+     * `aud`, and the facade rebuilding the URL put a trailing slash on it - which Aidbox reads as
+     * a different endpoint, so every send came back `destination-refused` with nothing saying why.
+     * The exact bytes of this URL are worth a test of their own.
+     */
+    it("posts the transaction to the practice's base, with no trailing slash", async () => {
+      const id = storeInvitation();
+
+      await write({ id, body: transaction() });
+
+      expect(
+        calls.filter((call) => call.method === "POST").map((call) => call.url),
+      ).toEqual([ISSUER]);
+    });
+
+    it("addresses the Task under that base", async () => {
+      const id = storeInvitation();
+
+      await write({ id, path: "/Task/task-1", method: "GET" });
+
+      expect(calls.map((call) => call.url)).toEqual([`${ISSUER}/Task/task-1`]);
+    });
+
+    // A practice registered with a trailing slash must not produce a doubled one either.
+    it("tolerates an issuer registered with a trailing slash", async () => {
+      const id = storeInvitation();
+      harness.db
+        .prepare("UPDATE invitations SET issuer = ? WHERE id = ?")
+        .run(`${ISSUER}/`, id);
+
+      await write({ id, body: transaction() });
+
+      expect(
+        calls.filter((call) => call.method === "POST").map((call) => call.url),
+      ).toEqual([ISSUER]);
+    });
+  });
+
   describe("at most one response", () => {
     it("answers a replayed send from what was stored, without writing again", async () => {
       const id = storeInvitation();
