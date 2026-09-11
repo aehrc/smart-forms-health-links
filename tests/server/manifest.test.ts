@@ -304,6 +304,39 @@ describe("the SHL manifest", () => {
       ).toBe(true);
     });
 
+    /*
+     * The rule that broke development and that no test could see: `aud` used to be the practice's
+     * `https` FHIR base, and is now this app's own origin - which on a developer's machine is
+     * `http://localhost:3000`. `buildGrant` refuses a destination a bearer token cannot safely be
+     * presented to, so the manifest degraded to one file and the direct-send channel silently
+     * became a scan-back. Loopback is a secure origin (`src/link/secureOrigin.ts`), and this is
+     * the test that says so.
+     */
+    it("states a grant for a loopback development origin", async () => {
+      await closeHarness(harness);
+      harness = createHarness({ appOrigin: "http://localhost:3000" });
+      const id = await storeInvitation();
+
+      const files = await manifestFiles(id);
+      const grant = JSON.parse(await open(files[1])) as Grant;
+
+      expect(files).toHaveLength(2);
+      expect(grant.aud).toBe(`http://localhost:3000/shl/${id}/fhir`);
+    });
+
+    // Still refused for an origin that is neither https nor loopback.
+    it("states no grant for a plain http origin that is not loopback", async () => {
+      await closeHarness(harness);
+      harness = createHarness({ appOrigin: "http://links.example.org" });
+      const id = await storeInvitation();
+
+      const files = await manifestFiles(id);
+
+      expect(files.map((file) => file.contentType)).toEqual([
+        "application/fhir+json",
+      ]);
+    });
+
     // The token names one invitation. Presented against any other, it authorises nothing.
     it("mints a token that verifies for no other invitation", async () => {
       const id = await storeInvitation();

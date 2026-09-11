@@ -178,17 +178,30 @@ export function testConfig(sqlitePath: string): ServerConfig {
  *
  * The discovery cache is cleared, because it is process-wide and would otherwise carry a stub
  * response from one test into the next.
+ *
+ * `appOrigin` is overridable because the default is `https` and a development deployment runs on
+ * `http://localhost`. The grant's `aud` is built from this value, so a suite that only ever uses
+ * `https` cannot see a rule that refuses the origin every developer actually runs on.
+ * @param overrides configuration to differ from {@link testConfig}
+ * @param overrides.appOrigin the origin the app is served from
  * @returns the harness
  * @example
  * const harness = createHarness();
  * const response = await harness.server.inject({ method: "GET", url: "/api/issuers" });
  */
-export function createHarness(): TestHarness {
+export function createHarness(
+  overrides: { appOrigin?: string } = {},
+): TestHarness {
   clearSmartConfigurationCache();
   const directory = mkdtempSync(path.join(tmpdir(), "shl-routes-"));
   const sqlitePath = path.join(directory, "app.db");
   const db = openDatabase(sqlitePath);
-  const config = testConfig(sqlitePath);
+  const config: ServerConfig = {
+    ...testConfig(sqlitePath),
+    ...(overrides.appOrigin === undefined
+      ? {}
+      : { appOrigin: overrides.appOrigin }),
+  };
   const logLines: string[] = [];
   const server = buildServer({
     config,

@@ -72,6 +72,7 @@ import {
 } from "@/link/apiAccess";
 import { PATIENT_ASSERTED_SECURITY, taskCorrelationId } from "@/link/exchange";
 import { parseServerTaskUrl } from "@/link/replyDescriptor";
+import { secureUrl } from "@/link/secureOrigin";
 
 /** RFC 3986 URI namespace: the system the invitation's business identifier lives under. */
 const URI_IDENTIFIER_SYSTEM = "urn:ietf:rfc:3986";
@@ -164,17 +165,12 @@ export interface DirectSendOptions {
 }
 
 /**
- * The origin of an `https` URL, or nothing.
+ * The origin of a URL a bearer token may be presented to, or nothing.
  * @param value the candidate URL
- * @returns the origin, or undefined when the value is not a syntactically valid `https` URL
+ * @returns the origin, or undefined when the value is not somewhere a token may be presented
  */
-function httpsOrigin(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" ? url.origin : undefined;
-  } catch {
-    return undefined;
-  }
+function presentableOrigin(value: string): string | undefined {
+  return secureUrl(value)?.origin;
 }
 
 /**
@@ -240,7 +236,7 @@ function destinationTaskUrl(
   serverTaskUrl: string,
   aud: string,
 ): string | undefined {
-  if (httpsOrigin(aud) === undefined) {
+  if (presentableOrigin(aud) === undefined) {
     return undefined;
   }
   const id = serverTaskUrl.split("/").pop();
@@ -793,12 +789,12 @@ export async function sendDirect(
     return currentSendStatus({ received, now });
   }
 
-  if (httpsOrigin(grant.aud) === undefined) {
+  if (presentableOrigin(grant.aud) === undefined) {
     return {
       state: "failed",
       detail:
-        `${grant.aud} is not an https address, so nothing was presented to it and the ` +
-        "answers have not been sent.",
+        `${grant.aud} is not an address this app will send a credential to, so nothing was ` +
+        "presented to it and the answers have not been sent.",
     };
   }
 
