@@ -50,12 +50,26 @@ export interface InvitationInput {
    * {@link findInvitation} returns them unchanged and the facade falls back to the payload.
    */
   readonly questionnaireCanonical: string | null;
+  /**
+   * The standing invitation this row was minted from, when a scan minted it.
+   *
+   * Set only for a walk-in: one printed code mints a child on every scan, and the child is what
+   * holds the at-most-one-response rule for that one filler. Two things key off it. The facade
+   * stamps the arrival as a walk-in so it reaches the review queue instead of a patient's record,
+   * and it declines the Task leg, because the Task belongs to the standing request that serves
+   * every other walk-in too.
+   *
+   * Omitted, and stored as null, for an ordinary invitation minted for one named person.
+   */
+  readonly standingId?: string | null;
 }
 
 /** A stored invitation. */
 export interface Invitation extends InvitationInput {
   /** Random base64url id; appears in the manifest URL path. */
   readonly id: string;
+  /** The standing invitation a scan minted this from, or null for an ordinary invitation. */
+  readonly standingId: string | null;
   /** When the invitation was minted, in epoch seconds. */
   readonly createdAt: number;
   /**
@@ -93,8 +107,8 @@ export function insertInvitation(
   db.prepare(
     `INSERT INTO invitations (id, linkKey, payloadCiphertext, label, expiresAt, issuer,
                               patientId, requestIdentifier, publishedTaskUrl,
-                              questionnaireCanonical, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                              questionnaireCanonical, standingId, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.linkKey,
@@ -106,11 +120,13 @@ export function insertInvitation(
     input.requestIdentifier,
     input.publishedTaskUrl,
     input.questionnaireCanonical,
+    input.standingId ?? null,
     now,
   );
   return {
     ...input,
     id,
+    standingId: input.standingId ?? null,
     createdAt: now,
     respondedAt: null,
     responseReference: null,
@@ -140,7 +156,7 @@ export function findInvitation(
     .prepare<[string], Invitation>(
       `SELECT id, linkKey, payloadCiphertext, label, expiresAt, issuer, patientId,
               requestIdentifier, publishedTaskUrl, questionnaireCanonical,
-              respondedAt, responseReference, createdAt
+              standingId, respondedAt, responseReference, createdAt
        FROM invitations WHERE id = ?`,
     )
     .get(id);

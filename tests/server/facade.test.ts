@@ -117,6 +117,35 @@ function transaction(answers: QuestionnaireResponse = ANSWERS): Bundle {
 }
 
 /**
+ * A filler's transaction that offers a Task version, which is what asks for the Task leg.
+ *
+ * The plain {@link transaction} carries no Task entry, so a case that used it to assert the leg
+ * was *not* taken would pass whatever the code did. This one makes that assertion mean something.
+ * @returns the transaction Bundle
+ */
+function transactionWithTaskEntry(): Bundle {
+  return {
+    resourceType: "Bundle",
+    type: "transaction",
+    entry: [
+      {
+        resource: ANSWERS,
+        request: { method: "POST", url: "QuestionnaireResponse" },
+      },
+      {
+        resource: {
+          resourceType: "Task",
+          id: "task-1",
+          status: "completed",
+          intent: "order",
+        },
+        request: { method: "PUT", url: "Task/task-1", ifMatch: 'W/"3"' },
+      },
+    ],
+  };
+}
+
+/**
  * Fetch a manifest and decrypt the grant out of it, the way a filler does.
  * @param harness the running server and its database
  * @param id the invitation to fetch the manifest for
@@ -217,6 +246,7 @@ describe("the facade", () => {
    * @param overrides.expiresAt
    * @param overrides.questionnaireCanonical
    * @param overrides.publishedTaskUrl
+   * @param overrides.standingId
    * @returns the stored id
    */
   function storeInvitation(
@@ -225,6 +255,7 @@ describe("the facade", () => {
       expiresAt?: number | null;
       questionnaireCanonical?: string | null;
       publishedTaskUrl?: string;
+      standingId?: string;
     } = {},
   ): string {
     return insertInvitation(harness.db, {
@@ -241,6 +272,9 @@ describe("the facade", () => {
         overrides.questionnaireCanonical === undefined
           ? CANONICAL
           : overrides.questionnaireCanonical,
+      ...(overrides.standingId === undefined
+        ? {}
+        : { standingId: overrides.standingId }),
     }).id;
   }
 
@@ -1157,6 +1191,81 @@ describe("the facade", () => {
         fetchMock.mock.calls.map(([, init]) => init?.headers),
       );
       expect(headers).not.toContain(token);
+    });
+  });
+
+  describe("a walk-in", () => {
+    /*
+     * An invitation minted by a scan of a printed code. Nobody vouched for who is holding the
+     * phone, which is the whole reason the two assertions below matter: the answers have to be
+     * findable by a human, and the standing request has to survive them.
+     */
+    const STANDING_ID = "standing-abc";
+
+    // The tag is the review queue. Without it a stranger's answers are one more untriaged
+    // response on a busy server, indistinguishable from anything a clinician recorded.
+    it("labels the stored answers as a walk-in", async () => {
+      const id = storeInvitation({ patientId: null, standingId: STANDING_ID });
+
+      await write({ id, body: transaction() });
+
+      expect(
+        (upstreamAnswers().meta?.tag ?? []).map((tag) => tag.code),
+      ).toContain("shl-walk-in");
+    });
+
+    // Belonging to nobody is the correct state for answers nobody has triaged. A subject here
+    // would be a claim about a person the practice has never met.
+    it("stores them with no subject", async () => {
+      const id = storeInvitation({ patientId: null, standingId: STANDING_ID });
+
+      await write({ id, body: transaction() });
+
+      expect(upstreamAnswers().subject).toBeUndefined();
+    });
+
+    /*
+     * The one Task in play is the standing request behind the poster, which serves everybody else
+     * who scans it, so completing it on the first walk-in's behalf would retire the code. The
+     * filler here offers a Task version, which is exactly what makes an ordinary invitation
+     * complete its Task - so this case would pass vacuously without it.
+     */
+    it("leaves the standing request alone, even when the filler offers a version", async () => {
+      const id = storeInvitation({ patientId: null, standingId: STANDING_ID });
+
+      await write({ id, body: transactionWithTaskEntry() });
+
+      expect(
+        upstreamWrite().entry?.some(
+          (entry) => entry.resource?.resourceType === "Task",
+        ),
+      ).toBeFalsy();
+      expect(calls.some((call) => call.url === TASK_URL)).toBe(false);
+    });
+
+    // The control: the same body against an ordinary invitation does complete its Task.
+    it("still completes the Task of an ordinary invitation", async () => {
+      const id = storeInvitation();
+
+      await write({ id, body: transactionWithTaskEntry() });
+
+      expect(
+        upstreamWrite().entry?.some(
+          (entry) => entry.resource?.resourceType === "Task",
+        ),
+      ).toBe(true);
+    });
+
+    // An ordinary invitation is untouched by any of this. The tag is stamped from the row, so a
+    // filler cannot reach the queue by claiming to have scanned a poster.
+    it("leaves an ordinary invitation untagged", async () => {
+      const id = storeInvitation();
+
+      await write({ id, body: transaction() });
+
+      expect(
+        (upstreamAnswers().meta?.tag ?? []).map((tag) => tag.code),
+      ).not.toContain("shl-walk-in");
     });
   });
 });

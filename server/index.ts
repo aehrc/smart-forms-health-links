@@ -32,6 +32,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { fhirProxyRoutes } from "./api/fhirProxy";
 import { invitationRoutes } from "./api/invitations";
 import { sessionRoutes } from "./api/session";
+import { standingInvitationRoutes } from "./api/standingInvitations";
 import { writeSlotRoutes } from "./api/writeSlots";
 import { loadServerConfig } from "./config";
 import { openDatabase } from "./db";
@@ -241,6 +242,10 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   //                     GET  /api/issuers       - the registry a standalone picker may know
   //   fhirProxyRoutes   ALL  /api/fhir/*        - the SPA's only route to the launched server
   //   invitationRoutes  POST /api/invitations   - mint one, publish its Task, store the payload
+  //   standingInvitationRoutes
+  //                     POST /api/standing-invitations        - mint a walk-in code
+  //                     GET  /api/standing-invitations        - list this practice's codes
+  //                     POST /api/standing-invitations/:id/revoke - stop one resolving
   //   manifestRoutes    POST /shl/:id           - the public SHL manifest
   //   facadeRoutes      ALL  /shl/:id/fhir/*     - the write target a grant points at
   //
@@ -252,6 +257,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   fastify.register(sessionRoutes);
   fastify.register(fhirProxyRoutes);
   fastify.register(invitationRoutes);
+  fastify.register(standingInvitationRoutes);
   fastify.register(manifestRoutes);
   fastify.register(facadeRoutes);
   fastify.register(writeSlotRoutes);

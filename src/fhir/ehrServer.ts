@@ -7,7 +7,7 @@ import type {
 } from "fhir/r4";
 
 import { fetchProxiedFhir } from "@/lib/session";
-import { SHL_REQUEST_TAG } from "@/link/invitationBundle";
+import { SHL_REQUEST_TAG, SHL_WALK_IN_TAG } from "@/link/invitationBundle";
 
 /**
  * Reading the launched server: patients, their responses, and the request Tasks this app
@@ -237,6 +237,48 @@ export async function searchPublishedRequests(
   );
 
   return { resources: bundleResources<Task>(bundle), total: bundle.total };
+}
+
+/**
+ * List answers that arrived from a printed walk-in code and have not been filed yet.
+ *
+ * This is the review queue, and it is one tag search: the facade stamps
+ * {@link SHL_WALK_IN_TAG} on a forwarded response when the invitation it was written against was
+ * minted by a scan, and accepting an item removes the tag. So membership of this list is exactly
+ * "arrived from a poster, and nobody has dealt with it yet".
+ *
+ * A tag rather than `subject:missing=true`, although every item here does lack a subject. The tag
+ * search is the same one `/requests` is built on, so it is already known to work against this
+ * deployment's server, and it keeps saying the right thing after a subject has been attached but
+ * before the item is accepted.
+ * @param ehrServerUrl the FHIR base, which under a launched session is the proxy
+ * @param count how many to ask for
+ * @param signal aborts the request when the caller goes away
+ * @returns the page of untriaged answers
+ * @example
+ * const queue = await searchWalkInResponses(FHIR_PROXY_BASE);
+ */
+export async function searchWalkInResponses(
+  ehrServerUrl: string,
+  count = DEFAULT_PAGE_SIZE,
+  signal?: AbortSignal,
+): Promise<Page<QuestionnaireResponse>> {
+  const params = new URLSearchParams({
+    _tag: `${SHL_WALK_IN_TAG.system}|${SHL_WALK_IN_TAG.code}`,
+    _count: String(count),
+    _sort: "-_lastUpdated",
+    _total: "accurate",
+  });
+
+  const bundle = await fetchProxiedFhir<Bundle>(
+    `${trimTrailingSlash(ehrServerUrl)}/QuestionnaireResponse?${params.toString()}`,
+    signal,
+  );
+
+  return {
+    resources: bundleResources<QuestionnaireResponse>(bundle),
+    total: bundle.total,
+  };
 }
 
 /**

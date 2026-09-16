@@ -19,6 +19,7 @@ import {
   isSessionEnded,
   sessionEndedError,
 } from "@/lib/session";
+import { SHL_WALK_IN_TAG } from "@/link/invitationBundle";
 import { parseServerTaskUrl } from "@/link/replyDescriptor";
 
 /**
@@ -290,6 +291,128 @@ async function createResource(
   }
 
   return created.id;
+}
+
+/**
+ * Replace one resource in place, distinguishing a lost session from a refused write.
+ *
+ * The counterpart to {@link createResource}, and it exists for exactly one caller: answers that
+ * are *already* on this server and need a subject attached. Everything else this module writes is
+ * a create, because everything else is content arriving from elsewhere.
+ *
+ * `If-Match` is sent whenever the resource carries a version. Two receptionists can have the same
+ * walk-in open, and without it the second one's save would silently discard the first one's. With
+ * it the server refuses, and the reviewer is told to reopen the item.
+ * @param serverUrl the FHIR base to write to
+ * @param resource the resource, carrying the id it already has
+ * @returns the id it was written back to
+ * @throws {SessionEndedError} when the proxy reports the session has ended
+ * @throws {Error} when the server refused the write
+ */
+async function updateResource(
+  serverUrl: string,
+  resource: QuestionnaireResponse,
+): Promise<string> {
+  const id = resource.id;
+  if (id === undefined || id === "") {
+    throw new Error(
+      "These answers carry no id, so there is nothing on the server to update.",
+    );
+  }
+
+  const versionId = resource.meta?.versionId;
+  const response = await fetch(
+    `${trimTrailingSlash(serverUrl)}/QuestionnaireResponse/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": FHIR_JSON,
+        Accept: FHIR_JSON,
+        ...(versionId ? { "If-Match": `W/"${versionId}"` } : {}),
+      },
+      body: JSON.stringify(resource),
+    },
+  );
+
+  const body: unknown = await response.json().catch(() => {
+    return;
+  });
+
+  switch (classifyProxyResponse(response.status, body)) {
+    case "session-ended": {
+      throw sessionEndedError(
+        "The session has ended, so the answers were not updated.",
+      );
+    }
+    case "failed": {
+      if (response.status === 409 || response.status === 412) {
+        throw new Error(
+          "Somebody else changed these answers while this review was open, so nothing was " +
+            `saved. Reopen the item and try again - ${describeOutcome(response, body)}`,
+        );
+      }
+      throw new Error(
+        `Could not update the answers - ${describeOutcome(response, body)}`,
+      );
+    }
+    case "ok": {
+      break;
+    }
+  }
+
+  return id;
+}
+
+/** What {@link attachSubject} needs: where the answers are, and what they should now say. */
+export interface AttachSubjectOptions {
+  /** Where the answers already live, and under which id. */
+  readonly saved: SavedResponse;
+  /** The reconciled answers, with a subject chosen or deliberately cleared. */
+  readonly response: QuestionnaireResponse;
+}
+
+/**
+ * File answers that are already on the server, by attaching them to a patient.
+ *
+ * This is the walk-in queue's save, and it is an update rather than a create for a plain reason:
+ * the answers reached the practice the moment they were sent, tagged and subject-less, and
+ * creating a second copy with a subject on it would leave two records of one form-filling.
+ *
+ * Accepting an item removes {@link SHL_WALK_IN_TAG}, which is the whole of "it has left the
+ * queue": the queue is a search on that tag, so the tag is the state. Nothing else about `meta` is
+ * touched - the patient-asserted security label in particular stays, because who asserted these
+ * answers did not change when a receptionist worked out whose they were.
+ * @param options where the answers are and what they should now say
+ * @returns where they still are, unchanged
+ * @throws {SessionEndedError} when the proxy reports the session has ended
+ * @throws {Error} when the server refused the write
+ * @example
+ * await attachSubject({ saved, response: reconciled });
+ */
+export async function attachSubject(
+  options: AttachSubjectOptions,
+): Promise<SavedResponse> {
+  const { saved, response } = options;
+  const tags = (response.meta?.tag ?? []).filter(
+    (tag) =>
+      !(
+        tag.system === SHL_WALK_IN_TAG.system &&
+        tag.code === SHL_WALK_IN_TAG.code
+      ),
+  );
+  const meta: Meta = { ...response.meta };
+  if (tags.length > 0) {
+    meta.tag = tags;
+  } else {
+    delete meta.tag;
+  }
+
+  await updateResource(saved.serverUrl, {
+    ...response,
+    id: saved.responseId,
+    meta,
+  });
+  return saved;
 }
 
 export interface SubmitOptions {

@@ -28,6 +28,14 @@
  * different questionnaire, and cannot choose its own idempotency key, because none of those
  * values comes from anything it sent.
  *
+ * ## A walk-in is the same write, labelled and untasked
+ *
+ * An invitation minted from a printed code (`standingId` is set) forwards exactly as any other,
+ * with one addition and one subtraction. The stored answers carry the walk-in tag, which is what
+ * the practice's review queue searches on - nobody can vouch for who filled them in, so they wait
+ * in front of a human rather than landing on a record. And the Task leg is declined, because the
+ * only Task in play is the standing request that serves every other walk-in too.
+ *
  * ## The Task leg exists because the origin rule does
  *
  * `readDestinationTask` refuses to present a token to anything that is not on the grant's own
@@ -53,6 +61,7 @@
  */
 
 import { buildSubmissionTransaction } from "../../src/fill/directSend";
+import { SHL_WALK_IN_TAG } from "../../src/link/invitationBundle";
 import { bearerToken } from "../bearerToken";
 import { findIssuerRegistration } from "../config";
 import { isJsonObject } from "../json";
@@ -128,6 +137,16 @@ export function facadeAud(appOrigin: string, invitationId: string): string {
  * @returns the Task's id, or undefined when the stored URL does not end in one
  */
 function publishedTaskId(invitation: Invitation): string | undefined {
+  /*
+   * A walk-in has no Task of its own. The URL on the row is the *standing* request's, published
+   * once for the poster and serving everybody who ever scans it, so the first person to answer
+   * must not flip it to `completed` - that would retire the code for everyone behind them.
+   * Declining the leg here is what stops it, and the send is unaffected: a missing Task entry is
+   * a state the direct send already degrades to (FR-022).
+   */
+  if (invitation.standingId !== null) {
+    return undefined;
+  }
   const last = invitation.publishedTaskUrl.split("/").pop();
   return last !== undefined &&
     RESOURCE_ID_PATTERN.test(last) &&
@@ -616,6 +635,14 @@ async function forward(
     ...(invitation.patientId === null ? {} : { patient: invitation.patientId }),
     requestIdentifier: invitation.requestIdentifier,
     ...(patientDisplay === undefined ? {} : { patientDisplay }),
+    /*
+     * Answers from a printed code are labelled as such, because nobody can vouch for who filled
+     * them in. The tag is what the review queue searches on, and removing it is what accepting an
+     * item does - so a walk-in's answers sit in front of a human until one of them attaches them
+     * to a patient. Stamped here rather than accepted from the request for the reason nothing else
+     * in this Bundle is taken from the request: it is a property of the invitation.
+     */
+    ...(invitation.standingId === null ? {} : { tags: [SHL_WALK_IN_TAG] }),
     ...(await taskEntry(upstream, invitation, body)),
   });
 

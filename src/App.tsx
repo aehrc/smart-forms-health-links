@@ -26,6 +26,7 @@ import Requests from "./routes/Requests";
 import ResponseList from "./routes/ResponseList";
 import Scan from "./routes/Scan";
 import ViewLink from "./routes/ViewLink";
+import WalkIns from "./routes/WalkIns";
 
 import type { Session } from "./lib/session";
 import type { ReactNode } from "react";
@@ -180,6 +181,9 @@ function Header() {
             <NavLink to="/requests" icon={Inbox}>
               Sent requests
             </NavLink>
+            <NavLink to="/walk-ins" icon={QrCode}>
+              Walk-ins
+            </NavLink>
             <NavLink to="/scan" icon={ScanLine}>
               Scan
             </NavLink>
@@ -258,6 +262,14 @@ export default function App() {
             element={
               <RequesterRoute>
                 <PatientList />
+              </RequesterRoute>
+            }
+          />
+          <Route
+            path="/walk-ins"
+            element={
+              <RequesterRoute>
+                <WalkIns />
               </RequesterRoute>
             }
           />
