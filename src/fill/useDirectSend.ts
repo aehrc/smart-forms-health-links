@@ -180,6 +180,7 @@ export function useDirectSend(
       sendDirect({
         response: answers,
         received: target.received,
+        host: target.host,
         requestIdentifier: target.requestIdentifier,
         serverTaskUrl: target.serverTaskUrl,
         patientDisplay: target.patientDisplay,

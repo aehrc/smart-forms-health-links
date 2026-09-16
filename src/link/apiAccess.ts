@@ -11,8 +11,9 @@
  * ## Tolerance is a two-sided rule
  *
  * The contract tells a consumer to treat a grant as *absent* - not as an error - when it is not
- * a JSON object, when `access_token` is missing or empty, when `aud` is missing or is not
- * `https`, or when `token_type` is not Bearer. A malformed grant must never block the form.
+ * a JSON object, when `access_token` is missing or empty, when `aud` is missing or is not somewhere
+ * a bearer token may be presented ({@link secureUrl}), or when `token_type` is not Bearer. A
+ * malformed grant must never block the form.
  *
  * {@link buildGrant} is the same rule read from the other side: rather than emit something a
  * conformant filler would be obliged to throw away, it declines, and the manifest degrades to a
@@ -22,6 +23,7 @@
  * @author John Grimes
  */
 
+import { isSecureUrl, secureUrl } from "./secureOrigin";
 import { coversScope } from "../auth/scopes";
 
 /** Content type of the grant file, as the filler contract names it. */
@@ -139,8 +141,8 @@ export function buildGrant(options: GrantOptions): ApiAccessGrant | undefined {
   ) {
     return undefined;
   }
-  // `aud` is where a bearer token will be presented; http would present it in the clear.
-  if (typeof aud !== "string" || !/^https:\/\/\S+$/i.test(aud)) {
+  // `aud` is where a bearer token will be presented; plain http would present it in the clear.
+  if (!isSecureUrl(aud)) {
     return undefined;
   }
 
@@ -197,29 +199,6 @@ export interface ReceivedGrant {
 }
 
 /**
- * An `https` URL, or nothing.
- *
- * Separate from the parse below because it is the same question asked in two places, and because
- * it is the one guard whose failure has a security consequence rather than a usability one: `aud`
- * is where a bearer token gets presented, so `http` here means handing the token to whoever is on
- * the path.
- * @param value the candidate, straight off the wire
- * @returns the parsed URL when it is a syntactically valid `https` URL, otherwise undefined
- */
-function httpsUrl(value: unknown): URL | undefined {
-  if (typeof value !== "string" || value.trim() === "") {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "https:" ? url : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Read a grant file's plaintext, applying the contract's tolerance rules.
  *
  * Every rejection below returns undefined rather than throwing, and the difference matters: a
@@ -265,7 +244,7 @@ export function parseGrant(plaintext: string): ApiAccessGrant | undefined {
   }
 
   const aud = candidate.aud;
-  if (httpsUrl(aud) === undefined) {
+  if (!isSecureUrl(aud)) {
     return undefined;
   }
 
@@ -379,7 +358,7 @@ export function excessScopes(
  * `Answers will be sent to ${destinationHost(grant)}.`;
  */
 export function destinationHost(grant: ApiAccessGrant): string {
-  return httpsUrl(grant.aud)?.host ?? grant.aud;
+  return secureUrl(grant.aud)?.host ?? grant.aud;
 }
 
 /**

@@ -35,6 +35,7 @@ import { sessionRoutes } from "./api/session";
 import { writeSlotRoutes } from "./api/writeSlots";
 import { loadServerConfig } from "./config";
 import { openDatabase } from "./db";
+import { facadeRoutes } from "./shl/facade";
 import { manifestRoutes } from "./shl/manifest";
 import { publicJwks } from "./smart/backendServices";
 import { launchRoutes } from "./smart/launch";
@@ -241,6 +242,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   //   fhirProxyRoutes   ALL  /api/fhir/*        - the SPA's only route to the launched server
   //   invitationRoutes  POST /api/invitations   - mint one, publish its Task, store the payload
   //   manifestRoutes    POST /shl/:id           - the public SHL manifest
+  //   facadeRoutes      ALL  /shl/:id/fhir/*     - the write target a grant points at
   //
   // Anything registered under a path outside RESERVED_PREFIXES must also be added there, or
   // the SPA rewrite will shadow its 404s.
@@ -251,6 +253,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   fastify.register(fhirProxyRoutes);
   fastify.register(invitationRoutes);
   fastify.register(manifestRoutes);
+  fastify.register(facadeRoutes);
   fastify.register(writeSlotRoutes);
 
   /**

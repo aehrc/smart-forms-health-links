@@ -26,6 +26,7 @@
  * @author John Grimes
  */
 
+import { bearerToken } from "../bearerToken";
 import { readSessionCookie } from "../sessionCookie";
 import { findActiveSessionIgnoringExpiry } from "../sessions";
 import {
@@ -51,19 +52,6 @@ export interface MintedWriteSlot {
   readonly writeEtag: string;
   /** The capability to write, once. */
   readonly writeToken: string;
-}
-
-/**
- * Read a bearer token from an `Authorization` header.
- * @param header the raw header, if there was one
- * @returns the token, or undefined when the header is absent or not a bearer
- */
-function bearerToken(header: string | undefined): string | undefined {
-  if (header === undefined) {
-    return undefined;
-  }
-  const match = /^Bearer (.+)$/i.exec(header.trim());
-  return match?.[1];
 }
 
 /**

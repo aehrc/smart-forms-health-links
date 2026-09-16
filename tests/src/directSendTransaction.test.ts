@@ -130,7 +130,7 @@ function transaction(
 ): Bundle {
   return buildSubmissionTransaction({
     response: ANSWERS,
-    grant: GRANT,
+    patient: GRANT.patient,
     requestIdentifier: REQUEST_IDENTIFIER,
     patientDisplay: "Jane Citizen",
     recorded: "2026-08-22T01:05:00.000Z",
@@ -235,10 +235,9 @@ describe("the submission transaction", () => {
     });
 
     // Rule: otherwise omitted entirely - never a filler-local reference.
-    it("carries no patient reference at all when the grant named none", () => {
-      const response = transaction({
-        grant: { ...GRANT, patient: undefined },
-      }).entry?.[0]?.resource as QuestionnaireResponse;
+    it("carries no patient reference at all when no patient was named", () => {
+      const response = transaction({ patient: undefined }).entry?.[0]
+        ?.resource as QuestionnaireResponse;
 
       expect("subject" in response).toBe(false);
     });
@@ -316,8 +315,8 @@ describe("the submission transaction", () => {
      * there is no valid Provenance to write - and inventing a filler-local `who` is precisely
      * what the rule forbids. The PATAST label still records that the content is patient-asserted.
      */
-    it("is omitted entirely when the grant named no patient", () => {
-      const bundle = transaction({ grant: { ...GRANT, patient: undefined } });
+    it("is omitted entirely when no patient was named", () => {
+      const bundle = transaction({ patient: undefined });
 
       expect(
         bundle.entry?.map((entry) => entry.resource?.resourceType),
@@ -441,18 +440,46 @@ describe("the submission transaction", () => {
      * host is the invitation asking a filler to authenticate somewhere the grant does not
      * authorise, so nothing is requested at all - not even to see whether it would have worked.
      */
-    it("presents nothing, and yields no task, when the task lives on another origin", async () => {
-      const task = await readTask(
-        "https://elsewhere.example.org/fhir/Task/task-1",
+    /*
+     * Rule: the address is derived from `aud`, so the origin the invitation named cannot divert
+     * the token anywhere. The invitation contributes an `id` and nothing else - which is a
+     * stronger guarantee than the same-origin comparison this replaced, because there is no URL
+     * left that could pass a check and still be presented to.
+     */
+    it.for([
+      "https://elsewhere.example.org/fhir/Task/task-1",
+      "http://ehr.example.org/fhir/Task/task-1",
+      "https://ehr.example.org/somewhere/else/Task/task-1",
+    ])("reads from the grant's destination, not from %s", async (spelling) => {
+      fetchMock.mockResolvedValue(
+        fhirResponse(DESTINATION_TASK, { headers: { ETag: 'W/"3"' } }),
       );
 
-      expect(task).toBeUndefined();
+      await readTask(spelling);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(`${AUD}/Task/task-1`);
+    });
+
+    // An `id` is all the invitation gets to contribute, so it is held to the `id` grammar - and
+    // to the separate rule that a valid FHIR id may still be path traversal.
+    it.for([
+      "https://ehr.example.org/fhir/Task/",
+      "https://ehr.example.org/fhir/Task/.",
+      "https://ehr.example.org/fhir/Task/..",
+      `https://ehr.example.org/fhir/Task/${"t".repeat(65)}`,
+    ])("yields no task for a URL ending %s", async (spelling) => {
+      await expect(readTask(spelling)).resolves.toBeUndefined();
+
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    // Same rule, the other way a URL can lie: a scheme that would not protect the token.
-    it("yields no task for a task URL that is not https", async () => {
-      const task = await readTask("http://ehr.example.org/fhir/Task/task-1");
+    // A grant whose own destination is not https is one no token may be presented to at all.
+    it("yields no task when the grant's destination is not https", async () => {
+      const task = await readDestinationTask({
+        grant: { ...GRANT, aud: "http://ehr.example.org/fhir" },
+        serverTaskUrl: "https://ehr.example.org/fhir/Task/task-1",
+      });
 
       expect(task).toBeUndefined();
       expect(fetchMock).not.toHaveBeenCalled();

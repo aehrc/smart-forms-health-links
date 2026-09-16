@@ -372,6 +372,7 @@ function OpenedRequest(props: {
       {target && status ? (
         <DirectSendPanel
           host={target.host}
+          relayHost={target.relayHost}
           status={status}
           /*
            * The answers are read from the renderer's store at the moment of the send rather than
