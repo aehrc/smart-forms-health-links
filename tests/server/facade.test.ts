@@ -46,7 +46,7 @@ import {
 
 import type { TestHarness } from "./support/testHarness";
 import type { InjectOptions } from "fastify";
-import type { Bundle, QuestionnaireResponse } from "fhir/r4";
+import type { Bundle, QuestionnaireResponse, Task } from "fhir/r4";
 import type { Mock } from "vitest";
 
 /*
@@ -151,6 +151,8 @@ describe("the facade", () => {
   let mint: Mock<typeof cachedAccessToken>;
   /** Upstream requests, in the order they were made. */
   let calls: { url: string; method: string; body: unknown }[];
+  /** The invitation Task returned by the practice. */
+  let upstreamTask: Task;
 
   beforeEach(() => {
     harness = createHarness();
@@ -162,6 +164,13 @@ describe("the facade", () => {
       token_type: "Bearer",
       expires_in: 300,
     });
+    upstreamTask = {
+      resourceType: "Task",
+      id: "task-1",
+      status: "requested",
+      intent: "order",
+      meta: { versionId: "4" },
+    };
     fetchMock = vi.fn<typeof fetch>().mockImplementation((input, init) => {
       const url = urlOf(input);
       if (url.endsWith("/.well-known/smart-configuration")) {
@@ -174,13 +183,7 @@ describe("the facade", () => {
           typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
       });
       if (url === TASK_URL) {
-        return Promise.resolve(
-          jsonResponse({
-            resourceType: "Task",
-            id: "task-1",
-            status: "requested",
-          }),
-        );
+        return Promise.resolve(jsonResponse(upstreamTask));
       }
       return Promise.resolve(
         jsonResponse({
@@ -584,7 +587,12 @@ describe("the facade", () => {
      */
     it("sends the same bytes for a bare resource as for a transaction", async () => {
       const first = storeInvitation();
-      await write({ id: first, body: transaction() });
+      const bundled = transaction();
+      bundled.entry?.push({
+        resource: upstreamTask,
+        request: { method: "PUT", url: "Task/task-1", ifMatch: 'W/"4"' },
+      });
+      await write({ id: first, body: bundled });
       const fromTransaction = upstreamWrite();
 
       calls = [];
@@ -818,12 +826,54 @@ describe("the facade", () => {
       });
     });
 
-    it("sends no Task entry when the filler offered no version", async () => {
+    it("completes the Task for a bare response using the published version", async () => {
       const id = storeInvitation();
 
       await write({ id, path: "/QuestionnaireResponse", body: ANSWERS });
 
-      // The Provenance is there because the invitation names a patient; the Task is not.
+      const taskEntry = upstreamWrite().entry?.find(
+        (entry) => entry.resource?.resourceType === "Task",
+      );
+      expect(taskEntry?.request).toEqual({
+        method: "PUT",
+        url: "Task/task-1",
+        ifMatch: 'W/"4"',
+      });
+      expect(taskEntry?.resource).toMatchObject({
+        resourceType: "Task",
+        id: "task-1",
+        status: "completed",
+      });
+      const responseFullUrl = upstreamWrite().entry?.find(
+        (entry) => entry.resource?.resourceType === "QuestionnaireResponse",
+      )?.fullUrl;
+      expect(taskEntry?.resource).toMatchObject({
+        output: [
+          {
+            type: { text: "questionnaire-response" },
+            valueReference: { reference: responseFullUrl },
+          },
+        ],
+      });
+    });
+
+    it("sends no Task entry when a bare response finds no published version", async () => {
+      const id = storeInvitation();
+      upstreamTask.meta = undefined;
+
+      await write({ id, path: "/QuestionnaireResponse", body: ANSWERS });
+
+      expect(
+        upstreamWrite().entry?.map((entry) => entry.resource?.resourceType),
+      ).toEqual(["QuestionnaireResponse", "Provenance"]);
+    });
+
+    it("leaves a finished Task unchanged for a bare response", async () => {
+      const id = storeInvitation();
+      upstreamTask.status = "cancelled";
+
+      await write({ id, path: "/QuestionnaireResponse", body: ANSWERS });
+
       expect(
         upstreamWrite().entry?.map((entry) => entry.resource?.resourceType),
       ).toEqual(["QuestionnaireResponse", "Provenance"]);
@@ -1172,9 +1222,31 @@ describe("the facade", () => {
 function normalise(bundle: Bundle): unknown {
   return bundle.entry?.map((entry) => ({
     request: entry.request,
-    resource:
-      entry.resource?.resourceType === "Provenance"
-        ? { ...entry.resource, recorded: "normalised", target: "normalised" }
-        : entry.resource,
+    resource: normaliseResource(entry.resource),
   }));
+}
+
+/**
+ * Remove the values that legitimately differ between equivalent writes.
+ * @param resource one transaction resource
+ * @returns the comparable form of the resource
+ */
+function normaliseResource(
+  resource: NonNullable<Bundle["entry"]>[number]["resource"],
+) {
+  if (resource?.resourceType === "Provenance") {
+    return { ...resource, recorded: "normalised", target: "normalised" };
+  }
+  if (resource?.resourceType === "Task") {
+    return {
+      ...resource,
+      output: resource.output?.map((output) => ({
+        ...output,
+        valueReference: output.valueReference
+          ? { ...output.valueReference, reference: "normalised" }
+          : undefined,
+      })),
+    };
+  }
+  return resource;
 }
