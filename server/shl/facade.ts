@@ -52,6 +52,10 @@
  * @author John Grimes
  */
 
+import {
+  isFinishedTaskStatus,
+  taskIfMatch,
+} from "../../src/fhir/taskCompletion";
 import { buildSubmissionTransaction } from "../../src/fill/directSend";
 import { bearerToken } from "../bearerToken";
 import { findIssuerRegistration } from "../config";
@@ -318,17 +322,19 @@ function taskIfMatchFrom(body: unknown): string | undefined {
  * @param upstream the practice's base and mint
  * @param taskId the invitation's own published Task id
  * @param ifMatch the version the filler claims to have read, when it offered one
+ * @param deriveIfMatch whether to derive the version from the Task read
  * @returns the transaction entry for the Task leg, or undefined when there is none to send
  */
 async function taskLeg(
   upstream: Upstream,
   taskId: string,
   ifMatch: string | undefined,
+  deriveIfMatch: boolean,
 ): Promise<
   | { readonly url: string; readonly resource: Task; readonly ifMatch: string }
   | undefined
 > {
-  if (ifMatch === undefined) {
+  if (ifMatch === undefined && !deriveIfMatch) {
     return undefined;
   }
   let response: Response;
@@ -352,10 +358,18 @@ async function taskLeg(
   if (!isJsonObject(body) || body.resourceType !== "Task") {
     return undefined;
   }
+  const task = body as unknown as Task;
+  if (deriveIfMatch && isFinishedTaskStatus(task.status)) {
+    return undefined;
+  }
+  const version = ifMatch ?? taskIfMatch(task, response.headers.get("etag"));
+  if (version === undefined) {
+    return undefined;
+  }
   return {
     url: `Task/${taskId}`,
-    resource: body as unknown as Task,
-    ifMatch,
+    resource: task,
+    ifMatch: version,
   };
 }
 
@@ -515,7 +529,7 @@ async function reread(
 }
 
 /**
- * The Task leg of the transaction, when the filler offered a version to replace.
+ * The Task leg of the transaction, when the filler offered a version or a bare send can derive one.
  * @param upstream the practice's base and mint
  * @param invitation the invitation, for its own published Task
  * @param body the request body, for the `ifMatch` the filler read
@@ -530,7 +544,14 @@ async function taskEntry(
   if (taskId === undefined) {
     return {};
   }
-  const task = await taskLeg(upstream, taskId, taskIfMatchFrom(body));
+  const deriveIfMatch =
+    isJsonObject(body) && body.resourceType === "QuestionnaireResponse";
+  const task = await taskLeg(
+    upstream,
+    taskId,
+    taskIfMatchFrom(body),
+    deriveIfMatch,
+  );
   return task === undefined ? {} : { task };
 }
 
