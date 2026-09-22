@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input";
 import WriteBackPanel from "@/components/WriteBackPanel";
 import { buildAmendment } from "@/fhir/amend";
 import { extractFromResponse, extractMechanism } from "@/fhir/extract";
+import { patientDetailsFromAnswers } from "@/fhir/newPatient";
 import {
   NO_DESTINATION_MESSAGE,
   attachSubject,
@@ -642,6 +643,15 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   }
 
   /*
+   * What the answers themselves say about who filled them in, for the registration form to start
+   * from rather than have retyped. Derived only where a registration can happen: on the ordinary
+   * per-patient review the create form never appears, and the practice already knows who this is.
+   */
+  const patientSeed = allowPatientCreation
+    ? patientDetailsFromAnswers(questionnaire, response)
+    : undefined;
+
+  /*
    * Two verbs, so two labels. "Save" is right for answers this app is storing for the first time;
    * a walk-in is already stored, and what the reviewer is doing is deciding whose it is.
    */
@@ -823,6 +833,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                   chooseSubject(chosen.reference, chosen.display)
                 }
                 allowCreate={allowPatientCreation}
+                seed={patientSeed}
                 label={
                   allowPatientCreation
                     ? "Find the patient these answers are about, or register them"

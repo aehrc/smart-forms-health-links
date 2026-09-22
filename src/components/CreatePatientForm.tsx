@@ -1,6 +1,7 @@
 import { Loader2, UserPlus, X } from "lucide-react";
 import { useState } from "react";
 
+import type { PatientSeed } from "@/fhir/newPatient";
 import type { Patient } from "fhir/r4";
 
 import { useSmartSession } from "@/auth/SmartContext";
@@ -12,7 +13,6 @@ import {
   patientDisplay,
   searchPatients,
 } from "@/fhir/ehrServer";
-import { splitName } from "@/fhir/newPatient";
 import { createPatient, type CreatedPatient } from "@/fhir/submit";
 import { canWriteToRecord } from "@/lib/config";
 import { cn } from "@/lib/utils";
@@ -27,8 +27,10 @@ import { cn } from "@/lib/utils";
  * name alone, because the reviewer probably searched a full name and the server may spell the rest of
  * it differently.
  *
- * Every field is typed by hand, and that is forced by the wire format rather than chosen: no channel
- * carries demographics, so the only thing available to seed from is a free-text name.
+ * The fields start blank, from a name, or from the answers - see {@link CreatePatientFormProps.seed}.
+ * Wherever they start, they are editable and the form says where the values came from, because none
+ * of the three sources is a record: the first is nothing, the second is a guess at a name split, and
+ * the third is what an unauthenticated stranger typed into a form.
  */
 
 const GENDERS: { value: NonNullable<Patient["gender"]>; label: string }[] = [
@@ -38,11 +40,55 @@ const GENDERS: { value: NonNullable<Patient["gender"]>; label: string }[] = [
   { value: "unknown", label: "Unknown" },
 ];
 
+/**
+ * Where the two name fields came from, said only when it changes how much to trust them.
+ *
+ * The distinction is not cosmetic. A name from the search box was split out of one string by a
+ * heuristic that is wrong for a large fraction of the world's names, so the reviewer has to check
+ * the *split*. A name from the answers was given as two separate questions, so there is no split to
+ * check - what needs checking is the claim, against something the person is holding.
+ * @param props the component props
+ * @param props.source where the seed came from, when it came from anywhere
+ * @param props.seed the seed itself, for whether there is a name in it at all
+ * @returns the note, or nothing
+ */
+function NameProvenance({
+  source,
+  seed,
+}: Readonly<{ source?: "search" | "answers"; seed?: PatientSeed }>) {
+  const named = (seed?.family ?? "") !== "" || (seed?.given ?? "") !== "";
+  if (!named || source === undefined) {
+    return null;
+  }
+
+  return (
+    <p className="text-xs text-slate-500">
+      {source === "search"
+        ? "Split from what you searched for. The split is a guess — check it before saving."
+        : "Taken from their answers, as they wrote them. Check the spelling before saving."}
+    </p>
+  );
+}
+
 export interface CreatePatientFormProps {
   /** FHIR base to create on. The returned reference is only meaningful against this server. */
   serverUrl: string;
-  /** Name to split into the initial given/family values — the search text, or what the filler called them. */
-  seedName?: string;
+  /**
+   * What to start the fields at, when anything is known.
+   *
+   * Every field is optional and every field stays editable: this is a starting point for a human,
+   * never a conclusion. See {@link seedSource} for where it came from, which is the part the
+   * reviewer needs in order to know how much to trust it.
+   */
+  seed?: PatientSeed;
+  /**
+   * Where {@link seed} came from, so the form can say so.
+   *
+   * The two sources need different warnings and it is the picker, not the data, that knows which
+   * applies. `"search"` was split out of one typed string and the split is a guess; `"answers"` came
+   * from separate questions on a form, so nothing was split - but nobody has verified any of it.
+   */
+  seedSource?: "search" | "answers";
   onCreated: (created: CreatedPatient) => void;
   onCancel: () => void;
   /** Existing patient chosen from the near-match warning instead of creating a duplicate. */
@@ -68,20 +114,26 @@ function createLabel(isSaving: boolean, nearMatchCount: number): string {
   return nearMatchCount > 0 ? "Create anyway" : "Create patient";
 }
 
+/**
+ *
+ * @param props
+ */
 export default function CreatePatientForm(props: CreatePatientFormProps) {
-  const {
-    serverUrl,
-    seedName = "",
-    onCreated,
-    onCancel,
-    onChooseExisting,
-  } = props;
+  const { serverUrl, seed, seedSource, onCreated, onCancel, onChooseExisting } =
+    props;
 
-  const seeded = splitName(seedName);
-  const [family, setFamily] = useState(seeded.family);
-  const [given, setGiven] = useState(seeded.given);
-  const [birthDate, setBirthDate] = useState("");
-  const [gender, setGender] = useState<Patient["gender"] | "">("");
+  /*
+   * Seeded at mount and never re-synced. This form only exists after a click, by which point the
+   * answers it might seed from are already on screen above it - so a later change to `seed` would
+   * mean overwriting what somebody is in the middle of typing, which is the hazard `ReviewResponse`
+   * already guards its own seeded editor against.
+   */
+  const [family, setFamily] = useState(seed?.family ?? "");
+  const [given, setGiven] = useState(seed?.given ?? "");
+  const [birthDate, setBirthDate] = useState(seed?.birthDate ?? "");
+  const [gender, setGender] = useState<Patient["gender"] | "">(
+    seed?.gender ?? "",
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Existing patients sharing the family name. A warning, never a block. */
@@ -149,8 +201,10 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
     <div className="space-y-3 rounded-md border border-slate-300 bg-white p-3">
       <p className="text-xs text-slate-600">
         Creates a new patient record on{" "}
-        <span className="font-mono">{serverUrl}</span>. Nothing about this
-        person travelled with the answers, so everything here is what you type.
+        <span className="font-mono">{serverUrl}</span>.{" "}
+        {seedSource === "answers"
+          ? "The fields below are what they wrote on the form. Check them against their ID before saving — nobody has verified any of it."
+          : "Nothing about this person travelled with the answers, so everything here is what you type."}
       </p>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -188,12 +242,7 @@ export default function CreatePatientForm(props: CreatePatientFormProps) {
         </div>
       </div>
 
-      {seedName.trim() === "" ? null : (
-        <p className="text-xs text-slate-500">
-          Split from “{seedName.trim()}”. The split is a guess — check it before
-          saving.
-        </p>
-      )}
+      <NameProvenance source={seedSource} seed={seed} />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">

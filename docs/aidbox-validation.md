@@ -149,8 +149,8 @@ to re-run, and the right thing to run after wiping the instance. It registers:
   against the app's own JWKS, scoped to `system/QuestionnaireResponse.c`, `system/Task.r`,
   `system/Task.u`);
 - an `AccessPolicy` for each, as narrow as Aidbox's `matcho` engine allows;
-- the demo Questionnaires `AdultSepsisScreening` and `GPChronicConditionManagementPlan`, read from
-  `fixtures/questionnaires/`;
+- the demo Questionnaires `AdultSepsisScreening`, `GPChronicConditionManagementPlan` and
+  `NewPatientRegistration`, read from `fixtures/questionnaires/`;
 - the demo patient `pt-demo` ("Jane Citizen"), the practitioner `prac-demo` ("Dr Alex Fielding")
   and the Aidbox `User` `e2e-demo` / `e2e-demo@example.org` the automated suite signs in as.
 
@@ -194,7 +194,7 @@ environment therefore registers its own pair, distinguished by a suffix on the i
 | deployed demo | `https://formlinks.fhirapp.net` | `smart-forms-health-links`       | `smart-forms-health-links-backend`       |
 
 Each policy is named after its client, so `…-local` gets `smart-forms-health-links-local-policy`
-and so on. Everything else on the instance is shared and written identically by either run: the two
+and so on. Everything else on the instance is shared and written identically by either run: the
 demo Questionnaires, `pt-demo`, `prac-demo` and the `e2e-demo` user.
 
 **You do not have to configure this.** `CLIENT_ID_SUFFIX` defaults to `-local` for a loopback

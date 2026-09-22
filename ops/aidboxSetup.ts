@@ -86,6 +86,7 @@ export const DEMO_PRACTITIONER_ID = "prac-demo";
 export const QUESTIONNAIRE_FIXTURES = [
   "AdultSepsisScreening.json",
   "GPChronicConditionManagementPlan.json",
+  "NewPatientRegistration.json",
 ] as const;
 
 /** Scopes the launch client requests, in the order the contract lists them. */
@@ -505,6 +506,7 @@ function claimedOrigin(
  * tokens, which would have silently defeated the short grant window of FR-016.
  * @param options the app origin, the client secret and the grant lifetime
  * @param options.appOrigin origin the app is served from
+ * @param options.clientId
  * @param options.secret the client secret Aidbox will match on the token request
  * @param options.grantTtlSeconds grant lifetime, carried verbatim in seconds
  * @returns the `Client` body to `PUT` at `/Client/<launch client id>`
@@ -549,6 +551,7 @@ export function buildLaunchClient(options: {
  * is registered inline instead.
  * @param options the app origin, the grant lifetime and the verification key
  * @param options.appOrigin origin the app is served from
+ * @param options.clientId
  * @param options.grantTtlSeconds grant lifetime, carried verbatim in seconds
  * @param options.publicJwk the RS384 verification key
  * @returns the `Client` body to `PUT` at `/Client/<backend client id>`
@@ -599,6 +602,9 @@ export function buildBackendClient(options: {
  * `jwt.sub` is the user identity in a v2 token - Aidbox sets it to the `User` id - so it says
  * the same thing the `user` key was meant to say, and `jwt.scope` additionally requires the
  * token to have been issued through an authorisation flow that granted scopes.
+ * @param options
+ * @param options.clientId
+ * @param options.policyId
  * @returns the `AccessPolicy` body to `PUT` at `/AccessPolicy/<launch policy id>`
  * @example
  * buildLaunchPolicy();
@@ -638,6 +644,9 @@ export function buildLaunchPolicy(options: {
  * provenance create with the same message at `entry[1]` (2026-08-22, during the first live
  * send). The provenance is not an optional extra - FR-021 requires it - so both creates are
  * part of what a grant has to be able to do.
+ * @param options
+ * @param options.clientId
+ * @param options.policyId
  * @returns the `AccessPolicy` body to `PUT` at
  *   `/AccessPolicy/<backend policy id>`
  * @example

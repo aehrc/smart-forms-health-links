@@ -53,7 +53,7 @@ The repo exists to make six claims concrete, each of which is either non-obvious
 how SHL is usually described:
 
 1. **A whole FHIR Questionnaire fits in a QR code** - by reference, not by value. The GP Chronic
-   Condition Management Plan in `fixtures/` is 111,071 bytes of JSON; the link that carries it is
+   Condition Management Plan in `fixtures/` is 216,424 bytes of JSON; the link that carries it is
    about **250 bytes**, because the form is encrypted, hosted and named by a URL plus a key.
 2. **The filler needs no account, no login and no configuration.** Everything required to render the
    form, and everything required to send the answers, travels inside the encrypted manifest.
@@ -959,12 +959,18 @@ public/config.json       the browser's runtime config
 Procfile                 dev: vite + server watch, under overmind
 Dockerfile
 helm/smart-forms-health-links/
+fixtures/questionnaires/
+  AdultSepsisScreening.json   the demo screening form, pre-populated from the record
+  GPChronicConditionManagementPlan.json
+  NewPatientRegistration.json the walk-in form: no pre-population, and the Patient elements
+                              a registration is seeded from
 docs/
   aidbox-validation.md        the two-window walkthrough on the validation instance
   shl-form-reply-channel.md   the reply channels: design record, and what is still minted
   response-links.md           what counts as an inbound response link, plus the token channel
   u-flag-hosting.md           the U-flag hosting defect, and what closed it
-  walk-in-links.md            the printed code: the standing row, the per-scan child, the cap
+  walk-in-links.md            the printed code: the standing row, the per-scan child, the cap,
+                              and the registration seeded from a walk-in's own answers
 ```
 
 ## Known limitations

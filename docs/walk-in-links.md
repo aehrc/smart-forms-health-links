@@ -133,6 +133,82 @@ verb on the request the browser actually makes, for exactly that reason.
   end up with one. A walk-in turns it on, because registering somebody nobody has met is the expected
   outcome.
 
+## The form, and the registration it seeds
+
+The code needs something to point at. `fixtures/questionnaires/NewPatientRegistration.json` is that
+form: seven collapsible groups, about 58 items, phone-first, covering who you are, how to reach you,
+Medicare and concessions, an emergency contact, a health summary and your previous GP.
+
+Two of its properties are invisible on screen and silent when wrong, so both are asserted in
+`tests/ops/questionnaireFixtures.test.ts`.
+
+**It declares no pre-population.** `questionnaireDeclaresPopulation` returns true for _any_ of five
+extensions appearing anywhere in the tree, and the other two fixtures are saturated with them. Copy a
+root extension block across and the request screen offers to fill the form in from the record - for a
+person no record exists for. There is nothing to populate from at the moment a poster is scanned.
+
+**It declares which `Patient` elements four of its questions answer**, through FHIR's own
+`Questionnaire.item.definition`:
+
+```json
+"linkId": "birth-date",
+"type": "date",
+"definition": "http://hl7.org/fhir/StructureDefinition/Patient#Patient.birthDate"
+```
+
+`patientDetailsFromAnswers` in `src/fhir/newPatient.ts` reads those four - given names, family name,
+date of birth, gender - and the walk-in queue opens **Register a new patient** with them already
+filled in. Before this the receptionist read them off the rendered answers and typed them back in,
+which is the paper problem moved one step inside a feature whose premise is that reception types
+nothing.
+
+Matching on `definition` rather than on linkIds is what keeps `newPatient.ts` ignorant of any
+particular form: a linkId convention would be the same coupling with none of the visibility, and a
+rename would stop the seeding with nothing failing anywhere.
+
+Four rules in that function are load-bearing and each has a test that fails without it:
+
+- **A partial date is dropped.** FHIR's `date` permits `1970`; `<input type="date">` accepts neither
+  that nor `1970-03`, so seeding one renders a blank field the reviewer cannot explain.
+- **A gender code outside `administrative-gender` is ignored.** A form binding gender to SNOMED
+  answers with a code the field cannot hold. The gender question on this form uses four inline
+  `answerOption`s rather than a value set, so a filler on a weak connection still gets a usable
+  control and the seed can rely on the codes arriving.
+- **The first question in document order wins.** A form may legitimately ask for a family name twice,
+  once for the patient and once for a previous name.
+- **A typed name replaces both halves together** (`withTypedName`). Merging field by field would let
+  "Smith", typed into the search box over answers for "Jane Citizen", open a registration for _Jane
+  Smith_ - a person who does not exist and whose given name came from somebody else's form.
+
+Everything seeded stays editable, and the form says where the values came from. A name split out of
+the search box needs its _split_ checked; a name from the answers needs the _claim_ checked, against
+something the person is holding.
+
+## Medicare and DVA are asked for, and go nowhere automatically
+
+The form asks for a Medicare number, an IRN, a DVA file number and a concession card number. Nothing
+writes any of them to `Patient.identifier`, and `buildPatient` is unchanged.
+
+The reason is the one already written into `src/fhir/newPatient.ts`: an identifier is the one field
+where a typo makes a false claim that silently mis-matches records elsewhere. The walk-in channel
+makes that worse rather than better. A number arriving through a printed poster is an unverified
+claim by an anonymous party, and writing it to `Patient.identifier` makes it a **searchable key** -
+servers match on identifier, so a mistyped or mischievous number attaches one person's record to
+another's identity across every system downstream that trusts identifiers.
+
+So the numbers live in the QuestionnaireResponse, render in the review, and staff enter them into the
+practice management system, which is where an identifier gets checked against a card. Writing them
+automatically is a deliberate follow-up, not an oversight.
+
+Two consequences worth stating, because they are new:
+
+- **Unverified government identifiers now sit in the untriaged queue** on the practice's server,
+  subject-less, before anyone has looked at them. A paper form on the front desk is no better, but
+  this is a new class of content in that queue and a deployment should decide it can live with it.
+- **A poster that harvests Medicare numbers is worth substituting** in a way a poster that harvests a
+  smoking status is not. That raises what a swapped QR is worth to somebody, which is an argument for
+  a short expiry and for withdrawing codes when a clinic closes.
+
 ## Where this leaves `/requests`
 
 A standing request is never completed, so its Task status stays `requested` for the life of the
@@ -151,6 +227,10 @@ may legitimately name nobody, and guessing would report those as posters.
 - **The scan ceiling is per code, not per caller.** A distributed script still gets 60 an hour, and a
   genuinely busy clinic sharing one code would too. Per-caller limiting needs something this app does
   not have.
+- **The identifier questions have no consumer.** Staff read Medicare and DVA off the rendered form
+  and retype them into their own software. A read-only "from the answers, not saved to the record"
+  callout in the review would turn that from an omission into a deliberate handoff; it must never
+  offer to save them.
 - **Discarding junk from the queue is not built.** A receptionist can attach an item to somebody but
   not mark it as rubbish; that would want a second tag and a deliberate decision about whether a
   practice may delete a resource a stranger created.
