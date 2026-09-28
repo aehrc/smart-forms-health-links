@@ -11,6 +11,7 @@ import {
   patientDisplay,
   searchPatients,
 } from "@/fhir/ehrServer";
+import { withTypedName, type PatientSeed } from "@/fhir/newPatient";
 import { useDebounced } from "@/lib/useDebounced";
 import { cn } from "@/lib/utils";
 
@@ -60,11 +61,14 @@ export interface PatientPickerProps {
    */
   allowCreate?: boolean;
   /**
-   * Name to seed a new patient from - typically what the filler called them, since a free-text
-   * `subject.display` is the only identifying thing any channel carries. Falls back to the search
-   * text.
+   * What the answers said about this person, for the create form to start from.
+   *
+   * Undefined for answers that carry nothing identifying, which is the usual case: a form has to
+   * declare which `Patient` elements its questions answer before anything can be read off it. What
+   * is here is a claim by whoever filled the form in, so it opens editable fields rather than
+   * writing anything.
    */
-  prefillName?: string;
+  seed?: PatientSeed;
 }
 
 /**
@@ -81,13 +85,22 @@ export default function PatientPicker(props: PatientPickerProps) {
     label = "Search patients by name",
     id,
     allowCreate = false,
-    prefillName,
+    seed,
   } = props;
 
   const [searchText, setSearchText] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const debouncedSearch = useDebounced(searchText, 300);
   const searched = debouncedSearch.trim() !== "";
+
+  /*
+   * What the registration form opens with. The precedence rule - a typed name wins over an answered
+   * one, whole rather than field by field - lives in `withTypedName` because it is about what a name
+   * *is*, not about how this control behaves, and because getting it wrong invents a person.
+   */
+  const createSeed = withTypedName(seed, searched ? debouncedSearch : "");
+  // Typed text is a search; otherwise it came from the answers, if it came from anywhere at all.
+  const createSeedSource = searched ? "search" : seed && "answers";
 
   function handleCreated(created: {
     reference: string;
@@ -241,10 +254,8 @@ export default function PatientPicker(props: PatientPickerProps) {
       {allowCreate && isCreating ? (
         <CreatePatientForm
           serverUrl={serverUrl}
-          // What they just typed beats what arrived with the answers: it is the more recent
-          // statement of who they are looking for. `prefillName` carries the rest of the way when
-          // they have not typed anything.
-          seedName={searched ? debouncedSearch.trim() : (prefillName ?? "")}
+          seed={createSeed}
+          seedSource={createSeedSource}
           onCreated={handleCreated}
           onCancel={() => {
             setIsCreating(false);

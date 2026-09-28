@@ -35,6 +35,7 @@ showing it to anybody, because a minted token is not bound to the invitation it 
 - [What it does](#what-it-does) - the browser routes and the server routes
 - [The round trip](#the-round-trip) - nine steps, with measured sizes
 - [Two ways to return answers](#two-ways-to-return-answers) - and why the direct send is primary
+- [Walk-in codes](#walk-in-codes) - one printed QR, many strangers, a queue before the record
 - [How links work](#how-links-work)
 - [One server, one authority](#one-server-one-authority)
 - [Configuration](#configuration)
@@ -52,7 +53,7 @@ The repo exists to make six claims concrete, each of which is either non-obvious
 how SHL is usually described:
 
 1. **A whole FHIR Questionnaire fits in a QR code** - by reference, not by value. The GP Chronic
-   Condition Management Plan in `fixtures/` is 111,071 bytes of JSON; the link that carries it is
+   Condition Management Plan in `fixtures/` is 216,424 bytes of JSON; the link that carries it is
    about **250 bytes**, because the form is encrypted, hosted and named by a URL plus a key.
 2. **The filler needs no account, no login and no configuration.** Everything required to render the
    form, and everything required to send the answers, travels inside the encrypted manifest.
@@ -203,6 +204,7 @@ Same steps, with the phone doing 6 and 7. Two things bite here:
 | `/requests`    | yes      | Sent requests, and their status, read from the published tasks                  |
 | `/responses`   | yes      | QuestionnaireResponses already stored on the launched server, read-only         |
 | `/patients`    | yes      | Patients on the launched server - pick a request's subject, or filter responses |
+| `/walk-ins`    | yes      | The printed codes, and the answers they have brought in awaiting review         |
 | `/fill/:id`    | yes      | Fill a form directly, without the request leg                                   |
 | `/view#<link>` | no       | Open any link - **dispatches on payload**: fill a request, or review a response |
 | `/scan`        | no       | Read a QR with the camera, or paste a link - the fallback return path           |
@@ -229,6 +231,7 @@ One Fastify process serves all of this from one origin.
 | `GET /api/issuers`           | no       | Registered servers for the standalone picker. Labels and issuer URLs only                        |
 | `ALL /api/fhir/*`            | yes      | Proxy to the session's FHIR base, with the access token attached server-side                     |
 | `POST /api/invitations`      | yes      | Mint an invitation: publish the task, encrypt and store the payload                              |
+| `/api/standing-invitations`  | yes      | Walk-in codes: create one, list this practice's, withdraw one                                    |
 | `POST /shl/:id`              | no       | The SHL manifest. Mints a fresh grant per fetch                                                  |
 | `ALL /shl/:id/fhir/*`        | no       | The facade a grant points at. Bearer token bound to that one invitation                          |
 | `GET /.well-known/jwks.json` | no       | The Backend Services client's public JWKS, registered as its `jwks_uri`                          |
@@ -481,6 +484,72 @@ connectathon.
 address on the launched server. Without it there is nothing to complete; with it pointing anywhere
 other than the grant's origin, a correct filler skips the task leg rather than presenting a
 credential off-origin.
+
+## Walk-in codes
+
+A new patient arrives at the counter. There is a QR on a poster; they scan it on their own phone,
+fill in the practice's new patient form, and the answers reach the practice. No account, no login,
+no paper, and nothing typed in by reception. At the moment of the scan the practice holds no record
+of this person at all.
+
+Everything else in this app mints one link for one named patient. A walk-in code is the other shape:
+minted once, printed, and scanned by people nobody has met.
+
+### One code, an invitation per scan
+
+The printed code names a **standing invitation**, and a standing invitation is not answerable. It is
+the row a scan is minted _from_:
+
+```text
+POST /shl/standing-xyz   ──> invitation file: the poster's sealed payload, unchanged
+  (every scan)               grant file:      aud = /shl/{a fresh invitation}/fhir
+```
+
+Each fetch of the manifest mints an ordinary invitation with its own id, its own request identifier
+and its own facade address. Two people scanning the same poster therefore write to two different
+addresses under two different tokens, so the at-most-one-response rule the facade already enforces
+holds for each of them separately - unrelaxed, and with no way for one walk-in's answers to be
+mistaken for another's.
+
+Nothing on the filler's side knows any of this. It reads the destination out of the grant's `aud`,
+which it already did.
+
+### One Task, and no walk-in completes it
+
+Creating a code publishes exactly one request `Task` to the practice, addressed to nobody. A scan
+publishes nothing, which is what keeps an anonymous camera from writing to the practice's server.
+
+That one Task is never completed, and two things make sure of it: the sealed payload carries no
+`invitation-server-task-url`, and the facade declines the Task leg for any invitation minted from a
+code. A walk-in finishing the standing request would retire the poster for everyone behind them.
+`/requests` shows the row as a **walk-in code** rather than as a request waiting for an answer that
+will never come.
+
+### The answers wait for a human
+
+Answers from a code reach the practice's server with **no `subject`**, carrying
+`shl-walk-in` in `meta.tag` beside the patient-asserted security label. They are on the server, and
+they are on nobody's record.
+
+`/walk-ins` is one search on that tag. A receptionist opens an item, sees the answers, and attaches
+them to an existing patient or registers a new one - the same reconciliation a scanned-back response
+gets. Filing an item **updates it where it lies** and removes the tag, which is what takes it out of
+the queue. Creating a second copy with a subject on it would leave two records of one person filling
+in one form.
+
+### What stops a photographed poster
+
+Three things, and the first two are the ones that matter.
+
+- **Nothing an anonymous scan sends reaches a patient's record.** It reaches a queue, labelled as
+  unvouched-for, and a person decides.
+- **Staff can withdraw a code**, and every code carries its own expiry - independent of the one-hour
+  credential inside it, so a poster does not quietly stop working, and a leaked credential does not
+  quietly keep working.
+- **A code has a scan ceiling.** Sixty manifest fetches an hour, after which the manifest answers
+  `429`. A practice will not reach it; a script will.
+
+The honest cost is in [known limitations](#an-anonymous-scan-writes-to-the-practices-server).
 
 ## How links work
 
@@ -822,7 +891,7 @@ server will also refuse a plain-HTTP redirect URI.
 server/                  the BFF: Fastify, one origin, every secret
   index.ts               routes, the SPA fallback, log redaction
   config.ts              environment plus the issuer registry, validated at startup
-  db.ts                  the SQLite schema; sessions and invitations
+  db.ts                  the SQLite schema; sessions, invitations, slots, walk-in codes
   sessions.ts sessionCookie.ts
   smart/
     launch.ts            GET /launch and GET /auth/callback
@@ -835,15 +904,17 @@ server/                  the BFF: Fastify, one origin, every secret
     session.ts           GET /api/session, POST /api/logout, GET /api/issuers
     fhirProxy.ts         ALL /api/fhir/*
     invitations.ts       POST /api/invitations
+    standingInvitations.ts  /api/standing-invitations - the walk-in codes
   shl/
     invitationStore.ts   the hosted payload behind a shlink: URL
+    standingInvitationStore.ts  one printed code, and the scans minted from it
     manifest.ts          POST /shl/:id, and the per-fetch grant
     grantToken.ts        the capability token a grant carries
     facade.ts            ALL /shl/:id/fhir/*, the write target
 src/                     the SPA
   App.tsx                routes, the session gate, the root-fragment forward
   routes/                Connect, FormList, RequestForm, Requests, ResponseList,
-                         PatientList, FillForm, ViewLink, Scan
+                         PatientList, FillForm, ViewLink, Scan, WalkIns
   components/
     FormRenderer.tsx     the smart-forms-renderer composition
     FillFromRequest.tsx  the filler's fallback: render, then return a link
@@ -869,11 +940,12 @@ src/                     the SPA
   fhir/
     formsServer.ts       Questionnaire search and resolve-by-canonical, via the proxy
     ehrServer.ts         patients, responses, published request Tasks, via the proxy
-    submit.ts            the scan-back write: endpoint resolution, meta, Provenance
+    submit.ts            the scan-back write, and the walk-in update-in-place
   lib/
     config.ts            AppConfig, validation, and the fallback
     session.ts           the session query, the requester gate, the proxy fetch
     sentRequests.ts      /requests, derived from the published request Tasks
+    standingInvitations.ts  the browser's half of the walk-in codes
     answerRows.ts        flattening a QuestionnaireResponse for RawAnswers
 ops/
   aidboxSetup.ts         npm run setup:aidbox - idempotent clients, policies, demo data
@@ -887,11 +959,18 @@ public/config.json       the browser's runtime config
 Procfile                 dev: vite + server watch, under overmind
 Dockerfile
 helm/smart-forms-health-links/
+fixtures/questionnaires/
+  AdultSepsisScreening.json   the demo screening form, pre-populated from the record
+  GPChronicConditionManagementPlan.json
+  NewPatientRegistration.json the walk-in form: no pre-population, and the Patient elements
+                              a registration is seeded from
 docs/
   aidbox-validation.md        the two-window walkthrough on the validation instance
   shl-form-reply-channel.md   the reply channels: design record, and what is still minted
   response-links.md           what counts as an inbound response link, plus the token channel
   u-flag-hosting.md           the U-flag hosting defect, and what closed it
+  walk-in-links.md            the printed code: the standing row, the per-scan child, the cap,
+                              and the registration seeded from a walk-in's own answers
 ```
 
 ## Known limitations
@@ -917,6 +996,25 @@ does not name the practice's FHIR base at all.
 That is the same choice channel D already made, and the comparison table now says so for both. A
 deployment that cannot accept an intermediary reading answers has the scan-back channel, where the
 requester's own session performs the write and this app carries only ciphertext.
+
+### An anonymous scan writes to the practice's server
+
+A walk-in code is public by construction - the whole point is that anybody may scan it - and answers
+sent through one are forwarded to the practice's FHIR server immediately, before any human has looked
+at them. So whoever photographs a poster can create QuestionnaireResponses there.
+
+The alternative was to hold those answers in this app until staff accepted them, and it was weighed
+and not taken: a queue in SQLite is a second store to keep, to back up and to lose, and the practice's
+own server is where a response belongs once it exists.
+
+What bounds the damage is that none of it lands on a patient. Every one of those responses carries no
+`subject`, carries the patient-asserted security label, and carries the walk-in tag that puts it in a
+queue rather than in a record - so the worst a harvested poster does is give a receptionist junk to
+discard. The scan ceiling caps how much: a send needs an invitation, an invitation needs a manifest
+fetch, and sixty fetches an hour is the ceiling on both.
+
+A deployment that cannot accept even that should set a short expiry on its codes and withdraw them
+when a clinic closes.
 
 ### Anyone who photographs a link can still open it
 

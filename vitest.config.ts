@@ -56,16 +56,23 @@ export default defineConfig({
        * which exercises them the way a user does. Asserting their rendered output twice would
        * buy coverage percentage rather than confidence.
        *
-       * The browser modules that predate this feature (`src/link` codecs, `src/fhir`, the rest of
-       * `src/lib`) have no unit tests yet. Including them would set the threshold to whatever
-       * they happen to score, which is not a standard. They are verified today by
+       * The browser modules that predate this feature (`src/link` codecs, most of `src/fhir`, the
+       * rest of `src/lib`) have no unit tests yet. Including them would set the threshold to
+       * whatever they happen to score, which is not a standard. They are verified today by
        * `npm run check:e2e` and `npm run check:e2e-shl`, and bringing them under test is separate
        * work with its own scope.
+       *
+       * `src/fhir/newPatient.ts` is named individually for the opposite reason: it is pure, it has
+       * no I/O, and it is covered deliberately rather than incidentally. Reading a registration out
+       * of a stranger's answers is the kind of thing that fails silently - a dropped definition
+       * seeds nothing and looks fine - so it is held to the threshold rather than left to the
+       * acceptance suite.
        */
       include: [
         "server/**",
         "ops/**",
         "src/fill/**",
+        "src/fhir/newPatient.ts",
         "src/lib/session.ts",
         "src/link/apiAccess.ts",
         "src/link/invitationBundle.ts",

@@ -22,6 +22,10 @@ import {
   labelFromTask,
   requestState,
 } from "@/lib/sentRequests";
+import {
+  SHL_REQUEST_TAG,
+  SHL_STANDING_REQUEST_TAG,
+} from "@/link/invitationBundle";
 
 /**
  * A published request Task, as `searchPublishedRequests` returns one.
@@ -99,6 +103,44 @@ describe("describeSentRequests", () => {
     ]);
 
     expect(request.responseReference).toBe("QuestionnaireResponse/qr-10");
+  });
+
+  /*
+   * The walk-in code's own request. It is published so the practice can see that a poster exists,
+   * and it will never be completed, because no single walk-in may finish a request that serves
+   * everybody else who scans the same code. Reporting it as awaiting answers would be true of the
+   * resource and misleading about the practice.
+   */
+  it("marks the standing request behind a printed code as standing", () => {
+    const [request] = describeSentRequests([
+      publishedTask({
+        meta: {
+          tag: [{ ...SHL_REQUEST_TAG }, { ...SHL_STANDING_REQUEST_TAG }],
+        },
+        for: undefined,
+      }),
+    ]);
+
+    expect(request.standing).toBe(true);
+    // Still awaiting as far as the Task is concerned; the flag is what the view reads instead.
+    expect(request.state).toBe("awaiting");
+  });
+
+  // An ordinary request carries only the one tag, and must not be mistaken for a poster.
+  it("does not mark an ordinary request as standing", () => {
+    const [request] = describeSentRequests([
+      publishedTask({ meta: { tag: [{ ...SHL_REQUEST_TAG }] } }),
+    ]);
+
+    expect(request.standing).toBe(false);
+  });
+
+  // Inferred from the tag and nothing else: a per-patient request may legitimately name nobody,
+  // so the absence of a subject says nothing about whether a code was printed.
+  it("does not infer standing from a request that names no subject", () => {
+    const [request] = describeSentRequests([publishedTask({ for: undefined })]);
+
+    expect(request.standing).toBe(false);
   });
 
   it("drops a Task with no identifier, which nothing could ever answer", () => {

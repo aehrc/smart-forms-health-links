@@ -49,13 +49,13 @@ import type { FastifyBaseLogger, FastifyPluginCallback } from "fastify";
 import type { Questionnaire } from "fhir/r4";
 
 /** Prefix of a SMART Health Link. */
-const SHL_PREFIX = "shlink:/";
+export const SHL_PREFIX = "shlink:/";
 
 /** The SMART Health Links specification caps `label` at 80 characters. */
-const MAX_LABEL_LENGTH = 80;
+export const MAX_LABEL_LENGTH = 80;
 
 /** How long a link stays openable when the requester does not say (data-model.md). */
-const DEFAULT_LINK_LIFETIME_SECONDS = 30 * 86_400;
+export const DEFAULT_LINK_LIFETIME_SECONDS = 30 * 86_400;
 
 /** What the SPA sends to mint an invitation. */
 export interface CreateInvitationBody {
@@ -112,7 +112,7 @@ export interface CreateInvitationResponse {
 }
 
 /** The `shlink:/` payload, exactly as `contracts/shl-wire.md` fixes it. */
-interface ShlPayload {
+export interface ShlPayload {
   /** The manifest URL. */
   readonly url: string;
   /** The 256-bit content encryption key, base64url. */
@@ -124,7 +124,7 @@ interface ShlPayload {
 }
 
 /** A FHIR read or write that did not produce what the mint needed. */
-interface UpstreamFailure {
+export interface UpstreamFailure {
   /** The error code to answer with. */
   readonly error: "questionnaire-unreadable" | "task-publish-failed";
   /** What went wrong, in terms safe to put in a response body. */
@@ -140,7 +140,7 @@ interface UpstreamFailure {
  * @returns the response
  * @throws {TypeError} when the server cannot be reached
  */
-async function fhirRequest(
+export async function fhirRequest(
   session: ActiveSession,
   url: string,
   method: string,
@@ -166,7 +166,7 @@ async function fhirRequest(
  * @param log the request logger
  * @returns the Questionnaire, or the failure to answer with
  */
-async function readQuestionnaire(
+export async function readQuestionnaire(
   session: ActiveSession,
   questionnaireId: string,
   log: FastifyBaseLogger,
@@ -213,7 +213,7 @@ async function readQuestionnaire(
  * @param log the request logger
  * @returns the absolute URL of the created Task, or the failure to answer with
  */
-async function publishTask(
+export async function publishTask(
   session: ActiveSession,
   task: string,
   log: FastifyBaseLogger,

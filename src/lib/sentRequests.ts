@@ -2,6 +2,7 @@ import type { Task } from "fhir/r4";
 
 import { RESPONSE_OUTPUT_TYPE } from "@/fhir/taskCompletion";
 import { taskCorrelationId } from "@/link/exchange";
+import { SHL_STANDING_REQUEST_TAG } from "@/link/invitationBundle";
 
 /**
  * What "what have I sent?" is answered from: the request Tasks on the launched server.
@@ -48,6 +49,15 @@ export interface SentRequest {
   requesterDisplay?: string;
   /** Reference to the answers, present once the Task has been completed with them. */
   responseReference?: string;
+  /**
+   * Whether this is the standing request behind a printed walk-in code.
+   *
+   * A standing request is never completed, because no single walk-in may finish a request that
+   * serves everybody else who scans the same poster. Without this flag the row would read
+   * "awaiting answers" for the life of the poster, which is true of the Task and false of the
+   * practice: the answers are arriving, they are just arriving in the walk-in queue.
+   */
+  standing: boolean;
 }
 
 /**
@@ -128,6 +138,22 @@ function responseReferenceOf(task: Task): string | undefined {
 }
 
 /**
+ * Whether a published Task is the standing request behind a printed code.
+ *
+ * Read from the tag the mint stamps, not inferred from the absence of a `for`: a per-patient
+ * request may legitimately name nobody, and guessing would report those as posters.
+ * @param task the published Task
+ * @returns true when it carries the standing-request tag
+ */
+function hasStandingTag(task: Task): boolean {
+  return (task.meta?.tag ?? []).some(
+    (tag) =>
+      tag.system === SHL_STANDING_REQUEST_TAG.system &&
+      tag.code === SHL_STANDING_REQUEST_TAG.code,
+  );
+}
+
+/**
  * Turn the published Tasks into rows, newest first.
  *
  * A Task with no `identifier` is dropped rather than shown: the identifier is what a returning
@@ -156,6 +182,7 @@ export function describeSentRequests(tasks: Task[]): SentRequest[] {
           subjectReference: task.for?.reference,
           requesterDisplay: task.requester?.display,
           responseReference: responseReferenceOf(task),
+          standing: hasStandingTag(task),
         },
       ];
     })

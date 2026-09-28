@@ -52,6 +52,7 @@ import type { ApiAccessGrant, ReceivedGrant } from "@/link/apiAccess";
 import type {
   Bundle,
   BundleEntry,
+  Coding,
   Meta,
   Provenance,
   QuestionnaireResponse,
@@ -117,6 +118,16 @@ export interface SubmissionTransactionOptions {
   readonly patientDisplay?: string;
   /** The Task to complete, when one was readable on the destination. */
   readonly task?: DestinationTask;
+  /**
+   * Tags to stamp on the stored answers, beside the patient-asserted security label.
+   *
+   * Used by the facade and by nothing else. A filler cannot reach it: the facade rebuilds the
+   * transaction from the answers alone, so what is *about* a submission - whose it is, which
+   * request it answers, where it came from - is stamped from the invitation row rather than taken
+   * from anything the sender wrote. The walk-in tag is the one tag that travels this way, and it
+   * is what puts a stranger's answers in front of a human before they reach a record.
+   */
+  readonly tags?: readonly Coding[];
   /** ISO instant for `Provenance.recorded`; defaults to now. */
   readonly recorded?: string;
 }
@@ -292,6 +303,7 @@ export function buildSubmissionTransaction(
     requestIdentifier,
     patientDisplay,
     task,
+    tags,
     recorded,
   } = options;
 
@@ -326,6 +338,14 @@ export function buildSubmissionTransaction(
       ...(response.meta?.security ?? []),
       { ...PATIENT_ASSERTED_SECURITY },
     ],
+    ...(tags === undefined || tags.length === 0
+      ? {}
+      : {
+          tag: [
+            ...(response.meta?.tag ?? []),
+            ...tags.map((tag) => ({ ...tag })),
+          ],
+        }),
   };
   delete meta.versionId;
   delete meta.lastUpdated;

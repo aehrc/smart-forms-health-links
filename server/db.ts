@@ -1,9 +1,17 @@
 /**
  * SQLite connection and schema.
  *
- * One file holds both tables described in data-model.md: `sessions` (the requester's launch
- * sessions) and `invitations` (the hosted SHL payloads). Minted access tokens are never
- * written here - they exist only for the duration of a manifest response (FR-018).
+ * One file holds the tables described in data-model.md: `sessions` (the requester's launch
+ * sessions) and `invitations` (the hosted SHL payloads), plus the two that were added after it -
+ * `writeSlots` (channel D) and `standingInvitations` (the walk-in QR a practice prints once).
+ * Minted access tokens are never written here - they exist only for the duration of a manifest
+ * response (FR-018).
+ *
+ * `standingInvitations` is a table of its own rather than a flag on `invitations`, and that is
+ * load-bearing rather than tidy. A standing row is not writable: it is the thing scans are minted
+ * from*, never the thing answers are written *to*. Keeping it out of `invitations` means
+ * `findInvitation` cannot return one, so the facade refuses `/shl/{standingId}/fhir` with the 404
+ * it gives any unknown id, without a guard that somebody could later forget to write.
  *
  * Column names are the camelCase field names of the TypeScript row types, so a row maps
  * straight onto its interface with no translation layer.
@@ -78,6 +86,23 @@ CREATE TABLE IF NOT EXISTS writeSlots (
 );
 
 CREATE INDEX IF NOT EXISTS writeSlots_expiresAt ON writeSlots (expiresAt);
+
+CREATE TABLE IF NOT EXISTS standingInvitations (
+  id                     TEXT PRIMARY KEY,
+  linkKey                TEXT NOT NULL,
+  payloadCiphertext      TEXT NOT NULL,
+  label                  TEXT NOT NULL,
+  expiresAt              INTEGER,
+  issuer                 TEXT NOT NULL,
+  requestIdentifier      TEXT NOT NULL,
+  publishedTaskUrl       TEXT NOT NULL,
+  questionnaireCanonical TEXT,
+  revokedAt              INTEGER,
+  createdAt              INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS standingInvitations_expiresAt
+  ON standingInvitations (expiresAt);
 `;
 
 /**
@@ -94,6 +119,8 @@ const ADDED_COLUMNS: readonly string[] = [
   "ALTER TABLE invitations ADD COLUMN questionnaireCanonical TEXT",
   "ALTER TABLE invitations ADD COLUMN respondedAt INTEGER",
   "ALTER TABLE invitations ADD COLUMN responseReference TEXT",
+  "ALTER TABLE invitations ADD COLUMN standingId TEXT",
+  "CREATE INDEX IF NOT EXISTS invitations_standingId ON invitations (standingId)",
 ];
 
 /**

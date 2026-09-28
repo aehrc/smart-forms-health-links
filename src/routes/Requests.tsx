@@ -4,6 +4,7 @@ import {
   ClipboardList,
   Inbox,
   Loader2,
+  QrCode,
   RefreshCw,
 } from "lucide-react";
 import { Link as RouterLink } from "react-router-dom";
@@ -45,6 +46,15 @@ import { describeSentRequests, type SentRequest } from "@/lib/sentRequests";
  * @returns the badge text
  */
 function statusLabel(request: SentRequest): string {
+  /*
+   * A standing request is checked before the Task's own status, because its status is always
+   * `requested` and always will be: no walk-in completes the request that serves the next one.
+   * Reporting it as awaiting answers would be true of the resource and misleading about the
+   * practice, whose walk-in answers are arriving in the queue on `/walk-ins`.
+   */
+  if (request.standing) {
+    return "Walk-in code";
+  }
   if (request.state === "answered") {
     return "Answers received";
   }
@@ -62,7 +72,8 @@ function statusLabel(request: SentRequest): string {
  * @param state the row's state
  * @returns the Tailwind classes for the badge
  */
-function statusTone(state: SentRequest["state"]): string {
+function statusTone(state: SentRequest["state"] | "standing"): string {
+  if (state === "standing") return "bg-sky-100 text-sky-900";
   if (state === "answered") return "bg-green-100 text-green-800";
   if (state === "closed") return "bg-amber-100 text-amber-900";
   return "bg-slate-100 text-slate-600";
@@ -77,14 +88,35 @@ function statusTone(state: SentRequest["state"]): string {
  * @returns the in-app path
  */
 function answersPath(request: SentRequest): string {
+  if (request.standing) {
+    return "/walk-ins";
+  }
   return request.subjectReference?.startsWith("Patient/")
     ? `/responses?subject=${encodeURIComponent(request.subjectReference)}`
     : "/responses";
 }
 
 /**
+ * The icon beside a row's state badge, when the state has one worth showing.
+ * @param props the component props
+ * @param props.request the row
+ * @returns the icon, or null for a state that needs no glyph
+ */
+function StatusIcon({ request }: Readonly<{ request: SentRequest }>) {
+  if (request.standing) {
+    return <QrCode className="h-3 w-3" aria-hidden />;
+  }
+  if (request.state === "answered") {
+    return <Inbox className="h-3 w-3" aria-hidden />;
+  }
+  return null;
+}
+
+/**
  * One row: a published request Task, and what its state says about it.
  * @param props.request the row to render
+ * @param root0
+ * @param root0.request
  * @returns the card
  */
 function RequestRow({ request }: { request: SentRequest }) {
@@ -109,18 +141,16 @@ function RequestRow({ request }: { request: SentRequest }) {
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <span
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${statusTone(request.state)}`}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${statusTone(request.standing ? "standing" : request.state)}`}
             >
-              {request.state === "answered" ? (
-                <Inbox className="h-3 w-3" aria-hidden />
-              ) : null}
+              <StatusIcon request={request} />
               {statusLabel(request)}
             </span>
-            {request.state === "answered" ? (
+            {request.standing || request.state === "answered" ? (
               <RouterLink to={answersPath(request)}>
                 <Button variant="outline" size="sm">
                   <ClipboardList className="h-3.5 w-3.5" aria-hidden />
-                  View answers
+                  {request.standing ? "Walk-in queue" : "View answers"}
                 </Button>
               </RouterLink>
             ) : null}

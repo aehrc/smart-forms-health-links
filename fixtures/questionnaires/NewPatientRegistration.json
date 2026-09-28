@@ -1,0 +1,727 @@
+{
+  "resourceType": "Questionnaire",
+  "id": "NewPatientRegistration",
+  "item": [
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-open"
+        }
+      ],
+      "linkId": "about-you",
+      "text": "About you",
+      "type": "group",
+      "item": [
+        {
+          "linkId": "name-given",
+          "text": "Given name(s)",
+          "type": "string",
+          "definition": "http://hl7.org/fhir/StructureDefinition/Patient#Patient.name.given"
+        },
+        {
+          "linkId": "name-family",
+          "text": "Family name",
+          "type": "string",
+          "definition": "http://hl7.org/fhir/StructureDefinition/Patient#Patient.name.family",
+          "required": true
+        },
+        {
+          "linkId": "name-preferred",
+          "text": "Preferred name, if different",
+          "type": "string"
+        },
+        {
+          "linkId": "birth-date",
+          "text": "Date of birth",
+          "type": "date",
+          "definition": "http://hl7.org/fhir/StructureDefinition/Patient#Patient.birthDate"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "radio-button"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "gender",
+          "text": "Gender",
+          "type": "choice",
+          "definition": "http://hl7.org/fhir/StructureDefinition/Patient#Patient.gender",
+          "answerOption": [
+            {
+              "valueCoding": {
+                "system": "http://hl7.org/fhir/administrative-gender",
+                "code": "female",
+                "display": "Female"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://hl7.org/fhir/administrative-gender",
+                "code": "male",
+                "display": "Male"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://hl7.org/fhir/administrative-gender",
+                "code": "other",
+                "display": "Other"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://hl7.org/fhir/administrative-gender",
+                "code": "unknown",
+                "display": "Prefer not to say"
+              }
+            }
+          ]
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "drop-down"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "indigenous-status",
+          "text": "Are you of Aboriginal or Torres Strait Islander origin?",
+          "type": "choice",
+          "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/australian-indigenous-status-1"
+        },
+        {
+          "linkId": "language-at-home",
+          "text": "Main language spoken at home",
+          "type": "string"
+        },
+        {
+          "linkId": "interpreter-needed",
+          "text": "Would you like an interpreter?",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-closed"
+        }
+      ],
+      "linkId": "contact",
+      "text": "How we can reach you",
+      "type": "group",
+      "item": [
+        {
+          "linkId": "address-line",
+          "text": "Street address",
+          "type": "text"
+        },
+        {
+          "linkId": "address-suburb",
+          "text": "Suburb",
+          "type": "string"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "drop-down"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "address-state",
+          "text": "State or territory",
+          "type": "choice",
+          "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/australian-states-territories-2"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/regex",
+              "valueString": "matches('^[0-9]{4}$')"
+            },
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
+              "valueString": "####"
+            }
+          ],
+          "linkId": "address-postcode",
+          "text": "Postcode",
+          "type": "string",
+          "maxLength": 4
+        },
+        {
+          "linkId": "phone-mobile",
+          "text": "Mobile number",
+          "type": "string"
+        },
+        {
+          "linkId": "phone-other",
+          "text": "Other phone number",
+          "type": "string"
+        },
+        {
+          "linkId": "email",
+          "text": "Email address",
+          "type": "string"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "radio-button"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "contact-preference",
+          "text": "How would you prefer we contact you?",
+          "type": "choice",
+          "answerOption": [
+            {
+              "valueCoding": {
+                "system": "http://smartforms.csiro.au/CodeSystem/new-patient-registration",
+                "code": "sms",
+                "display": "Text message"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://smartforms.csiro.au/CodeSystem/new-patient-registration",
+                "code": "phone",
+                "display": "Phone call"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://smartforms.csiro.au/CodeSystem/new-patient-registration",
+                "code": "email",
+                "display": "Email"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-closed"
+        }
+      ],
+      "linkId": "medicare-and-concessions",
+      "text": "Medicare and concessions",
+      "type": "group",
+      "item": [
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-displayCategory",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-display-category",
+                    "code": "instructions"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "medicare-guidance",
+          "text": "These are used for billing only. Bring your cards with you - reception will check them against what you have written here.",
+          "type": "display"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/regex",
+              "valueString": "matches('^[0-9]{10}$')"
+            },
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
+              "valueString": "##########"
+            }
+          ],
+          "linkId": "medicare-number",
+          "text": "Medicare number",
+          "type": "string",
+          "maxLength": 10
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/regex",
+              "valueString": "matches('^[0-9]$')"
+            },
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
+              "valueString": "#"
+            }
+          ],
+          "linkId": "medicare-irn",
+          "text": "Individual reference number (the number beside your name on the card)",
+          "type": "string",
+          "maxLength": 1
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
+              "valueString": "MM/YYYY"
+            }
+          ],
+          "linkId": "medicare-expiry",
+          "text": "Card valid to",
+          "type": "string"
+        },
+        {
+          "linkId": "has-dva",
+          "text": "Do you have a DVA card?",
+          "type": "boolean"
+        },
+        {
+          "linkId": "dva-number",
+          "text": "DVA file number",
+          "type": "string",
+          "enableWhen": [
+            {
+              "question": "has-dva",
+              "operator": "=",
+              "answerBoolean": true
+            }
+          ]
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "radio-button"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "dva-card-colour",
+          "text": "DVA card colour",
+          "type": "choice",
+          "answerOption": [
+            {
+              "valueCoding": {
+                "system": "http://smartforms.csiro.au/CodeSystem/new-patient-registration",
+                "code": "gold",
+                "display": "Gold"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://smartforms.csiro.au/CodeSystem/new-patient-registration",
+                "code": "white",
+                "display": "White"
+              }
+            },
+            {
+              "valueCoding": {
+                "system": "http://smartforms.csiro.au/CodeSystem/new-patient-registration",
+                "code": "orange",
+                "display": "Orange"
+              }
+            }
+          ],
+          "enableWhen": [
+            {
+              "question": "has-dva",
+              "operator": "=",
+              "answerBoolean": true
+            }
+          ]
+        },
+        {
+          "linkId": "has-concession-card",
+          "text": "Do you have a pensioner or health care card?",
+          "type": "boolean"
+        },
+        {
+          "linkId": "concession-number",
+          "text": "Concession card number",
+          "type": "string",
+          "enableWhen": [
+            {
+              "question": "has-concession-card",
+              "operator": "=",
+              "answerBoolean": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-closed"
+        }
+      ],
+      "linkId": "emergency-contact",
+      "text": "Emergency contact",
+      "type": "group",
+      "item": [
+        {
+          "linkId": "emergency-name",
+          "text": "Their name",
+          "type": "string"
+        },
+        {
+          "linkId": "emergency-relationship",
+          "text": "Their relationship to you",
+          "type": "string"
+        },
+        {
+          "linkId": "emergency-phone",
+          "text": "Their phone number",
+          "type": "string"
+        },
+        {
+          "linkId": "emergency-may-contact",
+          "text": "May we contact them about your care?",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-closed"
+        }
+      ],
+      "linkId": "your-health",
+      "text": "Your health",
+      "type": "group",
+      "item": [
+        {
+          "linkId": "has-allergies",
+          "text": "Do you have any allergies?",
+          "type": "boolean"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+              "valueCode": "default-closed"
+            }
+          ],
+          "linkId": "allergy",
+          "text": "Allergy",
+          "type": "group",
+          "repeats": true,
+          "enableWhen": [
+            {
+              "question": "has-allergies",
+              "operator": "=",
+              "answerBoolean": true
+            }
+          ],
+          "item": [
+            {
+              "extension": [
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+                  "valueCodeableConcept": {
+                    "coding": [
+                      {
+                        "system": "http://hl7.org/fhir/questionnaire-item-control",
+                        "code": "autocomplete"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "linkId": "allergy-substance",
+              "text": "What are you allergic to?",
+              "type": "open-choice",
+              "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/adverse-reaction-agent-1"
+            },
+            {
+              "linkId": "allergy-reaction",
+              "text": "What happens?",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "linkId": "takes-medicines",
+          "text": "Are you taking any medicines?",
+          "type": "boolean"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+              "valueCode": "default-closed"
+            }
+          ],
+          "linkId": "medicine",
+          "text": "Medicine",
+          "type": "group",
+          "repeats": true,
+          "enableWhen": [
+            {
+              "question": "takes-medicines",
+              "operator": "=",
+              "answerBoolean": true
+            }
+          ],
+          "item": [
+            {
+              "extension": [
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+                  "valueCodeableConcept": {
+                    "coding": [
+                      {
+                        "system": "http://hl7.org/fhir/questionnaire-item-control",
+                        "code": "autocomplete"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "linkId": "medicine-name",
+              "text": "Medicine",
+              "type": "open-choice",
+              "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/australian-medication-1"
+            },
+            {
+              "linkId": "medicine-dose",
+              "text": "How much, and how often?",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "linkId": "has-conditions",
+          "text": "Do you have any ongoing health conditions?",
+          "type": "boolean"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+              "valueCode": "default-closed"
+            }
+          ],
+          "linkId": "condition",
+          "text": "Condition",
+          "type": "group",
+          "repeats": true,
+          "enableWhen": [
+            {
+              "question": "has-conditions",
+              "operator": "=",
+              "answerBoolean": true
+            }
+          ],
+          "item": [
+            {
+              "extension": [
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+                  "valueCodeableConcept": {
+                    "coding": [
+                      {
+                        "system": "http://hl7.org/fhir/questionnaire-item-control",
+                        "code": "autocomplete"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "linkId": "condition-name",
+              "text": "Condition",
+              "type": "open-choice",
+              "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/clinical-condition-1"
+            },
+            {
+              "linkId": "condition-since",
+              "text": "Since when?",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "drop-down"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "smoking-status",
+          "text": "Do you smoke?",
+          "type": "choice",
+          "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/smoking-status-1"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-itemControl",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-item-control",
+                    "code": "drop-down"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "alcohol-status",
+          "text": "Do you drink alcohol?",
+          "type": "choice",
+          "answerValueSet": "https://healthterminologies.gov.au/fhir/ValueSet/alcohol-intake-status-1"
+        },
+        {
+          "linkId": "family-history",
+          "text": "Any conditions that run in your family?",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-closed"
+        }
+      ],
+      "linkId": "previous-care",
+      "text": "Your previous doctor",
+      "type": "group",
+      "item": [
+        {
+          "linkId": "previous-practice-name",
+          "text": "Previous practice name",
+          "type": "string"
+        },
+        {
+          "linkId": "previous-practice-suburb",
+          "text": "Its suburb",
+          "type": "string"
+        },
+        {
+          "linkId": "previous-gp-name",
+          "text": "Your previous GP",
+          "type": "string"
+        },
+        {
+          "linkId": "transfer-records",
+          "text": "Would you like us to request your records?",
+          "type": "boolean"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-displayCategory",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-display-category",
+                    "code": "instructions"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "transfer-guidance",
+          "text": "If you would, reception will ask you to sign a records transfer form before you leave.",
+          "type": "display"
+        }
+      ]
+    },
+    {
+      "extension": [
+        {
+          "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-collapsible",
+          "valueCode": "default-closed"
+        }
+      ],
+      "linkId": "anything-else",
+      "text": "Anything else",
+      "type": "group",
+      "item": [
+        {
+          "linkId": "other-notes",
+          "text": "Is there anything else you would like us to know?",
+          "type": "text"
+        },
+        {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/StructureDefinition/questionnaire-displayCategory",
+              "valueCodeableConcept": {
+                "coding": [
+                  {
+                    "system": "http://hl7.org/fhir/questionnaire-display-category",
+                    "code": "instructions"
+                  }
+                ]
+              }
+            }
+          ],
+          "linkId": "privacy-note",
+          "text": "Your answers go to the practice. A member of staff checks them with you before anything is added to your record.",
+          "type": "display"
+        }
+      ]
+    }
+  ],
+  "url": "http://smartforms.csiro.au/Questionnaire/NewPatientRegistration",
+  "version": "0.1.0",
+  "name": "NewPatientRegistration",
+  "title": "New patient registration",
+  "status": "draft",
+  "experimental": false,
+  "subjectType": ["Patient"],
+  "date": "2026-09-22",
+  "publisher": "AEHRC CSIRO",
+  "description": "Registration details for somebody new to the practice, filled in by the patient on their own device. Declares no pre-population: at the moment this form is opened the practice holds no record of the person filling it in."
+}

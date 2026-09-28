@@ -38,8 +38,10 @@ import { Input } from "@/components/ui/input";
 import WriteBackPanel from "@/components/WriteBackPanel";
 import { buildAmendment } from "@/fhir/amend";
 import { extractFromResponse, extractMechanism } from "@/fhir/extract";
+import { patientDetailsFromAnswers } from "@/fhir/newPatient";
 import {
   NO_DESTINATION_MESSAGE,
+  attachSubject,
   declaredEndpoints,
   referenceResolves,
   resolveDestinations,
@@ -85,6 +87,28 @@ export interface ReviewResponseProps {
   /** Attribution that arrived with the answers, when the filler sent any. */
   provenance?: Provenance;
   label?: string;
+  /**
+   * Where these answers already are, when they are already on the server.
+   *
+   * Set for the walk-in queue and for nothing else. Answers arriving on a link are content this
+   * app has never stored, so accepting them is a create. Answers from a printed code reached the
+   * practice the moment they were sent - untriaged, tagged, and belonging to nobody - so accepting
+   * them is an **update of what is already there**, not a second copy with a subject on it.
+   *
+   * Two other things follow from it. The patient search is pinned to this server, because a subject
+   * reference is only worth anything on the server holding the response. And the save removes the
+   * walk-in tag, which is what takes the item out of the queue.
+   */
+  savedAs?: SavedResponse;
+  /**
+   * Whether the reviewer may register a patient who is not on the server yet.
+   *
+   * Off by default, because the usual review is of answers a practice asked a patient it already
+   * knows for, and offering to create a second record for them is a way to end up with one. A
+   * walk-in turns it on: nobody has ever heard of the person who scanned the poster, so
+   * registering them is the expected outcome rather than a mistake.
+   */
+  allowPatientCreation?: boolean;
   /**
    * Called once the answers have landed somewhere.
    *
@@ -146,6 +170,8 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     task,
     provenance,
     label,
+    savedAs,
+    allowPatientCreation,
     onSaved,
   } = props;
   const config = useConfig();
@@ -354,7 +380,13 @@ export default function ReviewResponse(props: ReviewResponseProps) {
    */
   const needsSubject =
     outcome === null && canSave && (subjectCheck === "missing" || !hasSubject);
-  const searchServer = destinations[0];
+  /*
+   * Answers already on a server are reconciled against *that* server, whatever the form declares.
+   * A questionnaire's own `sdc-questionnaire-endpoint` says where new answers should be sent; it
+   * says nothing about where these ones already are, and a subject reference only means something
+   * on the server holding the resource it is attached to.
+   */
+  const searchServer = savedAs?.serverUrl ?? destinations[0];
   /*
    * Who the request was addressed to, offered as a one-click reconciliation.
    *
@@ -523,16 +555,43 @@ export default function ReviewResponse(props: ReviewResponseProps) {
     setError(null);
     setIsSaving(true);
     try {
-      const submitted = await submitResponse({
-        response: reconciledResponse(),
-        task,
-        provenance,
-        questionnaire,
-        responseServerUrl: FHIR_PROXY_BASE,
-        launchedServer: session
-          ? { issuer: session.issuer, label: session.issuerLabel }
-          : undefined,
-      });
+      /*
+       * Two verbs, one button. Answers this app has never stored are created; answers already on
+       * the server are updated where they lie, because they arrived there before anybody knew whose
+       * they were. Both end with the same outcome shape, so everything downstream - the write-back
+       * phase, the saved list, the amendment offer - is unaware of which one ran.
+       */
+      const submitted: SubmitOutcome =
+        savedAs === undefined
+          ? await submitResponse({
+              response: reconciledResponse(),
+              task,
+              provenance,
+              questionnaire,
+              responseServerUrl: FHIR_PROXY_BASE,
+              launchedServer: session
+                ? { issuer: session.issuer, label: session.issuerLabel }
+                : undefined,
+            })
+          : {
+              results: [
+                await attachSubject({
+                  saved: savedAs,
+                  response: reconciledResponse(),
+                }),
+              ],
+              /*
+               * No Task is completed. A walk-in answers the standing request behind a printed
+               * code, which serves everybody else who scans it too, so finishing it here would
+               * retire the poster on the first person to use it.
+               */
+              task: {
+                kind: "skipped",
+                detail:
+                  "These answers came from a printed walk-in code, which stays open for the " +
+                  "next person, so no request was marked completed.",
+              },
+            };
       setOutcome(submitted);
       if (submitted.results.some((result) => result.responseId)) {
         onSaved?.();
@@ -582,6 +641,22 @@ export default function ReviewResponse(props: ReviewResponseProps) {
   if (sessionEnded) {
     return <Connect reason="session-expired" />;
   }
+
+  /*
+   * What the answers themselves say about who filled them in, for the registration form to start
+   * from rather than have retyped. Derived only where a registration can happen: on the ordinary
+   * per-patient review the create form never appears, and the practice already knows who this is.
+   */
+  const patientSeed = allowPatientCreation
+    ? patientDetailsFromAnswers(questionnaire, response)
+    : undefined;
+
+  /*
+   * Two verbs, so two labels. "Save" is right for answers this app is storing for the first time;
+   * a walk-in is already stored, and what the reviewer is doing is deciding whose it is.
+   */
+  const acceptLabel =
+    savedAs === undefined ? "Accept and save" : "Attach and file";
 
   const saved = outcome?.results.filter((result) => result.responseId) ?? [];
   const failed = outcome?.results.filter((result) => result.error) ?? [];
@@ -658,7 +733,7 @@ export default function ReviewResponse(props: ReviewResponseProps) {
             ) : (
               <Save className="h-4 w-4" aria-hidden />
             )}
-            {isSaving ? "Saving…" : "Accept and save"}
+            {isSaving ? "Saving…" : acceptLabel}
           </Button>
         ) : null}
       </div>
@@ -757,7 +832,13 @@ export default function ReviewResponse(props: ReviewResponseProps) {
                 onChoose={(chosen) =>
                   chooseSubject(chosen.reference, chosen.display)
                 }
-                label="Search the destination server for the patient these answers are about"
+                allowCreate={allowPatientCreation}
+                seed={patientSeed}
+                label={
+                  allowPatientCreation
+                    ? "Find the patient these answers are about, or register them"
+                    : "Search the destination server for the patient these answers are about"
+                }
               />
             </div>
 

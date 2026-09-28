@@ -185,6 +185,37 @@ export const SHL_REQUEST_TAG = {
 } as const;
 
 /**
+ * Marks a request Task as the standing one behind a printed code, rather than a request sent to
+ * one person.
+ *
+ * It sits *beside* {@link SHL_REQUEST_TAG} rather than instead of it, so the practice still sees
+ * the walk-in code in the same place as everything else this app has asked for. What it adds is
+ * the fact `/requests` needs to tell the truth about the row: a standing request is never
+ * answered, because no walk-in completes it, so labelling it "awaiting answers" for the life of
+ * the poster would be wrong.
+ */
+export const SHL_STANDING_REQUEST_TAG = {
+  system: "http://smartforms.csiro.au/CodeSystem/shl-request",
+  code: "shl-standing-request",
+  display: "Standing form request behind a printed code",
+} as const;
+
+/**
+ * Marks answers that arrived from a printed code, so staff can find them before anyone files them.
+ *
+ * Stamped by the facade on the forwarded QuestionnaireResponse, never by a filler: whether a set
+ * of answers came from a walk-in is a property of the invitation they were written against, not a
+ * claim the sender gets to make. The review queue is one search on it
+ * (`QuestionnaireResponse?_tag=…|shl-walk-in`), and accepting an item removes it, which is what
+ * takes the item out of the queue.
+ */
+export const SHL_WALK_IN_TAG = {
+  system: "http://smartforms.csiro.au/CodeSystem/shl-request",
+  code: "shl-walk-in",
+  display: "Answers given by someone who scanned a printed code",
+} as const;
+
+/**
  * The server-storable form of a request Task.
  *
  * Two deliberate differences from the copy inside the invitation, and both are about what a
@@ -208,11 +239,12 @@ export const SHL_REQUEST_TAG = {
  * because both the browser and the server need it: the server publishes through it when minting an
  * invitation, and `check:roundtrip` asserts its shape.
  * @param task the request Task as the invitation carries it
+ * @param standing whether this is the standing request behind a printed code
  * @returns the copy to write to the launched server
  * @example
  * await publishTask(session, JSON.stringify(asPublishedTask(task)));
  */
-export function asPublishedTask(task: Task): Task {
+export function asPublishedTask(task: Task, standing = false): Task {
   const rest = { ...task };
   delete rest.focus;
   delete rest.extension;
@@ -221,7 +253,11 @@ export function asPublishedTask(task: Task): Task {
     ...rest,
     meta: {
       ...task.meta,
-      tag: [...(task.meta?.tag ?? []), { ...SHL_REQUEST_TAG }],
+      tag: [
+        ...(task.meta?.tag ?? []),
+        { ...SHL_REQUEST_TAG },
+        ...(standing ? [{ ...SHL_STANDING_REQUEST_TAG }] : []),
+      ],
     },
   };
 }
