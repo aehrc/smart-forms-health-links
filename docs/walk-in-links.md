@@ -142,10 +142,24 @@ Medicare and concessions, an emergency contact, a health summary and your previo
 Two of its properties are invisible on screen and silent when wrong, so both are asserted in
 `tests/ops/questionnaireFixtures.test.ts`.
 
-**It declares no pre-population.** `questionnaireDeclaresPopulation` returns true for _any_ of five
-extensions appearing anywhere in the tree, and the other two fixtures are saturated with them. Copy a
-root extension block across and the request screen offers to fill the form in from the record - for a
-person no record exists for. There is nothing to populate from at the moment a poster is scanned.
+**It pre-populates from the patient, not from the practice.** The practice holds no record of a
+walk-in, but the walk-in's own health record app may. The form declares a `%patient` launch context
+and an `initialExpression` on the demographic, contact, Medicare, DVA and emergency contact
+questions, so an app like Platypus can run SDC `$populate` against the `Patient` in its vault and hand
+over a form that is already filled in (issue #27). It declares no `x-fhir-query`: there is no server
+to ask.
+
+This app's own "fill this in from the record" toggle stays safe. The walk-in page never offers it,
+and `/request/:id` keeps it disabled until a patient is chosen. `tests/src/newPatientPopulation.test.ts`
+runs the form through `@aehrc/sdc-populate` against an AU Base patient and checks every answer,
+including that an 11-digit Medicare value is split into the card number and the IRN.
+
+Pre-filled Medicare and DVA numbers are still only answers. Reading `Patient.identifier` _into_ the
+form does not change the rule below: nothing writes them back to `Patient.identifier`.
+
+The form's version stays `0.1.0`. Walk-in answers cite the form as `url|version`, and Aidbox holds one
+copy under one id, so a bump would leave answers from posters already printed unable to find their
+form - and reception's seeding with them. The questions and linkIds did not change.
 
 **It declares which `Patient` elements four of its questions answer**, through FHIR's own
 `Questionnaire.item.definition`:

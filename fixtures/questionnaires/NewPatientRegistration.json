@@ -1,6 +1,28 @@
 {
   "resourceType": "Questionnaire",
   "id": "NewPatientRegistration",
+  "extension": [
+    {
+      "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext",
+      "extension": [
+        {
+          "url": "name",
+          "valueCoding": {
+            "system": "http://hl7.org/fhir/uv/sdc/CodeSystem/launchContext",
+            "code": "patient"
+          }
+        },
+        {
+          "url": "type",
+          "valueCode": "Patient"
+        },
+        {
+          "url": "description",
+          "valueString": "The person filling in the form, as their own health record app holds them"
+        }
+      ]
+    }
+  ],
   "item": [
     {
       "extension": [
@@ -14,12 +36,30 @@
       "type": "group",
       "item": [
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "(%patient.name.where(use = 'official') | %patient.name).first().given.join(' ')"
+              }
+            }
+          ],
           "linkId": "name-given",
           "text": "Given name(s)",
           "type": "string",
           "definition": "http://hl7.org/fhir/StructureDefinition/Patient#Patient.name.given"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "(%patient.name.where(use = 'official') | %patient.name).first().family"
+              }
+            }
+          ],
           "linkId": "name-family",
           "text": "Family name",
           "type": "string",
@@ -27,11 +67,29 @@
           "required": true
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.name.where(use = 'usual').given.first()"
+              }
+            }
+          ],
           "linkId": "name-preferred",
           "text": "Preferred name, if different",
           "type": "string"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.birthDate"
+              }
+            }
+          ],
           "linkId": "birth-date",
           "text": "Date of birth",
           "type": "date",
@@ -48,6 +106,13 @@
                     "code": "radio-button"
                   }
                 ]
+              }
+            },
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.gender"
               }
             }
           ],
@@ -129,11 +194,29 @@
       "type": "group",
       "item": [
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "(%patient.address.where(use = 'home') | %patient.address).first().line.join('\\n')"
+              }
+            }
+          ],
           "linkId": "address-line",
           "text": "Street address",
           "type": "text"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "(%patient.address.where(use = 'home') | %patient.address).first().city"
+              }
+            }
+          ],
           "linkId": "address-suburb",
           "text": "Suburb",
           "type": "string"
@@ -149,6 +232,13 @@
                     "code": "drop-down"
                   }
                 ]
+              }
+            },
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "(%patient.address.where(use = 'home') | %patient.address).first().state"
               }
             }
           ],
@@ -166,6 +256,13 @@
             {
               "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
               "valueString": "####"
+            },
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "(%patient.address.where(use = 'home') | %patient.address).first().postalCode"
+              }
             }
           ],
           "linkId": "address-postcode",
@@ -174,16 +271,43 @@
           "maxLength": 4
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.telecom.where(system = 'phone' and use = 'mobile').value.first()"
+              }
+            }
+          ],
           "linkId": "phone-mobile",
           "text": "Mobile number",
           "type": "string"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.telecom.where(system = 'phone').exclude(%patient.telecom.where(system = 'phone' and use = 'mobile')).value.first()"
+              }
+            }
+          ],
           "linkId": "phone-other",
           "text": "Other phone number",
           "type": "string"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.telecom.where(system = 'email').value.first()"
+              }
+            }
+          ],
           "linkId": "email",
           "text": "Email address",
           "type": "string"
@@ -269,6 +393,13 @@
             {
               "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
               "valueString": "##########"
+            },
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/medicare-number').value.first().substring(0, 10)"
+              }
             }
           ],
           "linkId": "medicare-number",
@@ -285,6 +416,13 @@
             {
               "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
               "valueString": "#"
+            },
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/medicare-number').value.first().substring(10, 1)"
+              }
             }
           ],
           "linkId": "medicare-irn",
@@ -297,6 +435,13 @@
             {
               "url": "http://hl7.org/fhir/StructureDefinition/entryFormat",
               "valueString": "MM/YYYY"
+            },
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/medicare-number').period.end.first().toString().select(substring(5, 2) + '/' + substring(0, 4))"
+              }
             }
           ],
           "linkId": "medicare-expiry",
@@ -304,11 +449,29 @@
           "type": "string"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/dva').exists()"
+              }
+            }
+          ],
           "linkId": "has-dva",
           "text": "Do you have a DVA card?",
           "type": "boolean"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/dva').value.first()"
+              }
+            }
+          ],
           "linkId": "dva-number",
           "text": "DVA file number",
           "type": "string",
@@ -399,16 +562,43 @@
       "type": "group",
       "item": [
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.contact.first().name.select(text | (given | family).join(' ')).first()"
+              }
+            }
+          ],
           "linkId": "emergency-name",
           "text": "Their name",
           "type": "string"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.contact.first().relationship.select(text | coding.display).first()"
+              }
+            }
+          ],
           "linkId": "emergency-relationship",
           "text": "Their relationship to you",
           "type": "string"
         },
         {
+          "extension": [
+            {
+              "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
+              "valueExpression": {
+                "language": "text/fhirpath",
+                "expression": "%patient.contact.first().telecom.where(system = 'phone').value.first()"
+              }
+            }
+          ],
           "linkId": "emergency-phone",
           "text": "Their phone number",
           "type": "string"
@@ -721,7 +911,7 @@
   "status": "draft",
   "experimental": false,
   "subjectType": ["Patient"],
-  "date": "2026-09-22",
+  "date": "2026-10-19",
   "publisher": "AEHRC CSIRO",
-  "description": "Registration details for somebody new to the practice, filled in by the patient on their own device. Declares no pre-population: at the moment this form is opened the practice holds no record of the person filling it in."
+  "description": "Registration details for somebody new to the practice, filled in by the patient on their own device. The practice holds no record of the person when the form is opened, but the patient may: a health record app that holds their details can pre-populate the demographic, contact, Medicare, DVA and emergency contact questions from the %patient launch context. Pre-filled answers are still only answers - nothing here is written to the practice record without staff checking it."
 }
