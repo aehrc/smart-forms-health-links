@@ -5,6 +5,7 @@ import {
   Loader2,
   Plus,
   QrCode,
+  RefreshCw,
   Search,
   UserRound,
 } from "lucide-react";
@@ -39,6 +40,7 @@ import { FHIR_PROXY_BASE, useRequesterGate } from "@/lib/session";
 import {
   createStandingInvitation,
   listStandingInvitations,
+  refreshStandingInvitation,
   revokeStandingInvitation,
   standingState,
   viewerLinkFor,
@@ -342,6 +344,14 @@ export default function WalkIns() {
     onSuccess: () => client.invalidateQueries({ queryKey: ["walk-in-codes"] }),
   });
 
+  // Re-seals the code's payload with the current form. The QR, its id and its key do not change.
+  const refresh = useMutation({
+    mutationFn: async (link: StandingInvitation) => ({
+      label: link.label,
+      changed: await refreshStandingInvitation(link.id),
+    }),
+  });
+
   const gate = useRequesterGate(queue.error ?? codes.error);
   if (gate.kind === "loading") {
     return <Loading>Checking your session…</Loading>;
@@ -487,6 +497,20 @@ export default function WalkIns() {
                             Withdraw
                           </Button>
                         ) : null}
+                        {standingState(link) === "live" ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={refresh.isPending}
+                            onClick={() => refresh.mutate(link)}
+                          >
+                            <RefreshCw
+                              className={`h-3.5 w-3.5 ${refresh.isPending && refresh.variables?.id === link.id ? "animate-spin" : ""}`}
+                              aria-hidden
+                            />
+                            Refresh form
+                          </Button>
+                        ) : null}
                       </div>
                     </div>
                   </CardHeader>
@@ -504,6 +528,28 @@ export default function WalkIns() {
               );
             })}
           </div>
+        ) : null}
+
+        {refresh.data ? (
+          <Alert
+            title={
+              refresh.data.changed
+                ? `Refreshed ${refresh.data.label}`
+                : `${refresh.data.label} is already current`
+            }
+          >
+            {refresh.data.changed
+              ? "The next scan of this code gets the current version of the form. The QR code and its link have not changed, so nothing needs reprinting. Anyone with the form already open keeps the copy they have."
+              : "This code already serves the current version of the form. Nothing was changed."}
+          </Alert>
+        ) : null}
+
+        {refresh.error ? (
+          <Alert tone="error" title="Could not refresh the code">
+            {refresh.error instanceof Error
+              ? refresh.error.message
+              : String(refresh.error)}
+          </Alert>
         ) : null}
 
         {revoke.error ? (
