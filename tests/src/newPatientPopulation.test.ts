@@ -227,7 +227,25 @@ describe("pre-populating the walk-in registration form", () => {
     expect(answers.get("medicare-number")?.[0]?.valueString).toBe("2950101234");
     expect(answers.has("medicare-irn")).toBe(false);
     expect(answers.has("medicare-expiry")).toBe(false);
-    expect(answers.get("has-dva")?.[0]?.valueBoolean).toBe(false);
+  });
+
+  /*
+   * No DVA number in the record is not the same as no DVA card, so "Do you have a DVA card?" is
+   * answered only when there is one. A pre-filled "No" would be a claim the record never made.
+   */
+  it("leaves the DVA question blank when the record holds no DVA number", async () => {
+    const answers = answersByLinkId(
+      await populate({
+        ...PATIENT,
+        identifier: PATIENT.identifier!.filter(
+          (identifier) =>
+            identifier.system !== "http://ns.electronichealth.net.au/id/dva",
+        ),
+      }),
+    );
+
+    expect(answers.has("has-dva")).toBe(false);
+    expect(answers.has("dva-number")).toBe(false);
   });
 
   it("answers nothing it cannot read from a near-empty record", async () => {
@@ -235,7 +253,7 @@ describe("pre-populating the walk-in registration form", () => {
       await populate({ resourceType: "Patient", id: "sparse" }),
     );
 
-    expect([...answers.keys()]).toEqual(["has-dva"]);
+    expect([...answers.keys()]).toEqual([]);
   });
 
   /*

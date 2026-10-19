@@ -454,7 +454,7 @@
               "url": "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-initialExpression",
               "valueExpression": {
                 "language": "text/fhirpath",
-                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/dva').exists()"
+                "expression": "%patient.identifier.where(system = 'http://ns.electronichealth.net.au/id/dva').exists().where($this)"
               }
             }
           ],
