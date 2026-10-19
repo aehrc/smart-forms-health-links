@@ -150,6 +150,21 @@ async function grantFrom(files: ManifestFile[], key: string): Promise<Grant> {
   return JSON.parse(decodeUtf8(plaintext)) as Grant;
 }
 
+/**
+ * The first resource of one type in a Bundle.
+ * @param bundle the Bundle
+ * @param type the resource type
+ * @returns the resource, or undefined
+ */
+function entryOf<T extends "Questionnaire" | "Task">(
+  bundle: Bundle,
+  type: T,
+): (T extends "Questionnaire" ? Questionnaire : Task) | undefined {
+  return bundle.entry?.find((entry) => entry.resource?.resourceType === type)
+    ?.resource as
+    (T extends "Questionnaire" ? Questionnaire : Task) | undefined;
+}
+
 describe("walk-in codes", () => {
   let harness: TestHarness;
   let fetchMock: Mock<typeof fetch>;
@@ -253,6 +268,58 @@ describe("walk-in codes", () => {
       url: `/shl/${id}`,
       payload: { recipient: "a phone at the counter" },
     });
+  }
+
+  /**
+   * Refresh a code through the route.
+   * @param id the code
+   * @param cookie the session cookie to present, or null for none
+   * @returns the injected response
+   */
+  async function refresh(
+    id: string,
+    cookie: string | null = `shl_session=${SESSION_ID}`,
+  ) {
+    return harness.server.inject({
+      method: "POST",
+      url: `/api/standing-invitations/${id}/refresh`,
+      ...(cookie === null ? {} : { headers: { cookie } }),
+    });
+  }
+
+  /**
+   * List the codes, as the staff page does.
+   * @returns the codes
+   */
+  async function listed(): Promise<CodeView[]> {
+    const response = await harness.server.inject({
+      method: "GET",
+      url: "/api/standing-invitations",
+      headers: { cookie: `shl_session=${SESSION_ID}` },
+    });
+    return response.json<{ standingInvitations: CodeView[] }>()
+      .standingInvitations;
+  }
+
+  /**
+   * Scan a code and decrypt what it serves, with the key from the printed link.
+   * @param code the code, as created
+   * @returns the sealed ciphertext and the Bundle inside it
+   */
+  async function servedBundle(
+    code: CodeView,
+  ): Promise<{ embedded: string; bundle: Bundle }> {
+    const response = await scan(code.id);
+    expect(response.statusCode).toBe(200);
+    const [file] = response.json<{ files: ManifestFile[] }>().files;
+    const plaintext = await decryptJwe(
+      file.embedded,
+      keyFromBase64Url(decodeShlink(code.shlink).key),
+    );
+    return {
+      embedded: file.embedded,
+      bundle: JSON.parse(decodeUtf8(plaintext)) as Bundle,
+    };
   }
 
   describe("creating one", () => {
@@ -533,6 +600,130 @@ describe("walk-in codes", () => {
       });
 
       expect(listed.statusCode).toBe(401);
+    });
+  });
+
+  describe("refreshing one", () => {
+    /** The same form, edited upstream: same canonical and version, one more question. */
+    const EDITED: Questionnaire = {
+      ...QUESTIONNAIRE,
+      item: [
+        ...QUESTIONNAIRE.item!,
+        { linkId: "2", text: "What is your date of birth?", type: "date" },
+      ],
+    };
+
+    // The whole point. The printed QR is the id and the key, so both must survive untouched while
+    // what a scan of them serves changes - and it must be readable with the key on the wall.
+    it("serves the edited form from the same printed link", async () => {
+      const code = await createdCode();
+      questionnaireRead = () => jsonResponse(EDITED);
+
+      const response = await refresh(code.id);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ refreshed: true });
+      const [after] = await listed();
+      expect(after.id).toBe(code.id);
+      expect(after.shlink).toBe(code.shlink);
+      expect(after.manifestUrl).toBe(code.manifestUrl);
+      const served = await servedBundle(code);
+      expect(entryOf(served.bundle, "Questionnaire")?.item).toEqual(
+        EDITED.item,
+      );
+    });
+
+    // Only the Questionnaire entry is re-sealed. The Task, and so the standing request it names,
+    // is the one that was published, and no second Task is published.
+    it("keeps the sealed Task and publishes nothing", async () => {
+      const code = await createdCode();
+      const before = await servedBundle(code);
+      questionnaireRead = () => jsonResponse(EDITED);
+
+      await refresh(code.id);
+
+      const after = await servedBundle(code);
+      expect(entryOf(after.bundle, "Task")).toEqual(
+        entryOf(before.bundle, "Task"),
+      );
+      expect(publishedTasks).toHaveLength(1);
+    });
+
+    it("reports a form that has not changed, and writes nothing", async () => {
+      const code = await createdCode();
+      const before = await servedBundle(code);
+
+      const response = await refresh(code.id);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ refreshed: false });
+      const after = await servedBundle(code);
+      expect(after.embedded).toBe(before.embedded);
+    });
+
+    // The sealed Task names the form as url|version. A new version is a new code.
+    it("refuses a new version of the form, and writes nothing", async () => {
+      const code = await createdCode();
+      const before = await servedBundle(code);
+      questionnaireRead = () => jsonResponse({ ...EDITED, version: "2.0.0" });
+
+      const response = await refresh(code.id);
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json<{ error: string }>().error).toBe(
+        "questionnaire-identity-changed",
+      );
+      const after = await servedBundle(code);
+      expect(after.embedded).toBe(before.embedded);
+    });
+
+    it("refuses a form read under the same id but a different canonical", async () => {
+      const code = await createdCode();
+      questionnaireRead = () =>
+        jsonResponse({
+          ...EDITED,
+          url: "http://example.org/Questionnaire/other",
+        });
+
+      const response = await refresh(code.id);
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it("leaves a withdrawn code withdrawn", async () => {
+      const code = await createdCode();
+      await harness.server.inject({
+        method: "POST",
+        url: `/api/standing-invitations/${code.id}/revoke`,
+        headers: { cookie: `shl_session=${SESSION_ID}` },
+      });
+      questionnaireRead = () => jsonResponse(EDITED);
+
+      const response = await refresh(code.id);
+
+      expect(response.statusCode).toBe(404);
+      const scanned = await scan(code.id);
+      expect(scanned.statusCode).toBe(404);
+    });
+
+    it("refuses to refresh a code belonging to another issuer", async () => {
+      const code = await createdCode();
+      harness.db
+        .prepare("UPDATE standingInvitations SET issuer = ? WHERE id = ?")
+        .run("https://another-practice.example/fhir", code.id);
+      questionnaireRead = () => jsonResponse(EDITED);
+
+      const response = await refresh(code.id);
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it("needs a session", async () => {
+      const code = await createdCode();
+
+      const response = await refresh(code.id, null);
+
+      expect(response.statusCode).toBe(401);
     });
   });
 });

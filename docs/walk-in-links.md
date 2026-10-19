@@ -95,6 +95,20 @@ The ceiling is 60 scans an hour per code (`SCAN_CAP`, `SCAN_WINDOW_SECONDS` in
 hold a working code to reach it, so the refusal discloses nothing, and telling a practice its own
 poster has vanished would be worse.
 
+### Refreshing a printed code
+
+A code seals a copy of its form when it is created, and every scan is served that copy. Editing the
+form on the server therefore changes nothing on the wall. **Refresh form** on `/walk-ins` fixes that
+without reprinting: `POST /api/standing-invitations/:id/refresh` reads the form again by the id it
+was sealed with, swaps it into the payload, and re-seals it with the same key under the same id.
+Those two values are the whole printed link, so the QR stays valid and only what it serves changes.
+
+It refuses a form whose `url` or `version` has changed. The sealed Task names the form by that
+canonical, and walk-in answers cite it, so a new version needs a new code. Phones that already
+have the form open keep the copy they were served. The update is conditional on the payload it
+read and on the code not being withdrawn, so a refresh cannot undo a withdrawal or overwrite a
+second refresh.
+
 ## The queue is a tag, and the tag is the state
 
 `/walk-ins` is one search:

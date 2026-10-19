@@ -244,3 +244,56 @@ export async function revokeStandingInvitation(id: string): Promise<void> {
     );
   }
 }
+
+/**
+ * Seal the current copy of a code's form into it, keeping the printed QR.
+ *
+ * A code serves the copy of its form taken when it was created. This reads the form again and
+ * re-seals the code's payload under the same id and key, so the QR already on the wall stays valid
+ * and its next scan gets the new copy. Phones that already have the form open keep the old one.
+ * @param id the code to refresh
+ * @returns true when the form had changed and was re-sealed, false when it was already current
+ * @throws {Error} when the call is refused; marked as session-ended when the session has gone
+ * @example
+ * const changed = await refreshStandingInvitation(link.id);
+ */
+export async function refreshStandingInvitation(id: string): Promise<boolean> {
+  const response = await fetch(
+    `${STANDING_INVITATIONS_ENDPOINT}/${encodeURIComponent(id)}/refresh`,
+    { method: "POST", headers: { Accept: "application/json" } },
+  );
+  const body = await readBody(response);
+  if (response.ok) {
+    return (body as { refreshed?: unknown } | undefined)?.refreshed === true;
+  }
+  const error =
+    typeof body === "object" && body !== null && "error" in body
+      ? String((body as Record<string, unknown>).error)
+      : undefined;
+  switch (error) {
+    case "questionnaire-identity-changed": {
+      throw new Error(
+        "The form's URL or version has changed since this code was created, so it cannot be " +
+          "refreshed in place. Create a new code for the new version. Nothing was changed.",
+      );
+    }
+    case "questionnaire-unreadable": {
+      throw new Error(
+        "The form could not be read from the server you are signed in to. Nothing was changed.",
+      );
+    }
+    case "not-found": {
+      throw new Error(
+        "This code has been withdrawn or has expired, so there is nothing to refresh.",
+      );
+    }
+    case "changed-meanwhile": {
+      throw new Error(
+        "The code changed while it was being refreshed. Nothing was changed; try again.",
+      );
+    }
+    default: {
+      refuse(response, body, "The code could not be refreshed");
+    }
+  }
+}

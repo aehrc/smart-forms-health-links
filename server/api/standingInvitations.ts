@@ -7,8 +7,16 @@
  * ```text
  * POST   /api/standing-invitations            create one, print its QR
  * GET    /api/standing-invitations            list this practice's codes, and their scan counts
- * POST   /api/standing-invitations/:id/revoke stop a printed code resolving
+ * POST   /api/standing-invitations/:id/revoke  stop a printed code resolving
+ * POST   /api/standing-invitations/:id/refresh seal the current copy of its form into it
  * ```
+ *
+ * **Refresh keeps the printed code.** A code seals a copy of its form when it is created, and
+ * every scan is served that copy, so editing the form upstream changes nothing on the wall.
+ * Refresh reads the form again by the id it was sealed with and re-seals the payload with the
+ * same key under the same id. Those two are the whole printed link, so the QR stays valid and only
+ * what it serves changes. It refuses a form whose `url` or `version` differs, because the sealed
+ * Task names the form by that canonical.
  *
  * The mint does the same three things in the same order as the per-request one - read the
  * Questionnaire, publish the Task, store the row - and it reuses those steps rather than
@@ -36,14 +44,20 @@
 
 import { randomBytes } from "node:crypto";
 
-import { encodeUtf8, toBase64Url } from "../../src/link/binary";
+import { decodeUtf8, encodeUtf8, toBase64Url } from "../../src/link/binary";
 import { defaultLabel } from "../../src/link/codec";
 import {
   asPublishedTask,
   buildInvitationBundle,
   invitationRequesterDisplay,
 } from "../../src/link/invitationBundle";
-import { KEY_BYTES, encryptJwe, keyToBase64Url } from "../../src/link/jwe";
+import {
+  KEY_BYTES,
+  decryptJwe,
+  encryptJwe,
+  keyFromBase64Url,
+  keyToBase64Url,
+} from "../../src/link/jwe";
 import { findIssuerRegistration } from "../config";
 import { isJsonObject } from "../json";
 import { readSessionCookie } from "../sessionCookie";
@@ -58,8 +72,10 @@ import {
 } from "./invitations";
 import { INVITATION_CONTENT_TYPE } from "../shl/manifest";
 import {
+  findStandingInvitation,
   insertStandingInvitation,
   listStandingInvitations,
+  replaceStandingInvitationPayload,
   revokeStandingInvitation,
 } from "../shl/standingInvitationStore";
 import { freshSession } from "../smart/sessionAuthority";
@@ -67,6 +83,7 @@ import { freshSession } from "../smart/sessionAuthority";
 import type { ActiveSession } from "../sessions";
 import type { StandingInvitationSummary } from "../shl/standingInvitationStore";
 import type { FastifyPluginCallback, FastifyRequest } from "fastify";
+import type { Bundle, Questionnaire } from "fhir/r4";
 
 /** The outcome of the staff gate: a usable session, or the refusal to answer with. */
 type SessionGate =
@@ -348,6 +365,85 @@ export const standingInvitationRoutes: FastifyPluginCallback = (
         return reply.code(404).send({ error: "not-found" });
       }
       return reply.send({ revoked: true });
+    },
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    "/api/standing-invitations/:id/refresh",
+    async (request, reply) => {
+      const gate = await sessionFor(request);
+      if (!gate.ok) {
+        return reply.code(gate.status).send({ error: gate.error });
+      }
+      const session = gate.session;
+
+      // Unknown, withdrawn, expired and another practice's code are one answer, as for revoke.
+      const row = findStandingInvitation(fastify.appDb, request.params.id);
+      if (row === undefined || row.issuer !== session.issuer) {
+        return reply.code(404).send({ error: "not-found" });
+      }
+
+      const key = keyFromBase64Url(row.linkKey);
+      let bundle: Bundle;
+      try {
+        bundle = JSON.parse(
+          decodeUtf8(await decryptJwe(row.payloadCiphertext, key)),
+        ) as Bundle;
+      } catch (error) {
+        request.log.error(
+          { err: error, standingId: row.id },
+          "standing payload unreadable",
+        );
+        return reply.code(500).send({ error: "payload-unreadable" });
+      }
+      const entry = (bundle.entry ?? []).find(
+        (candidate) => candidate.resource?.resourceType === "Questionnaire",
+      );
+      const sealed = entry?.resource as Questionnaire | undefined;
+      if (entry === undefined || sealed?.id === undefined) {
+        return reply.code(500).send({ error: "payload-unreadable" });
+      }
+
+      const current = await readQuestionnaire(session, sealed.id, request.log);
+      if ("error" in current) {
+        return reply.code(502).send(current);
+      }
+
+      /*
+       * The sealed Task names the form as `url|version`, in `focus` and in `input`, and walk-in
+       * answers cite the same canonical. A different form, or a new version of this one, would
+       * leave the Task pointing at something the payload no longer holds - so that is a new code,
+       * not a refresh.
+       */
+      if (current.url !== sealed.url || current.version !== sealed.version) {
+        return reply.code(409).send({
+          error: "questionnaire-identity-changed",
+          sealed: `${sealed.url ?? ""}|${sealed.version ?? ""}`,
+          current: `${current.url ?? ""}|${current.version ?? ""}`,
+        });
+      }
+
+      if (JSON.stringify(current) === JSON.stringify(sealed)) {
+        return reply.send({ refreshed: false });
+      }
+
+      entry.resource = current;
+      const replacement = await encryptJwe(
+        encodeUtf8(JSON.stringify(bundle)),
+        key,
+        { contentType: INVITATION_CONTENT_TYPE },
+      );
+      const replaced = replaceStandingInvitationPayload(
+        fastify.appDb,
+        row.id,
+        session.issuer,
+        row.payloadCiphertext,
+        replacement,
+      );
+      if (!replaced) {
+        return reply.code(409).send({ error: "changed-meanwhile" });
+      }
+      return reply.send({ refreshed: true });
     },
   );
 

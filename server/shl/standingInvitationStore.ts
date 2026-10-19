@@ -233,6 +233,41 @@ export function revokeStandingInvitation(
 }
 
 /**
+ * Replace the sealed payload of a live standing invitation, keeping everything else.
+ *
+ * This is what lets a printed code serve a newer copy of its form. The id and the key are the two
+ * halves of the printed link, and neither is touched, so the QR on the wall stays valid and its
+ * next scan gets the new payload.
+ *
+ * Guarded on the payload the caller read, so two refreshes racing each other cannot interleave a
+ * read of one with a write of the other, and on `revokedAt IS NULL` so a withdrawn code stays
+ * exactly as it was withdrawn.
+ * @param db the database
+ * @param id the standing invitation id
+ * @param issuer the FHIR base of the refreshing session, so one practice cannot touch another's
+ * @param expected the payload the caller read and re-sealed from
+ * @param replacement the new payload, sealed with the same key
+ * @returns true when this call replaced it, false when it was unknown, withdrawn or changed since
+ * @example
+ * if (!replaceStandingInvitationPayload(db, id, issuer, row.payloadCiphertext, next)) ...
+ */
+export function replaceStandingInvitationPayload(
+  db: AppDatabase,
+  id: string,
+  issuer: string,
+  expected: string,
+  replacement: string,
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE standingInvitations SET payloadCiphertext = ?
+       WHERE id = ? AND issuer = ? AND payloadCiphertext = ? AND revokedAt IS NULL`,
+    )
+    .run(replacement, id, issuer, expected);
+  return result.changes === 1;
+}
+
+/**
  * How many scans one standing invitation has minted since a moment.
  *
  * The scan cap is built on this. A printed code is public by construction - the whole point is
