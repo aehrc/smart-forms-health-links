@@ -4,7 +4,7 @@
  * Nothing in this suite had ever opened these files. `tests/ops/aidboxSetup.test.ts` builds its own
  * `QUESTIONNAIRES` array and feeds that to `planSetup`, which is the right way to test planning and
  * says nothing at all about the JSON on disk. So a fixture with a missing canonical URL, a duplicate
- * linkId or a stray pre-population extension was discoverable only by running
+ * linkId or a missing pre-population extension was discoverable only by running
  * `npm run setup:aidbox` against a live Aidbox and then noticing the form misbehaving in a browser.
  *
  * That is the same shape of gap that let issue #18 ship: every check stopped short of the place the
@@ -20,13 +20,13 @@
  * is matched to its question by linkId and a duplicate silently merges two questions' answers.
  *
  * **Form-specific** ones belong to the new patient registration form alone. They are the two
- * properties that are invisible on screen and silent when wrong: that it declares no pre-population,
- * and that it still carries the `Patient` element definitions the walk-in queue seeds a registration
+ * properties that are invisible on screen and silent when wrong: that it declares pre-population
+ * from the patient, and that it still carries the `Patient` element definitions the walk-in queue seeds a registration
  * from. Both survive a tidy-up that means no harm, and neither shows up as an error anywhere.
  *
- * The population rule is emphatically *not* universal. The other two fixtures are saturated with
- * `initialExpression` and `x-fhir-query` variables - they are pre-population forms, and that is what
- * they are for.
+ * The population rule is not universal. The other two fixtures populate from the practice's record
+ * through `x-fhir-query` variables; this one populates only from `%patient`, which the walk-in's own
+ * health record app supplies.
  * @author John Grimes
  */
 
@@ -185,16 +185,17 @@ describe("the shipped Questionnaire fixtures", () => {
     );
 
     /*
-     * The load-bearing one. A walk-in form is opened by somebody the practice has never heard of,
-     * so there is no record to fill it in from - and `questionnaireDeclaresPopulation` returns true
-     * for *any* of five extensions appearing anywhere in the tree. Copying a root extension block
-     * from either of the other two fixtures would light up a "fill this in from the record" toggle
-     * for a patient who does not exist, and nothing on screen would look wrong until somebody
-     * pressed it.
+     * The practice holds no record of a walk-in, but the walk-in's own health record app may, so the
+     * form populates from `%patient` (issue #27). Dropping the extensions would not fail anywhere
+     * visible: the patient's app would just report that nothing in their records matched.
+     *
+     * This app's own "fill this in from the record" toggle stays safe with the flag true. The
+     * walk-in page never offers it, and `/request/:id` keeps it disabled until a patient is chosen.
+     * Whether the expressions actually match anything is `tests/src/newPatientPopulation.test.ts`.
      */
-    it("declares no pre-population", () => {
+    it("declares pre-population from the patient", () => {
       expect(newPatient).toBeDefined();
-      expect(questionnaireDeclaresPopulation(newPatient)).toBe(false);
+      expect(questionnaireDeclaresPopulation(newPatient)).toBe(true);
     });
 
     /*

@@ -962,8 +962,8 @@ helm/smart-forms-health-links/
 fixtures/questionnaires/
   AdultSepsisScreening.json   the demo screening form, pre-populated from the record
   GPChronicConditionManagementPlan.json
-  NewPatientRegistration.json the walk-in form: no pre-population, and the Patient elements
-                              a registration is seeded from
+  NewPatientRegistration.json the walk-in form: pre-populated from %patient by the walk-in's
+                              own app, and the Patient elements a registration is seeded from
 docs/
   aidbox-validation.md        the two-window walkthrough on the validation instance
   shl-form-reply-channel.md   the reply channels: design record, and what is still minted
