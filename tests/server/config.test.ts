@@ -455,6 +455,54 @@ describe("server config", () => {
       ).toThrow(/SESSION_COOKIE_SECRET/);
     });
 
+    // A link is meant to be opened by any receiver, so leaving the variable out means any origin.
+    it.each([undefined, "", "*", " * "])(
+      "allows any origin for the public routes when SHL_CORS_ORIGINS is %j",
+      (value) => {
+        const registryPath = writeRegistry(JSON.stringify([entry()]));
+
+        const config = loadServerConfig({
+          ...serverEnv(registryPath),
+          SHL_CORS_ORIGINS: value,
+        });
+
+        expect(config.shlCorsOrigins).toBe("*");
+      },
+    );
+
+    it("reads a comma-separated list of origins", () => {
+      const registryPath = writeRegistry(JSON.stringify([entry()]));
+
+      const config = loadServerConfig({
+        ...serverEnv(registryPath),
+        SHL_CORS_ORIGINS:
+          "https://a.example.com, http://localhost:5173/ ,https://b.example.com:8443",
+      });
+
+      expect(config.shlCorsOrigins).toEqual([
+        "https://a.example.com",
+        "http://localhost:5173",
+        "https://b.example.com:8443",
+      ]);
+    });
+
+    // A typo here would lock every browser app out without a word, so it stops startup instead.
+    it.each([
+      "https://a.example.com/path",
+      "a.example.com",
+      "ftp://a.example.com",
+      "*, https://a.example.com",
+    ])("rejects %j in SHL_CORS_ORIGINS, naming the variable", (value) => {
+      const registryPath = writeRegistry(JSON.stringify([entry()]));
+
+      expect(() =>
+        loadServerConfig({
+          ...serverEnv(registryPath),
+          SHL_CORS_ORIGINS: value,
+        }),
+      ).toThrow(/SHL_CORS_ORIGINS/);
+    });
+
     it("rejects an app origin that is not an absolute URL", () => {
       const registryPath = writeRegistry(JSON.stringify([entry()]));
 

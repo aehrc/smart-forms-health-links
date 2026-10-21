@@ -221,3 +221,70 @@ describe("CORS everywhere else", () => {
     expect(response.headers["access-control-expose-headers"]).toBe(undefined);
   });
 });
+
+/*
+ * A deployment that only wants to serve apps it knows lists them in `SHL_CORS_ORIGINS`. The rules
+ * that do not change with the list - `/api` stays closed - are covered above; these are the ones
+ * that do.
+ */
+describe("CORS with a configured list of origins", () => {
+  const LISTED = "https://listed-app.example.com";
+  let harness: TestHarness;
+
+  beforeEach(() => {
+    harness = createHarness({ shlCorsOrigins: [LISTED] });
+  });
+
+  afterEach(async () => {
+    await closeHarness(harness);
+  });
+
+  it("names a listed origin back, never the wildcard", async () => {
+    const response = await harness.server.inject({
+      method: "OPTIONS",
+      url: "/shl/inv-unknown",
+      headers: { origin: LISTED, "access-control-request-method": "POST" },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe(LISTED);
+    expect(response.headers.vary).toContain("Origin");
+    expect(response.headers.vary).toContain("Access-Control-Request-Headers");
+  });
+
+  it("puts the listed origin on a route's own answer too", async () => {
+    const response = await harness.server.inject({
+      method: "POST",
+      url: "/shl/inv-unknown",
+      headers: { origin: LISTED, "content-type": "application/json" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers["access-control-allow-origin"]).toBe(LISTED);
+    expect(response.headers.vary).toContain("Origin");
+  });
+
+  it("gives an unlisted origin nothing, so the browser blocks it", async () => {
+    const preflight = await harness.server.inject({
+      method: "OPTIONS",
+      url: "/shl/inv-unknown",
+      headers: {
+        origin: FOREIGN_ORIGIN,
+        "access-control-request-method": "POST",
+      },
+    });
+    const answer = await harness.server.inject({
+      method: "POST",
+      url: "/shl/inv-unknown",
+      headers: { origin: FOREIGN_ORIGIN, "content-type": "application/json" },
+      payload: {},
+    });
+
+    expect(preflight.statusCode).not.toBe(204);
+    expect(preflight.headers["access-control-allow-origin"]).toBe(undefined);
+    expect(answer.headers["access-control-allow-origin"]).toBe(undefined);
+    // Still keyed on Origin, or a cache could serve this refusal to a listed app.
+    expect(answer.headers.vary).toContain("Origin");
+  });
+});

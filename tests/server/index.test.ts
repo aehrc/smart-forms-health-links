@@ -36,6 +36,7 @@ function testConfig(sqlitePath: string): ServerConfig {
     issuerRegistryPath: "/dev/null",
     cookieSecret: "0123456789abcdef0123456789abcdef",
     port: 3000,
+    shlCorsOrigins: "*",
     issuers: [
       {
         issuer: "https://ehr.example.org/fhir",

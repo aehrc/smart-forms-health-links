@@ -2,7 +2,7 @@
  * Cross-origin access to the public SHL routes, so a patient app running in a browser can open a
  * link and send the answers back.
  *
- * Everything under `/shl` answers any origin. Everything else answers none.
+ * Everything under `/shl` answers any origin by default. Everything else answers none.
  *
  * ```text
  * POST /shl/:id                  manifest           ──> Access-Control-Allow-Origin: *
@@ -13,11 +13,17 @@
  *
  * Four decisions are worth stating.
  *
- * **Any origin, because nothing here is ambient.** CORS protects credentials a browser attaches
+ * **Any origin by default, because nothing here is ambient.** CORS protects credentials a browser attaches
  * on its own, which means cookies. The `/shl` routes take none: the manifest is public to whoever
  * holds the link, and every write is authorised by a bearer token the caller has to put in the
  * header deliberately. A hostile page gains nothing it could not get with `curl`. Credentials are
  * therefore never allowed, which is also what `*` requires.
+ *
+ * A deployment that only wants to serve apps it knows sets `SHL_CORS_ORIGINS` to a list of
+ * origins. Each route then names the caller's origin back only when it is on the list, and adds
+ * `Vary: Origin` so a cache cannot hand one origin's answer to another. A caller not on the list
+ * gets no CORS headers, and its preflight falls through to the not-found handler, so the browser
+ * blocks it.
  *
  * **The session routes stay closed.** `/api/*` is authorised by the session cookie, so a
  * permissive policy there would let any page read and write as whoever is signed in. The prefix
@@ -37,6 +43,7 @@
  * @author Clinton Gillespie
  */
 
+import type { ShlCorsOrigins } from "../config";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 /** Path prefix of every public SHL route: manifests, the facade and write slots. */
@@ -104,43 +111,66 @@ function allowedHeaders(requested: string | string[] | undefined): string {
 }
 
 /**
- * `onRequest` hook: add the CORS headers to a public SHL request, and answer its preflight.
+ * Build the `onRequest` hook that adds the CORS headers to a public SHL request and answers its
+ * preflight.
  *
- * A request outside `/shl` passes through untouched. An `OPTIONS` request carrying
- * `Access-Control-Request-Method` is a preflight and is answered here with `204`; any other
- * request continues to its route with the headers already set.
- * @param request the incoming request
- * @param reply the reply to decorate, or to send for a preflight
- * @returns the sent reply for a preflight, otherwise nothing
+ * A request outside `/shl` passes through untouched, and so does one from an origin the
+ * configuration does not allow. An `OPTIONS` request carrying `Access-Control-Request-Method` is a
+ * preflight and is answered here with `204`; any other request continues to its route with the
+ * headers already set.
+ * @param allowedOrigins `"*"` for any origin, or the exact origins allowed
+ * @returns the hook
  * @example
- * fastify.addHook("onRequest", publicShlCors);
+ * fastify.addHook("onRequest", publicShlCors(config.shlCorsOrigins));
  */
-export async function publicShlCors(
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<FastifyReply | undefined> {
-  if (!isPublicShlPath(request.url)) {
-    return undefined;
-  }
+export function publicShlCors(allowedOrigins: ShlCorsOrigins) {
+  const anyOrigin = allowedOrigins === "*";
+  const listed = new Set(anyOrigin ? [] : allowedOrigins);
 
-  reply.header("access-control-allow-origin", "*");
-  reply.header("access-control-expose-headers", EXPOSED_HEADERS);
+  return async function publicShlCorsHook(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<FastifyReply | undefined> {
+    if (!isPublicShlPath(request.url)) {
+      return undefined;
+    }
 
-  const isPreflight =
-    request.method === "OPTIONS" &&
-    request.headers["access-control-request-method"] !== undefined;
-  if (!isPreflight) {
-    return undefined;
-  }
+    // With a list, the answer depends on who asked, so a cache must key on it - allowed or not.
+    const vary = anyOrigin ? [] : ["Origin"];
+    if (!anyOrigin) {
+      reply.header("vary", vary.join(", "));
+    }
 
-  return reply
-    .code(204)
-    .header("access-control-allow-methods", ALLOWED_METHODS)
-    .header(
-      "access-control-allow-headers",
-      allowedHeaders(request.headers["access-control-request-headers"]),
-    )
-    .header("vary", "Access-Control-Request-Headers")
-    .header("access-control-max-age", PREFLIGHT_MAX_AGE_SECONDS)
-    .send();
+    const origin = request.headers.origin;
+    let allowOrigin: string | undefined;
+    if (anyOrigin) {
+      allowOrigin = "*";
+    } else if (origin !== undefined && listed.has(origin)) {
+      allowOrigin = origin;
+    }
+    if (allowOrigin === undefined) {
+      return undefined;
+    }
+
+    reply.header("access-control-allow-origin", allowOrigin);
+    reply.header("access-control-expose-headers", EXPOSED_HEADERS);
+
+    const isPreflight =
+      request.method === "OPTIONS" &&
+      request.headers["access-control-request-method"] !== undefined;
+    if (!isPreflight) {
+      return undefined;
+    }
+
+    return reply
+      .code(204)
+      .header("access-control-allow-methods", ALLOWED_METHODS)
+      .header(
+        "access-control-allow-headers",
+        allowedHeaders(request.headers["access-control-request-headers"]),
+      )
+      .header("vary", [...vary, "Access-Control-Request-Headers"].join(", "))
+      .header("access-control-max-age", PREFLIGHT_MAX_AGE_SECONDS)
+      .send();
+  };
 }

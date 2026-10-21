@@ -126,6 +126,7 @@ export function testConfig(sqlitePath: string): ServerConfig {
     issuerRegistryPath: "/dev/null",
     cookieSecret: COOKIE_SECRET,
     port: 3000,
+    shlCorsOrigins: "*",
     issuers: [
       {
         issuer: ISSUER,
@@ -184,13 +185,17 @@ export function testConfig(sqlitePath: string): ServerConfig {
  * `https` cannot see a rule that refuses the origin every developer actually runs on.
  * @param overrides configuration to differ from {@link testConfig}
  * @param overrides.appOrigin the origin the app is served from
+ * @param overrides.shlCorsOrigins which origins may call the public `/shl` routes
  * @returns the harness
  * @example
  * const harness = createHarness();
  * const response = await harness.server.inject({ method: "GET", url: "/api/issuers" });
  */
 export function createHarness(
-  overrides: { appOrigin?: string } = {},
+  overrides: {
+    appOrigin?: string;
+    shlCorsOrigins?: ServerConfig["shlCorsOrigins"];
+  } = {},
 ): TestHarness {
   clearSmartConfigurationCache();
   const directory = mkdtempSync(path.join(tmpdir(), "shl-routes-"));
@@ -201,6 +206,9 @@ export function createHarness(
     ...(overrides.appOrigin === undefined
       ? {}
       : { appOrigin: overrides.appOrigin }),
+    ...(overrides.shlCorsOrigins === undefined
+      ? {}
+      : { shlCorsOrigins: overrides.shlCorsOrigins }),
   };
   const logLines: string[] = [];
   const server = buildServer({

@@ -249,7 +249,8 @@ HTML page where it expected an API error fails somewhere much less informative t
 Everything under `/shl` answers **any origin**, so a patient app running in a browser can fetch a
 manifest and write the answers back without a relay of its own. That is safe because nothing there
 is authorised by a cookie: the manifest is public to whoever holds the link, and every write carries
-a bearer token the caller adds deliberately. Credentials are never allowed. Every other route,
+a bearer token the caller adds deliberately. Credentials are never allowed. A deployment that only wants to serve apps it knows can list their
+origins in `SHL_CORS_ORIGINS`. Every other route,
 `/api` above all, sends no CORS headers, because it is the session cookie that authorises it. The
 policy is in `server/shl/cors.ts`.
 
@@ -761,6 +762,7 @@ what the groups are for.
 | `SQLITE_PATH`           | one file, holding sessions and invitations                                                                                                                        |
 | `ISSUER_REGISTRY_PATH`  | the JSON registry described below                                                                                                                                 |
 | `SESSION_COOKIE_SECRET` | signs the `shl_session` cookie. At least 32 characters                                                                                                            |
+| `SHL_CORS_ORIGINS`      | which browser origins may call the public `/shl` routes. Unset means any origin; otherwise a comma-separated list of origins                                      |
 | `LAUNCH_CLIENT_SECRET`  | the confidential launch client's secret, referenced by name from the registry                                                                                     |
 | `BACKEND_PRIVATE_JWK`   | the Backend Services RS384 signing key, one line of JWK JSON, referenced by name from the registry                                                                |
 | `AIDBOX_*`              | used only by `ops/aidboxSetup.ts` and the acceptance suite. The running app never reads them                                                                      |

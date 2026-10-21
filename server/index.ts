@@ -192,10 +192,11 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
 
   fastify.register(fastifyCookie, { secret: config.cookieSecret });
 
-  // Any origin may call the public SHL routes, so a patient app in a browser can open a link and
-  // answer it. Registered on the root so it reaches the not-found handler too, which is where a
-  // preflight would otherwise land. Nothing outside `/shl` is touched - see `server/shl/cors.ts`.
-  fastify.addHook("onRequest", publicShlCors);
+  // A browser app may call the public SHL routes - from any origin unless `SHL_CORS_ORIGINS`
+  // narrows it - so a patient app can open a link and answer it. Registered on the root so it
+  // reaches the not-found handler too, which is where a preflight would otherwise land. Nothing
+  // outside `/shl` is touched - see `server/shl/cors.ts`.
+  fastify.addHook("onRequest", publicShlCors(config.shlCorsOrigins));
 
   if (hasBuiltSpa) {
     fastify.register(fastifyStatic, {
