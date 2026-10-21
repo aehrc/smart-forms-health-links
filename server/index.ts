@@ -36,6 +36,7 @@ import { standingInvitationRoutes } from "./api/standingInvitations";
 import { writeSlotRoutes } from "./api/writeSlots";
 import { loadServerConfig } from "./config";
 import { openDatabase } from "./db";
+import { publicShlCors } from "./shl/cors";
 import { facadeRoutes } from "./shl/facade";
 import { manifestRoutes } from "./shl/manifest";
 import { publicJwks } from "./smart/backendServices";
@@ -190,6 +191,11 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   fastify.decorate("appDb", db);
 
   fastify.register(fastifyCookie, { secret: config.cookieSecret });
+
+  // Any origin may call the public SHL routes, so a patient app in a browser can open a link and
+  // answer it. Registered on the root so it reaches the not-found handler too, which is where a
+  // preflight would otherwise land. Nothing outside `/shl` is touched - see `server/shl/cors.ts`.
+  fastify.addHook("onRequest", publicShlCors);
 
   if (hasBuiltSpa) {
     fastify.register(fastifyStatic, {

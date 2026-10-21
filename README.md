@@ -246,6 +246,13 @@ through it, including the write performed when somebody accepts a scanned respon
 `/api` paths that match no route answer as JSON, never as the SPA shell. A fetch client that gets an
 HTML page where it expected an API error fails somewhere much less informative than the request.
 
+Everything under `/shl` answers **any origin**, so a patient app running in a browser can fetch a
+manifest and write the answers back without a relay of its own. That is safe because nothing there
+is authorised by a cookie: the manifest is public to whoever holds the link, and every write carries
+a bearer token the caller adds deliberately. Credentials are never allowed. Every other route,
+`/api` above all, sends no CORS headers, because it is the session cookie that authorises it. The
+policy is in `server/shl/cors.ts`.
+
 ## The round trip
 
 ```
@@ -911,6 +918,7 @@ server/                  the BFF: Fastify, one origin, every secret
     manifest.ts          POST /shl/:id, and the per-fetch grant
     grantToken.ts        the capability token a grant carries
     facade.ts            ALL /shl/:id/fhir/*, the write target
+    cors.ts              any origin under /shl, and only there
 src/                     the SPA
   App.tsx                routes, the session gate, the root-fragment forward
   routes/                Connect, FormList, RequestForm, Requests, ResponseList,
