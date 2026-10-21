@@ -11,7 +11,7 @@
  * /api/*, /launch, /auth/*       session cookie     ──> no CORS headers at all
  * ```
  *
- * Three decisions are worth stating.
+ * Four decisions are worth stating.
  *
  * **Any origin, because nothing here is ambient.** CORS protects credentials a browser attaches
  * on its own, which means cookies. The `/shl` routes take none: the manifest is public to whoever
@@ -22,6 +22,10 @@
  * **The session routes stay closed.** `/api/*` is authorised by the session cookie, so a
  * permissive policy there would let any page read and write as whoever is signed in. The prefix
  * check is the whole of that guarantee, and the tests assert it from the outside.
+ *
+ * **Any request header, too.** A preflight is told yes to whichever headers it asks about. Other
+ * FHIR clients send headers ours does not, and one missing name blocks the whole request; no header
+ * can carry ambient authority here, so there is nothing to withhold.
  *
  * **A hook rather than a route.** It runs at `onRequest`, before routing has an opinion, so the
  * headers reach every answer under `/shl` - including the 401s, 404s and 412s a browser app needs
@@ -42,12 +46,16 @@ export const PUBLIC_SHL_PREFIX = "/shl";
 const ALLOWED_METHODS = "GET, POST, PUT, OPTIONS";
 
 /**
- * Request headers a browser app may send.
+ * Request headers allowed when a preflight names none.
  *
- * Listed rather than `*`, because the wildcard does not cover `Authorization` - and the bearer
- * token is the one header every write depends on.
+ * A preflight that does name some gets those back instead ({@link allowedHeaders}). This list is
+ * what our own filler sends, and it is written out rather than `*` because the wildcard does not
+ * cover `Authorization` - the one header every write depends on.
  */
-const ALLOWED_HEADERS = "Authorization, Content-Type, If-Match, Accept";
+const DEFAULT_ALLOWED_HEADERS = "Authorization, Content-Type, If-Match, Accept";
+
+/** One header name, as RFC 9110 defines a token. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 /**
  * Response headers a browser app may read.
@@ -73,6 +81,26 @@ function isPublicShlPath(url: string): boolean {
   const queryStart = url.indexOf("?");
   const path = queryStart === -1 ? url : url.slice(0, queryStart);
   return path === PUBLIC_SHL_PREFIX || path.startsWith(`${PUBLIC_SHL_PREFIX}/`);
+}
+
+/**
+ * The request headers to allow, for one preflight.
+ *
+ * Whatever the preflight asks for, because other FHIR clients send headers ours does not -
+ * `Prefer`, `Cache-Control`, a tracing id - and a browser blocks the whole request if any one of
+ * them is missing from the answer. Allowing them gives nothing away: no header can carry ambient
+ * authority to these routes, for the same reason any origin is safe. Names that are not valid
+ * header tokens are dropped rather than echoed.
+ * @param requested the preflight's `Access-Control-Request-Headers`, if it sent one
+ * @returns the value for `Access-Control-Allow-Headers`
+ */
+function allowedHeaders(requested: string | string[] | undefined): string {
+  const names = [requested ?? []]
+    .flat()
+    .flatMap((value) => value.split(","))
+    .map((name) => name.trim())
+    .filter((name) => HEADER_NAME.test(name));
+  return names.length === 0 ? DEFAULT_ALLOWED_HEADERS : names.join(", ");
 }
 
 /**
@@ -108,7 +136,11 @@ export async function publicShlCors(
   return reply
     .code(204)
     .header("access-control-allow-methods", ALLOWED_METHODS)
-    .header("access-control-allow-headers", ALLOWED_HEADERS)
+    .header(
+      "access-control-allow-headers",
+      allowedHeaders(request.headers["access-control-request-headers"]),
+    )
+    .header("vary", "Access-Control-Request-Headers")
     .header("access-control-max-age", PREFLIGHT_MAX_AGE_SECONDS)
     .send();
 }

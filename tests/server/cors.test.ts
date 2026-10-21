@@ -60,7 +60,6 @@ describe("CORS on the public SHL routes", () => {
       ).toLowerCase();
       expect(allowedHeaders).toContain("authorization");
       expect(allowedHeaders).toContain("content-type");
-      expect(allowedHeaders).toContain("if-match");
       expect(response.headers["access-control-allow-credentials"]).toBe(
         undefined,
       );
@@ -108,6 +107,62 @@ describe("CORS on the public SHL routes", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.headers["access-control-allow-origin"]).toBe("*");
+  });
+
+  /**
+   * Send a preflight for a write to the facade.
+   * @param requestHeaders the `Access-Control-Request-Headers` to send, if any
+   * @returns the response
+   */
+  function preflight(requestHeaders?: string) {
+    return harness.server.inject({
+      method: "OPTIONS",
+      url: "/shl/inv-unknown/fhir",
+      headers: {
+        origin: FOREIGN_ORIGIN,
+        "access-control-request-method": "POST",
+        ...(requestHeaders === undefined
+          ? {}
+          : { "access-control-request-headers": requestHeaders }),
+      },
+    });
+  }
+
+  // Other FHIR clients send headers ours does not, and one missing name blocks the whole request.
+  it("allows whatever request headers a preflight asks for", async () => {
+    const response = await preflight(
+      "authorization,content-type,prefer,cache-control,x-request-id",
+    );
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-headers"]).toBe(
+      "authorization, content-type, prefer, cache-control, x-request-id",
+    );
+    expect(response.headers.vary).toContain("Access-Control-Request-Headers");
+  });
+
+  it("falls back to the headers our own filler sends when none are asked for", async () => {
+    const response = await preflight();
+
+    const allowed = String(
+      response.headers["access-control-allow-headers"],
+    ).toLowerCase();
+    for (const name of [
+      "authorization",
+      "content-type",
+      "if-match",
+      "accept",
+    ]) {
+      expect(allowed).toContain(name);
+    }
+  });
+
+  it("drops a requested name that is not a valid header token", async () => {
+    const response = await preflight("prefer, not a header, x-ok");
+
+    expect(response.headers["access-control-allow-headers"]).toBe(
+      "prefer, x-ok",
+    );
   });
 
   it("does not mistake a plain OPTIONS for a preflight", async () => {

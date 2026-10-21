@@ -178,8 +178,9 @@ access token, which is why the two channels in
 [`shl-form-reply-channel.md`](shl-form-reply-channel.md) remain specified for producers that cannot.
 
 A filler running in a browser can use it directly. This app serves the manifest and the write
-target with `Access-Control-Allow-Origin: *` and answers their preflights, allowing the
-`Authorization`, `Content-Type` and `If-Match` headers and exposing `ETag` and `Location`. No
+target with `Access-Control-Allow-Origin: *` and answers their preflights. A preflight is allowed
+whichever request headers it names, such as `Authorization`, `If-Match` or `Prefer`, and `ETag` and
+`Location` are exposed. No
 credentials mode is needed or allowed, because the token travels in a header the filler sets itself.
 
 What follows is a summary sufficient to implement either side. The shapes are fixed by this
