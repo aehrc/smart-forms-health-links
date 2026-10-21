@@ -30,7 +30,7 @@
  *
  * Kill the Clipboard asks patient apps to serve the same policy in the other direction (its
  * "SHOULD serve a permissive CORS policy"); this is the requester's half of that arrangement.
- * @author John Grimes
+ * @author Clinton Gillespie
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify";

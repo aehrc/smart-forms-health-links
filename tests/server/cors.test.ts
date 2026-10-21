@@ -5,7 +5,7 @@
  * has to be able to reach every public route - preflight, answer and refusal alike - or it cannot
  * open a link or send the answers back. And nothing authorised by the session cookie may answer
  * another origin at all, because that is the one place a permissive policy would leak authority.
- * @author John Grimes
+ * @author Clinton Gillespie
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
