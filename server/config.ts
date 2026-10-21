@@ -4,7 +4,7 @@
  * Two things are loaded here, both at startup and never again:
  *
  *  1. Process settings, from the environment (`APP_ORIGIN`, `SQLITE_PATH`,
- *     `ISSUER_REGISTRY_PATH`, `SESSION_COOKIE_SECRET`, optional `PORT`).
+ *     `ISSUER_REGISTRY_PATH`, `SESSION_COOKIE_SECRET`, optional `PORT` and `SHL_CORS_ORIGINS`).
  *  2. The issuer registry, from the JSON file named by `ISSUER_REGISTRY_PATH`. One entry per
  *     FHIR server this deployment is permitted to launch against, per data-model.md.
  *
@@ -116,7 +116,15 @@ export interface ServerConfig {
   readonly port: number;
   /** The loaded issuer registry. */
   readonly issuers: readonly IssuerRegistration[];
+  /**
+   * Origins a browser app may call the public `/shl` routes from: `"*"` for any, or a list of
+   * exact origins. From `SHL_CORS_ORIGINS`; any origin when unset.
+   */
+  readonly shlCorsOrigins: ShlCorsOrigins;
 }
+
+/** Which origins may call the public `/shl` routes from a browser. */
+export type ShlCorsOrigins = "*" | readonly string[];
 
 /**
  * Strip trailing slashes so `https://x/fhir` and `https://x/fhir/` compare equal.
@@ -489,6 +497,48 @@ function requireEnv(
 }
 
 /**
+ * Read `SHL_CORS_ORIGINS`: which origins a browser app may call the public `/shl` routes from.
+ *
+ * Unset, empty or `*` means any origin, which is the default because a link is meant to be opened
+ * by any receiver. Otherwise a comma-separated list of exact origins - scheme, host and port, no
+ * path - for a deployment that only wants to serve apps it knows. A value that is not an origin
+ * fails startup, because a typo here would otherwise lock every browser app out silently.
+ * @param raw the variable's value, if set
+ * @returns `"*"`, or the list of origins
+ * @throws {Error} naming the variable when an entry is not an origin, or `*` is mixed with others
+ */
+function parseShlCorsOrigins(raw: string | undefined): ShlCorsOrigins {
+  const entries = (raw ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (entries.length === 0 || (entries.length === 1 && entries[0] === "*")) {
+    return "*";
+  }
+
+  return entries.map((entry) => {
+    let origin: string | undefined;
+    try {
+      const url = new URL(entry);
+      origin =
+        (url.protocol === "https:" || url.protocol === "http:") &&
+        entry.replace(/\/$/, "") === url.origin
+          ? url.origin
+          : undefined;
+    } catch {
+      origin = undefined;
+    }
+    if (origin === undefined) {
+      throw new Error(
+        "Environment variable SHL_CORS_ORIGINS must be `*` or a comma-separated list of " +
+          "origins, for example https://patient-app.example.com",
+      );
+    }
+    return origin;
+  });
+}
+
+/**
  * Load the whole-process configuration, including the issuer registry.
  * @param env the environment to read, defaulting to the process environment
  * @returns the validated configuration
@@ -535,5 +585,6 @@ export function loadServerConfig(
     cookieSecret,
     port,
     issuers: loadIssuerRegistry(issuerRegistryPath, env),
+    shlCorsOrigins: parseShlCorsOrigins(env.SHL_CORS_ORIGINS),
   };
 }
