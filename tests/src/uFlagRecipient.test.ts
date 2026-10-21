@@ -15,7 +15,7 @@
  * The last half is a guard against fixing too much. A manifest file's `location` is fetched with
  * nothing added: the spec asks for no parameters there, and a location is usually a signed URL
  * whose signature a stray query parameter would break.
- * @author John Grimes
+ * @author Clinton Gillespie
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
