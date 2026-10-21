@@ -177,6 +177,11 @@ It needs no new extension, no reply slot and no host. What it needs is a request
 access token, which is why the two channels in
 [`shl-form-reply-channel.md`](shl-form-reply-channel.md) remain specified for producers that cannot.
 
+A filler running in a browser can use it directly. This app serves the manifest and the write
+target with `Access-Control-Allow-Origin: *` and answers their preflights, allowing the
+`Authorization`, `Content-Type` and `If-Match` headers and exposing `ETag` and `Location`. No
+credentials mode is needed or allowed, because the token travels in a header the filler sets itself.
+
 What follows is a summary sufficient to implement either side. The shapes are fixed by this
 feature's wire contract (`contracts/shl-wire.md` in the specification bundle) rather than by any one
 implementation, because two apps have to produce and consume the same thing.
