@@ -51,7 +51,7 @@ export interface DecodeOptions {
   /** Passcode for a manifest-mode link that demands one (the SHL `P` flag). */
   passcode?: string;
 
-  /** Names the reader in the manifest request body, per the spec's `recipient` field. */
+  /** Names the reader to the host, per the spec's `recipient`: in the manifest body, or on a `U`-flag `GET`. */
   recipient?: string;
 }
 

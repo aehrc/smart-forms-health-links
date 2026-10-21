@@ -60,7 +60,7 @@ const PREFIX = "shlink:/";
 /** SHL protocol version this codec implements. */
 const SHL_VERSION = 1;
 
-/** Identifies us in the manifest request, per the spec's `recipient` field. */
+/** Identifies us to the host, per the spec's `recipient`: in the manifest body, or on a `U`-flag `GET`. */
 const RECIPIENT = "Smart Forms Health Links";
 
 const FHIR_JSON = "application/fhir+json";
@@ -126,17 +126,52 @@ function decodePayload(fragment: string): ShlPayload {
   return parsed;
 }
 
-async function fetchJwe(url: string): Promise<string> {
+/**
+ * Add `recipient` to a `U`-flag URL, keeping any query string the host already put there.
+ * @param url the link's `url`
+ * @param recipient who is reading
+ * @returns the URL to `GET`
+ */
+function withRecipient(url: string, recipient: string): string {
+  const target = new URL(url);
+  target.searchParams.set("recipient", recipient);
+  return target.href;
+}
+
+/**
+ * Fetch one encrypted file by plain `GET`.
+ *
+ * Two callers, and they differ in exactly one respect. A `U`-flag link's `url` is retrieved with
+ * the `recipient` query parameter, because the spec makes it required there and a conformant host
+ * is entitled to refuse a request without it - which is what a patient app's relay, logging each
+ * access, will do. A manifest file's `location` is retrieved with nothing added, because the spec
+ * asks for no parameters there and a location is typically a signed URL whose signature covers
+ * the query string.
+ * @param url the URL to retrieve
+ * @param recipient who is reading, for a `U`-flag `GET`; omitted for a manifest `location`
+ * @returns the JWE compact serialisation, trimmed
+ */
+async function fetchJwe(url: string, recipient?: string): Promise<string> {
   /*
    * Deliberately no Accept header. A FHIR server hands back a `Binary` resource wrapper for
    * `application/fhir+json`, whereas the spec expects an unadorned GET to yield the JWE itself.
-   *
-   * ⚠️ KNOWN DEFECT: the spec also makes `recipient` *required* on this GET, and we send it only on
-   * the manifest path below. Omitting it here is non-conformant and fails against a host that
-   * insists on it - and it is why the unopenable links described in `docs/u-flag-hosting.md` still
-   * work in our own viewer. Fix both halves together.
    */
-  const response = await fetch(url);
+  let response = await fetch(
+    recipient === undefined ? url : withRecipient(url, recipient),
+  );
+
+  /*
+   * Strict-host tolerance, matching Platypus's `fetchDirectFile`. A general-purpose FHIR server
+   * answers an unrecognised parameter with `400` rather than ignoring it, so a payload parked on a
+   * `Binary` - which is where this app itself used to park them - is unreachable to a conformant
+   * reader. Retry the bare URL once, and only on `400`: a `404` means the link is gone, and
+   * retrying it would double every request for a revoked link. All the retry drops is a
+   * self-declared name the host was always free to ignore.
+   */
+  if (recipient !== undefined && response.status === 400) {
+    response = await fetch(url);
+  }
+
   if (!response.ok) {
     throw new Error(
       `Could not retrieve the linked payload (${response.status} ${response.statusText}).`,
@@ -365,7 +400,10 @@ export const shlCodec: LinkCodec = {
     // `U` means the url resolves straight to a single encrypted file; anything else means a manifest.
     if (flag.includes("U")) {
       const plaintext = decodeUtf8(
-        await decryptJwe(await fetchJwe(payload.url), key),
+        await decryptJwe(
+          await fetchJwe(payload.url, options.recipient ?? RECIPIENT),
+          key,
+        ),
       );
       return { bundle: bundleFromJson(plaintext), label: payload.label };
     }

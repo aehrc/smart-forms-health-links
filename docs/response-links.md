@@ -67,13 +67,21 @@ present.
 
 ### Retrieval, for `U`-flag links
 
-The `GET` carries **no `Accept` header and no query parameters**. Both matter:
+The `GET` carries `?recipient=Smart+Forms+Health+Links` and **no `Accept` header**:
 
+- `recipient` is a required query parameter on this request in the SHL spec. A host that logs each
+  access, such as a patient app's relay, is entitled to refuse a request without it. Any query
+  string already on `url` is kept.
 - an `Accept` of `application/fhir+json` makes a FHIR server wrap the bytes in a `Binary` resource
-  instead of returning the JWE; and
-- appending anything to the URL - `?recipient=…`, most plausibly - makes a FHIR `Binary` read fail
-  with `400 not-supported`. The SHL spec defines `recipient` as a field of the _manifest request
-  body_, and defines no equivalent for `U`-flag direct retrieval.
+  instead of returning the JWE.
+
+A host that answers `400` gets **one retry without `recipient`**. A general-purpose FHIR server
+refuses a `Binary` read carrying a parameter it does not recognise, and payloads parked on one would
+otherwise be unreachable. Only `400` is retried: a `404` or `410` means the link is gone. Platypus
+applies the same rule.
+
+A manifest file's `location` is fetched exactly as given, with nothing added, because it is usually
+a signed URL.
 
 ## The payload
 
