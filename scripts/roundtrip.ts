@@ -338,15 +338,23 @@ function fetchUrl(input: string | URL | Request): string {
   return input instanceof URL ? input.href : input.url;
 }
 
-// The codec fetches its payload by URL; serve the in-memory store through a fetch shim.
+/** The query string of the last request the store answered, so a check can read `recipient`. */
+let lastStoreQuery = new URLSearchParams();
+
+/*
+ * The codec fetches its payload by URL; serve the in-memory store through a fetch shim. The
+ * lookup ignores the query string, because a U-flag GET carries `recipient` and the store is
+ * keyed on the bare URL.
+ */
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (
   input: string | URL | Request,
   init?: RequestInit,
 ) => {
-  const url = fetchUrl(input);
-  const stored = store.get(url);
+  const requested = new URL(fetchUrl(input));
+  const stored = store.get(`${requested.origin}${requested.pathname}`);
   if (stored) {
+    lastStoreQuery = requested.searchParams;
     return new Response(stored, { status: 200 });
   }
   return realFetch(input as RequestInfo, init);
@@ -401,6 +409,11 @@ check(
     JSON.stringify(responseFromBundle(shlBundle)),
 );
 check("shl/labelSurvives", shlDecoded.label === "Medical History");
+check(
+  "shl/sendsRecipient",
+  lastStoreQuery.get("recipient") === "Smart Forms Health Links",
+  "the spec makes `recipient` required on a U-flag GET",
+);
 
 // The hosted payload must be opaque: no plaintext answers recoverable from it.
 const hostedBlob = decodeUtf8(store.get(shlPayload.url)!);
@@ -606,6 +619,11 @@ check(
   mergedPayload.response !== undefined &&
     mergedPayload.provenance !== undefined,
   "taking only the first file drops the PATAST attribution that makes a reply safe to store",
+);
+check(
+  "foreign/locationFetchedAsGiven",
+  !lastStoreQuery.has("recipient"),
+  "a location is often a signed URL, and the spec asks for no parameters on it",
 );
 
 // A file type this app cannot render must be reported, not silently dropped.

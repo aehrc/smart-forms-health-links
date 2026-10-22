@@ -1,8 +1,9 @@
-# U-flag hosting: the defect, and the half of it that remains
+# U-flag hosting: the defect, and how both halves closed
 
 **Status:** the outbound half is **closed**. It was closed by moving hosting into this app's own
 server rather than by fixing the blob store, so the fix is architectural and the reasoning below is
-kept as the record of why. The inbound half is **open**.
+kept as the record of why. The inbound half is **closed** too: reading a `U`-flag link now sends
+`recipient` (see [What closed the inbound half](#what-closed-the-inbound-half)).
 **Discovered:** 2026-08-05, testing interop with [Platypus Health](https://github.com/aehrc/platypus).
 **Severity, as it stood:** every `U`-flag link this app minted was unopenable by any third-party SHL
 app that follows the specification. Our own viewer was unaffected, which is exactly why it went
@@ -68,23 +69,26 @@ The one property the original proposal wanted and this does not deliver is a bli
 keeps each link key so it can encrypt a grant file at fetch time. That trade is recorded in
 [Known limitations](../README.md#known-limitations).
 
-## What remains open
+## What closed the inbound half
 
-**We still do not send `recipient` when reading somebody else's `U`-flag link.** `fetchJwe` in
-`src/link/shlCodec.ts` omits it, which is non-conformant and will fail against a host that requires
-it. Two things to do, and they have to land together:
+**We did not send `recipient` when reading somebody else's `U`-flag link.** `fetchJwe` in
+`src/link/shlCodec.ts` omitted it, which was non-conformant and would fail against a host that
+requires it. It became urgent when browser patient apps began hosting `U`-flag links through relays
+that log each access, because the scan-back path reads exactly those links.
 
-1. **Send it.** Reuse the existing `RECIPIENT` constant and `DecodeOptions.recipient`, which the
-   manifest path already threads through. Keep the existing no-`Accept`-header comment; it is correct
-   and for an unrelated reason.
-2. **Fix the test shims.** `scripts/roundtrip.ts` serves its in-memory store through a fetch shim
-   keyed on an exact URL match. A `?recipient=…` suffix will miss the lookup and fall through to the
-   real network. Strip the query string before the lookup, and add a case asserting the parameter is
-   sent, so this cannot regress.
+What changed:
 
-This is a lower-severity gap than the one that closed. It costs nothing today, because the hosts this
-app reads from - its own manifest route, and the file hosts Platypus uses - do not require the
-parameter. It will cost something the first time a conformant object host is on the other end.
+1. **The `GET` sends it.** A `U`-flag read appends `recipient`, from `DecodeOptions.recipient` or the
+   `RECIPIENT` constant, and keeps any query string the host already put on the URL. A manifest
+   file's `location` is still fetched as given, because it is usually a signed URL.
+2. **A `400` is retried once without it.** This is the same tolerance Platypus applies in
+   `fetchDirectFile`. Without it, sending the parameter would have broken every payload parked on a
+   FHIR `Binary`, the host type this whole document is about. Only `400` is retried; `404` and `410`
+   mean the link is gone.
+3. **The shims key on the bare URL.** `scripts/roundtrip.ts` strips the query before its store
+   lookup, and `scripts/e2eShl.ts` matches on the path. Both assert the parameter is sent, and
+   `tests/src/uFlagRecipient.test.ts` covers the strict host, the `Binary` host and the `location`
+   read.
 
 ## What to undo elsewhere
 
@@ -98,6 +102,9 @@ Whether to remove it now is a judgement call, and the answer is probably not yet
 mints no longer trip it, but the workaround is tolerance for a class of host rather than for one
 producer, and other producers still park payloads on FHIR `Binary` endpoints. Removing it would be
 right once nobody it might rescue is still minting.
+
+This app now carries the same retry, for the same reason. The two should be removed together, or
+the two readers will open different sets of links.
 
 ## Where the remaining infrastructure argument went
 

@@ -978,7 +978,7 @@ docs/
   aidbox-validation.md        the two-window walkthrough on the validation instance
   shl-form-reply-channel.md   the reply channels: design record, and what is still minted
   response-links.md           what counts as an inbound response link, plus the token channel
-  u-flag-hosting.md           the U-flag hosting defect, and what closed it
+  u-flag-hosting.md           the U-flag hosting defect, and what closed both halves
   walk-in-links.md            the printed code: the standing row, the per-scan child, the cap,
                               and the registration seeded from a walk-in's own answers
 ```
@@ -1083,10 +1083,6 @@ write endpoint on the server that holds every secret. That trade was declined.
 
 - **Minted links carry no passcode.** Manifest mode makes one structurally possible, unlike the `U`
   flag it replaced, but nothing implements it. Reading a passcode-protected manifest works.
-- **A `U`-flag `GET` of somebody else's link omits the `recipient` parameter the spec requires**, so
-  a host that insists on it will refuse. That is the inbound half of the defect in
-  [`docs/u-flag-hosting.md`](docs/u-flag-hosting.md); the outbound half closed when hosting moved
-  in-process.
 - **The BFF can decrypt its own invitations**, because it keeps the link key to encrypt grant files
   with. An SHL host is conventionally blind; this one is not, and the trade was made knowingly
   against multi-day tokens.

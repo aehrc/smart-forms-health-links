@@ -209,9 +209,13 @@ const foreignFile = await encryptJwe(
 );
 
 let manifestFetches = 0;
+/** The `recipient` the foreign host was last asked for, which the spec makes required. */
+let foreignRecipient: string | null = null;
 
 const host = createServer((request, response) => {
-  if (request.url === "/foreign" && request.method === "GET") {
+  const requested = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (requested.pathname === "/foreign" && request.method === "GET") {
+    foreignRecipient = requested.searchParams.get("recipient");
     response.writeHead(200, { "content-type": "application/jose" });
     response.end(foreignFile);
     return;
@@ -492,6 +496,11 @@ check(
 check(
   "foreign/notMistakenForARequest",
   !isRequestBundle(foreignDecoded.bundle),
+);
+check(
+  "foreign/sendsRecipient",
+  foreignRecipient !== null && foreignRecipient !== "",
+  "the spec makes `recipient` required on a U-flag GET, and a strict host refuses without it",
 );
 
 await new Promise<void>((resolve, reject) => {
